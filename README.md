@@ -4,7 +4,7 @@
 >
 > **目前不是可直接開機的 USB 映像。** 這個 repository 提供可在**已隔離網路的 Linux Live USB 環境**執行的錢包核心與 CLI。真正的冷儲存安全性取決於啟動環境、實體隔離、原始碼及相依套件供應鏈的完整性。它不是 YubiKey，也沒有 Secure Element。
 
-[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [紙本復原與 USB 交換格式](docs/RECOVERY_AND_USB_EXCHANGE.md) · [離線交易核對 GUI](docs/OFFLINE_REVIEW_GUI.md) · [威脅模型](docs/THREAT_MODEL.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
+[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [紙本復原與 USB 交換格式](docs/RECOVERY_AND_USB_EXCHANGE.md) · [離線交易核對 GUI](docs/OFFLINE_REVIEW_GUI.md) · [威脅模型](docs/THREAT_MODEL.md) · [EVM 測試向量](docs/EVM_TEST_VECTORS.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## Goals / 目標
 
@@ -22,7 +22,7 @@
 | One BIP39 master seed | 24-word generated offline, optional BIP39 passphrase for derivation |
 | Encrypted USB vault | Scrypt + AES-256-GCM, mode 0600, reject existing file |
 | Bitcoin | **testnet only**, native SegWit P2WPKH BIP84, strict PSBT v0 / SIGHASH_ALL, explicit recipient / amount / fee checks, no RBF/locktime semantics |
-| EVM | **Sepolia only**, type-2 EIP-1559 native ETH transfers, explicit chainId / recipient / amount / gas checks |
+| EVM | **Sepolia only**, type-2 EIP-1559 native ETH transfers, explicit chainId / recipient / amount / gas checks, signed raw transaction re-decoding + sender recovery |
 | Public outputs | BTC testnet receiving addresses and account tpub; EVM Sepolia address; integrity-checked watch-only export |
 | Paper recovery | Offline BIP39 restoration, dual-address confirmation, create-only encrypted vault; destructive test-vector rehearsal |
 | USB transfer | Strict, size-bounded SHA-256 exchange envelopes; detects corruption but **does not authenticate sender** |
@@ -91,7 +91,7 @@ usb-cold-wallet --vault /path/on/offline-media/wallet.vault sign-btc \
 - `vault.py`: BIP39 encrypted vault
 - `keys.py`: BIP32 derivation via upstream `embit`
 - `btc.py`: conservative P2WPKH PSBT review + signing
-- `evm.py`: Sepolia type-2 native transfer review + signing using `eth-account`
+- `evm.py`: Sepolia type-2 native transfer review + signing using `eth-account`, plus strict RLP re-decoding of signed bytes
 - `cli.py`: explicit-network interactive review, independent challenge approval and air-gap exchange
 - `review.py`: transport-neutral canonical offline review, field provenance, digest binding and explicit-signing state
 - `gui.py`: minimal local Tk/ttk transaction-review surface; no WebView/JavaScript/RPC
@@ -104,7 +104,7 @@ We intentionally **do not implement cryptographic curves, SHA3/Keccak, PSBT seri
 ## Development roadmap
 
 1. Pin transitive dependencies with hashes; independent reproducible offline Linux wheelhouse/build workflow.
-2. Independent reference transaction vectors (Bitcoin Core/Sparrow/Electrum and Ethereum client), mutation tests / fuzzing, PSBT input/output verification, security review.
+2. Extend the current external EVM vector/mutation coverage to Bitcoin Core/Sparrow/Electrum vectors, fuzzing, deeper PSBT input/output verification, and security review.
 3. Build tested, reproducible read-only Live USB image with network disabled; encrypted persistence and QR/file transport.
 4. Better on-device UI for recipient/fee review, wallet recovery rehearsal and full mainnet readiness criteria.
 5. Optional hardware device version with independent screen/buttons and secure boot.
