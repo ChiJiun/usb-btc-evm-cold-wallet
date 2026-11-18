@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "usb-btc-evm-cold-wallet"
+version = "0.1.0"
+description = "Experimental offline BTC testnet PSBT and EVM Sepolia signer for a live USB"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+  "embit==0.8.0",
+  "eth-account==0.14.0",
+  "cryptography==47.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.2.0"]
+
+[project.scripts]
+usb-cold-wallet = "usb_cold_wallet.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
