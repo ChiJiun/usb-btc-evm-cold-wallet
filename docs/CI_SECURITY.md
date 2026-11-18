@@ -53,5 +53,10 @@ GitHub native secret scanning and push protection should also be enabled in the
 repository security settings.  Gitleaks remains in CI as an independent
 history scan.
 
+GitHub Dependency Graph should be enabled as well.  Until it is enabled, the
+workflow detects the unsupported API and skips only GitHub's dependency-review
+action; hash-locked installation and `pip-audit` remain mandatory.  Once the
+graph is enabled, moderate-or-higher dependency-review findings fail CI.
+
 Do not weaken these controls merely to merge a failing change.  Investigate the
 failing job or update the locked dependency/action pins in a reviewed PR.
