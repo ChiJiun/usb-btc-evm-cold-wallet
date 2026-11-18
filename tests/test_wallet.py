@@ -158,11 +158,16 @@ def _test_psbt(root, change=True, fee=1200):
         outputs.append(transaction.TransactionOutput(60_000 - fee, script.p2wpkh(btc_key(root, 1, 0).key)))
     else:
         outputs[0].value = 120_000 - fee
+    previous = transaction.Transaction(
+        vin=[transaction.TransactionInput(bytes.fromhex("22" * 32), 0)],
+        vout=[input_utxo],
+    )
     tx = transaction.Transaction(
-        vin=[transaction.TransactionInput(bytes.fromhex("11" * 32), 0)],
+        vin=[transaction.TransactionInput(previous.txid(), 0)],
         vout=outputs,
     )
     obj = psbt.PSBT(tx)
+    obj.inputs[0].non_witness_utxo = previous
     obj.inputs[0].witness_utxo = input_utxo
     obj.inputs[0].bip32_derivations[receive_key.key.get_public_key()] = psbt.DerivationPath(
         root.my_fingerprint, bip32.parse_path("m/84h/1h/0h/0/0")
