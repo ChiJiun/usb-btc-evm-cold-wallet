@@ -67,6 +67,33 @@ def test_cli_signs_issue5_evm_request_envelope(tmp_path, monkeypatch):
     assert signed["to"].lower() == SEPOLIA["to"].lower()
 
 
+def test_cli_legacy_transport_is_bounded_before_parsing(tmp_path, monkeypatch):
+    root = root_from_mnemonic("abandon " * 11 + "about")
+    monkeypatch.setattr(cli, "_wallet_root", lambda args: root)
+    monkeypatch.setattr(cli, "_approve", lambda phrase: None)
+    huge = tmp_path / "huge"
+    huge.write_bytes(b"x" * 210_000)
+    output = tmp_path / "must-not-exist.json"
+
+    evm_result = cli.main([
+        "--vault", str(tmp_path / "unused.vault"),
+        "sign-evm", "--tx", str(huge),
+        "--to", SEPOLIA["to"], "--wei", str(SEPOLIA["value"]),
+        "--out", str(output),
+    ])
+    assert evm_result == 1
+    assert not output.exists()
+
+    btc_result = cli.main([
+        "--vault", str(tmp_path / "unused.vault"),
+        "sign-btc", "--psbt", str(huge),
+        "--to", "tb1qexample", "--sats", "1000",
+        "--max-fee-sats", "100", "--out", str(output),
+    ])
+    assert btc_result == 1
+    assert not output.exists()
+
+
 def test_cli_rejects_wrong_request_envelope_kind(tmp_path, monkeypatch):
     wrong_for_evm = tmp_path / "btc-request.json"
     wrong_for_btc = tmp_path / "evm-request.json"

@@ -8,7 +8,12 @@ from pathlib import Path
 
 from .btc import review_btc_psbt, sign_btc_psbt
 from .evm import review_evm_transaction, sign_evm
-from .exchange import read as read_exchange, write as write_exchange
+from .exchange import (
+    _unique_object,
+    read as read_exchange,
+    read_bounded,
+    write as write_exchange,
+)
 from .keys import root_from_mnemonic, watch_only
 from .vault import encrypt_mnemonic, load_vault, new_mnemonic, save_vault
 
@@ -33,6 +38,28 @@ def _approve(phrase: str) -> None:
 def _write_signed(path: Path, result: dict) -> None:
     save_vault(path, result)
     print(f"Signed output written to {path} (safe to transfer for broadcast).")
+
+
+def _read_legacy_evm(path: Path) -> dict:
+    raw = read_bounded(path)
+    try:
+        return json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_unique_object,
+            parse_constant=lambda _: (_ for _ in ()).throw(
+                ValueError("Non-finite JSON number")
+            ),
+        )
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid legacy EVM JSON") from exc
+
+
+def _read_legacy_psbt(path: Path) -> str:
+    raw = read_bounded(path)
+    try:
+        return raw.decode("ascii").strip()
+    except UnicodeError as exc:
+        raise ValueError("Legacy PSBT must be ASCII base64") from exc
 
 
 def main(argv=None) -> int:
@@ -90,7 +117,7 @@ def main(argv=None) -> int:
             raw = (
                 read_exchange(args.request, "evm-request")
                 if args.request
-                else json.loads(args.tx.read_text(encoding="utf-8"))
+                else _read_legacy_evm(args.tx)
             )
             review = review_evm_transaction(raw, args.to, args.wei)
             print(json.dumps({key: value for key, value in review.items() if key != "transaction"}, indent=2))
@@ -105,7 +132,7 @@ def main(argv=None) -> int:
             encoded = (
                 read_exchange(args.request, "btc-request")
                 if args.request
-                else args.psbt.read_text(encoding="utf-8")
+                else _read_legacy_psbt(args.psbt)
             )
             review = review_btc_psbt(root, encoded, args.to, args.sats, args.max_fee_sats, args.change_index)
             print(json.dumps({key: value for key, value in review.items() if key != "psbt"}, indent=2))
