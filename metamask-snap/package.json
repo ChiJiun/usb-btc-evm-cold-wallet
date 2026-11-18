@@ -1,0 +1,33 @@
+{
+  "name": "@chijiun/usb-cold-signer-snap-poc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "repository": {"type": "git", "url": "https://github.com/ChiJiun/usb-btc-evm-cold-wallet.git"},
+  "description": "Research-only Sepolia account management Snap with zero online private keys",
+  "scripts": {
+    "test": "tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "mm-snap build",
+    "build:companion": "vite build --config vite.config.mjs",
+    "check": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@metamask/keyring-api": "24.3.0",
+    "@metamask/keyring-snap-sdk": "10.0.1",
+    "@metamask/keyring-snap-client": "10.0.1",
+    "@metamask/snaps-sdk": "11.2.0",
+    "ethers": "6.17.0",
+    "lossless-json": "4.3.3"
+  },
+  "devDependencies": {
+    "@metamask/snaps-cli": "8.4.1",
+    "@types/node": "22.15.30",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vite": "7.3.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
