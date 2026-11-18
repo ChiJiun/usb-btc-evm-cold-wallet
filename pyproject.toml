@@ -20,6 +20,7 @@ dev = ["pytest==9.2.0"]
 
 [project.scripts]
 usb-cold-wallet = "usb_cold_wallet.cli:main"
+usb-cold-wallet-qr = "usb_cold_wallet.qr_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
