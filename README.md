@@ -4,7 +4,7 @@
 >
 > **目前不是可直接開機的 USB 映像。** 這個 repository 提供可在**已隔離網路的 Linux Live USB 環境**執行的錢包核心與 CLI。真正的冷儲存安全性取決於啟動環境、實體隔離、原始碼及相依套件供應鏈的完整性。它不是 YubiKey，也沒有 Secure Element。
 
-[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [威脅模型](docs/THREAT_MODEL.md) · [CI / 供應鏈安全](docs/CI_SECURITY.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
+[離線 Policy Engine](docs/OFFLINE_POLICY.md) · [English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [威脅模型](docs/THREAT_MODEL.md) · [CI / 供應鏈安全](docs/CI_SECURITY.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## Goals / 目標
 
@@ -24,6 +24,7 @@
 | Bitcoin | **testnet only**, native SegWit P2WPKH BIP84, PSBT v0 / SIGHASH_ALL, explicit recipient / amount / fee checks |
 | EVM | **Sepolia only**, type-2 EIP-1559 native ETH transfers, explicit chainId / recipient / amount / gas checks |
 | Public outputs | BTC testnet receiving addresses and account tpub; EVM Sepolia address |
+| Offline policy (Issue #21) | Encrypted wallet-bound policy profile, recipient address book, fee/value caps, extra confirmation; no automatic signing |
 | Safety | No RPC, no broadcast functions, no blind contract calls, no mainnet signing, no private key output |
 | CI | GitHub Actions: Python 3.12/3.13 pytest, hash-locked dependencies, pip-audit, Gitleaks, dependency review and reproducible-wheel check |
 
@@ -53,6 +54,10 @@ python -m pip install --no-index --find-links wheelhouse -e ".[dev]"
 
 # Wallet bootstrap ON OFFLINE HOST ONLY:
 usb-cold-wallet --vault /path/on/offline-media/wallet.vault init --offline-ack --i-have-paper-backup
+
+# Create mandatory, encrypted policy on the OFFLINE vault drive before signing:
+usb-cold-wallet --vault /path/on/offline-media/wallet.vault policy \
+  --file /path/on/offline-media/wallet.vault.policy --action init
 
 # Print PUBLIC info for your networked watch-only wallet:
 usb-cold-wallet --vault /path/on/offline-media/wallet.vault addresses --count 3
@@ -89,6 +94,7 @@ usb-cold-wallet --vault /path/on/offline-media/wallet.vault sign-btc \
 - `keys.py`: BIP32 derivation via upstream `embit`
 - `btc.py`: conservative P2WPKH PSBT review + signing
 - `evm.py`: Sepolia type-2 native transfer review + signing using `eth-account`
+- `policy.py`: wallet-bound encrypted address book and conservative transaction policy decisions
 - `cli.py`: interactive approval and file-based air-gap exchange
 - `tests/`: deterministic known-vector and rejection tests
 
