@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Published Buildroot release public-key metadata (not credentials)"
+regexTarget = "match"
+regexes = [
+  '''18C7DF2819C1733D822D599EA500D6EE9CB0E540''',
+  '''c5a1e44a9609d3a9930182839687b2675c2b8ef3eb7f64f275b2b9f5844383f0''',
+]
