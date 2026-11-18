@@ -1,0 +1,34 @@
+#!/bin/sh
+set -eu
+
+mkdir -p /run/usb-wallet /mnt/cold-vault /mnt/transfer
+chmod 0700 /mnt/cold-vault /mnt/transfer
+
+# This image intentionally has no swap. Be defensive if firmware or a future
+# image accidentally exposes one.
+swapoff -a 2>/dev/null || true
+
+# The boot USB's second partition is the only place the encrypted vault may
+# persist. It is never the transaction transport medium.
+if ! grep -q ' /mnt/cold-vault ' /proc/mounts 2>/dev/null; then
+	mount -t vfat -o rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077 		-L COLD_VAULT /mnt/cold-vault 2>/dev/null || true
+fi
+
+{
+	echo "usb-wallet air-gap boot checks"
+	if [ -d /proc/net ]; then
+		echo "FAIL: /proc/net exists"
+	else
+		echo "PASS: /proc/net absent (CONFIG_NET expected disabled)"
+	fi
+	if [ -s /proc/swaps ] && [ "$(wc -l < /proc/swaps)" -gt 1 ]; then
+		echo "FAIL: swap active"
+	else
+		echo "PASS: no active swap"
+	fi
+	if grep -q ' /mnt/cold-vault ' /proc/mounts; then
+		echo "PASS: COLD_VAULT mounted"
+	else
+		echo "FAIL: COLD_VAULT not mounted"
+	fi
+} > /run/usb-wallet/boot-checks.txt

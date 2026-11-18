@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==9.2.0"]
+dev = ["pytest==9.2.0", "kconfiglib==14.1.0"]
 
 [project.scripts]
 usb-cold-wallet = "usb_cold_wallet.cli:main"
