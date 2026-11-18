@@ -9,6 +9,7 @@ from pathlib import Path
 from .btc import review_btc_psbt, sign_btc_psbt
 from .evm import review_evm_transaction, sign_evm
 from .keys import root_from_mnemonic, watch_only
+from .keystone_public import export_keystone_public
 from .vault import encrypt_mnemonic, load_vault, new_mnemonic, save_vault
 
 
@@ -46,6 +47,8 @@ def main(argv=None) -> int:
     init.add_argument("--i-have-paper-backup", action="store_true", help="Affirm mnemonic is backed up outside USB")
     addresses = sub.add_parser("addresses", help="Show public testnet addresses and BTC account tpub")
     addresses.add_argument("--count", type=int, default=3)
+    keystone = sub.add_parser("export-keystone-public", help="Export public EVM BIP32 data for MetaMask QR pairing (NO secrets)")
+    keystone.add_argument("--out", required=True, type=Path, help="Write public account JSON to offline data media")
     evm = sub.add_parser("sign-evm", help="Review and sign a Sepolia native ETH transfer")
     evm.add_argument("--tx", type=Path, required=True, help="Unsigned type-2 transaction JSON")
     evm.add_argument("--to", required=True, help="Independently verified recipient")
@@ -81,6 +84,9 @@ def main(argv=None) -> int:
         root = _wallet_root(args)
         if args.command == "addresses":
             print(json.dumps(watch_only(root, count=args.count), ensure_ascii=False, indent=2))
+        elif args.command == "export-keystone-public":
+            save_vault(args.out, export_keystone_public(root))
+            print(f"Public-only EVM account information saved to {args.out}. Never export the vault itself.")
         elif args.command == "sign-evm":
             raw = json.loads(args.tx.read_text(encoding="utf-8"))
             review = review_evm_transaction(raw, args.to, args.wei)

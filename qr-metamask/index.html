@@ -1,0 +1,28 @@
+<!doctype html><html lang="zh-Hant"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>USB Offline Signer — MetaMask QR 簽署橋接</title>
+<link rel="stylesheet" href="./style.css"></head><body><main>
+<h1>USB 冷錢包 · MetaMask 原生 QR</h1>
+<p class="warning">Sepolia 測試網研究版。此頁面只處理<strong>公鑰／未簽交易／已簽交易</strong>；不可輸入助記詞、私鑰、密碼或 Vault。請僅在可信任且物理斷網的電腦執行。</p>
+<section><h2>① 與 MetaMask 配對</h2><p>先在離線 CLI 執行 <code>usb-cold-wallet --vault /offline/wallet.vault export-keystone-public --out public-evm.json</code>，再匯入這份公開資料。</p>
+<label>公開帳戶 JSON <input id="public-file" type="file" accept=".json"></label>
+<button id="pair" disabled>產生 MetaMask 配對 QR</button>
+<p id="account"></p></section>
+<section><h2>② 從 MetaMask 掃描待簽交易</h2><p>MetaMask → Connect Hardware Wallet → QR-based，使用上面的配對 QR；<strong>只選取第一個（index 0）地址</strong>，目前離線簽署器不支援其他衍生地址。要轉帳時，掃描 MetaMask 顯示的 <code>ur:eth-sign-request</code>。</p>
+<button id="scan" disabled>開啟攝影機掃描</button><button id="stop" disabled class="secondary">停止掃描</button>
+<video id="camera" playsinline muted hidden></video>
+<label>或貼上掃描得到的 UR 字串（每幀一行）<textarea id="ur-input" rows="3" spellcheck="false" placeholder="ur:eth-sign-request/..."></textarea></label>
+<button id="parse" disabled>檢查 QR 交易</button>
+<pre id="intent">尚無交易</pre>
+<button id="download" disabled>下載 unsigned.json 給離線 CLI</button>
+<p class="warning"><strong>必須在離線可信螢幕，根據獨立來源確認完整收款地址、金額及手續費。</strong> QR request 本身不是授權。</p></section>
+<section><h2>③ 載入已簽交易並回傳 MetaMask</h2>
+<p>使用離線 CLI：<code>usb-cold-wallet --vault /offline/wallet.vault sign-evm --tx unsigned.json --to 已獨立確認地址 --wei 已確認整數金額 --out signed.json</code>。不得在連網電腦執行簽署。</p>
+<label>簽署後的 signed.json <input id="signed-file" type="file" accept=".json" disabled></label>
+<button id="reply" disabled>檢查後產生 eth-signature QR</button>
+<button id="cancel" class="secondary">取消這筆交易</button>
+<p id="status" role="status">尚未匯入公開帳戶。</p>
+<img id="qr" alt="MetaMask QR" hidden><p id="qr-type"></p>
+</section><footer><small>Open-source Keystone BC-UR Registry + MetaMask QR Keyring format. 無原生 Snap 權限需求。僅測試網，未經安全審計。</small></footer>
+</main><script type="module" src="./src/main.js"></script></body></html>

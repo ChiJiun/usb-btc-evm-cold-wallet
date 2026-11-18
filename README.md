@@ -4,7 +4,7 @@
 >
 > **目前不是可直接開機的 USB 映像。** 這個 repository 提供可在**已隔離網路的 Linux Live USB 環境**執行的錢包核心與 CLI。真正的冷儲存安全性取決於啟動環境、實體隔離、原始碼及相依套件供應鏈的完整性。它不是 YubiKey，也沒有 Secure Element。
 
-[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [威脅模型](docs/THREAT_MODEL.md) · [EVM 測試向量](docs/EVM_TEST_VECTORS.md) · [CI / 供應鏈安全](docs/CI_SECURITY.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
+[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [MetaMask 原生 QR 硬體錢包整合 POC](docs/METAMASK_NATIVE_QR.md) · [威脅模型](docs/THREAT_MODEL.md) · [EVM 測試向量](docs/EVM_TEST_VECTORS.md) · [CI / 供應鏈安全](docs/CI_SECURITY.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## Goals / 目標
 
@@ -27,7 +27,7 @@
 | Safety | No RPC, no broadcast functions, no blind contract calls, no mainnet signing, no private key output |
 | CI | GitHub Actions: Python 3.12/3.13 pytest, hash-locked dependencies, pip-audit, Gitleaks, dependency review and reproducible-wheel check |
 
-Not yet supported: mainnet, ERC-20, EIP-712, WalletConnect, Taproot, multisig, PSBT v2, QR transport, hardware button/screen confirmation, bootable ISO builder, address discovery beyond first 100 BIP84 inputs, independent audits.
+Not yet supported: mainnet, ERC-20, EIP-712, WalletConnect, Taproot, multisig, PSBT v2, QR-based Bitcoin signing, hardware button/screen confirmation, bootable ISO builder, address discovery beyond first 100 BIP84 inputs, independent audits. **MetaMask 原生 EVM QR（Keystone BC-UR）目前僅是獨立 POC**：完成 QR Keyring 套件相容性測試，尚未完成實體雙機與擴充功能實測；只能簽 EVM index 0。
 
 ## Development & automated tests (safe on connected VM)
 
