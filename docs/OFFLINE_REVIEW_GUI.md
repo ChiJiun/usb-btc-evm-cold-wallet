@@ -80,9 +80,7 @@ The final confirmation is deliberately not bound to Enter. The user must:
    review-digest prefix;
 3. explicitly activate **Confirm signing**.
 
-After the signature is produced, the GUI immediately drops its wallet-root
-reference. The signed transaction is public data and may then be exported to
-USB-B or passed to a future #18 signed-QR presenter.
+After signing, Issue #20 optionally retains the wallet-root reference for a **short, attended session** (maximum three individually reviewed transactions, 600 seconds idle / 900 seconds absolute). Choosing Done, cancellation, expiration, safety audit failure or reaching the quota locks and discards the root reference. Every new transaction starts a completely new per-page review and typed challenge. See [short-session security design](FAST_SIGNER_SESSION.md). The signed transaction is public data and may then be exported to USB-B or passed to a future #18 signed-QR presenter.
 
 ## Displayed fields
 
@@ -155,7 +153,7 @@ wallet. It rejects any other wallet.
 
 ## Session and failure behavior
 
-- default idle timeout: 120 seconds;
+- default idle timeout: **600 seconds**, hard absolute session limit 900 seconds, maximum 3 individually confirmed transactions;
 - rejecting a transaction locks and discards the current confirmation state;
 - losing window focus clears the final typed signing challenge;
 - UI callback failure locks wallet state and does not preserve unsigned signing

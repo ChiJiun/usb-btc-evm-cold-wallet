@@ -4,7 +4,7 @@
 >
 > **目前不是可直接開機的 USB 映像。** 這個 repository 提供可在**已隔離網路的 Linux Live USB 環境**執行的錢包核心與 CLI。真正的冷儲存安全性取決於啟動環境、實體隔離、原始碼及相依套件供應鏈的完整性。它不是 YubiKey，也沒有 Secure Element。
 
-[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [紙本復原與 USB 交換格式](docs/RECOVERY_AND_USB_EXCHANGE.md) · [離線交易核對 GUI](docs/OFFLINE_REVIEW_GUI.md) · [威脅模型](docs/THREAT_MODEL.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
+[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [紙本復原與 USB 交換格式](docs/RECOVERY_AND_USB_EXCHANGE.md) · [離線交易核對 GUI](docs/OFFLINE_REVIEW_GUI.md) · [快速啟動與安全鎖定](docs/FAST_SIGNER_SESSION.md) · [威脅模型](docs/THREAT_MODEL.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## Goals / 目標
 
@@ -27,6 +27,7 @@
 | Paper recovery | Offline BIP39 restoration, dual-address confirmation, create-only encrypted vault; destructive test-vector rehearsal |
 | USB transfer | Strict, size-bounded SHA-256 exchange envelopes; detects corruption but **does not authenticate sender** |
 | Offline review GUI | Local Tk/ttk review model; full offline-derived fields, per-page acknowledgement, digest-bound typed confirmation, no WebView/JS/RPC |
+| Attended signing session | Locked on start; 10-minute idle auto-lock, 15-minute absolute limit, max 3 transactions, every transaction re-reviewed and explicitly confirmed; no auto signing |
 | Safety | No RPC, no broadcast functions, no blind contract calls, no mainnet signing, no private key output |
 | CI | Local Pytest validated; [GitHub Actions template](docs/ci-template.yml) ready, not enabled until GitHub authorization permits workflow upload |
 
@@ -95,6 +96,7 @@ usb-cold-wallet --vault /path/on/offline-media/wallet.vault sign-btc \
 - `cli.py`: explicit-network interactive review, independent challenge approval and air-gap exchange
 - `review.py`: transport-neutral canonical offline review, field provenance, digest binding and explicit-signing state
 - `gui.py`: minimal local Tk/ttk transaction-review surface; no WebView/JavaScript/RPC
+- `signer_session.py`: local-only fail-closed unlock/review/approve/sign/lock state machine with backoff and deadlines
 - `exchange.py`: integrity-checked, bounded, testnet-labeled transport envelopes shared by USB-B and QR-decoded text
 - `recovery.py`: test-only destructive rehearsal and offline paper restore with dual-address confirmation
 - `tests/`: deterministic known-vector and rejection tests
