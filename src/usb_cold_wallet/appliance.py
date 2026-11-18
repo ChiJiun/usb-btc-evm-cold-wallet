@@ -13,13 +13,29 @@ LOCKDOWN = Path("/run/usb-wallet/lockdown")
 SAFE_MOUNT_OPTIONS = "rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077"
 
 
-def _mounted(path: Path) -> bool:
+def _mount_info(path: Path) -> tuple[str, set[str]] | None:
     try:
         entries = Path("/proc/mounts").read_text(encoding="utf-8").splitlines()
     except OSError:
-        return False
+        return None
     needle = str(path)
-    return any(len(line.split()) >= 2 and line.split()[1] == needle for line in entries)
+    for line in entries:
+        fields = line.split()
+        if len(fields) >= 4 and fields[1] == needle:
+            return fields[2], set(fields[3].split(","))
+    return None
+
+
+def _mounted(path: Path) -> bool:
+    return _mount_info(path) is not None
+
+
+def _safe_transfer_mount() -> bool:
+    info = _mount_info(TRANSFER)
+    if info is None:
+        return False
+    filesystem, options = info
+    return filesystem == "vfat" and {"rw", "noexec", "nodev", "nosuid", "sync"} <= options
 
 
 def security_status() -> list[str]:
@@ -53,12 +69,12 @@ def _security_locked(status: list[str]) -> bool:
 def mount_transfer() -> bool:
     TRANSFER.mkdir(parents=True, exist_ok=True)
     if _mounted(TRANSFER):
-        return True
+        return _safe_transfer_mount()
     result = subprocess.run(
         ["mount", "-t", "vfat", "-o", SAFE_MOUNT_OPTIONS, "-L", "TX_TRANSFER", str(TRANSFER)],
         check=False,
     )
-    return result.returncode == 0 and _mounted(TRANSFER)
+    return result.returncode == 0 and _safe_transfer_mount()
 
 
 def unmount_transfer() -> None:
@@ -85,6 +101,8 @@ def _select_file(suffix: str) -> Path | None:
         print(f"  {index}. {path.name}")
     try:
         selected = int(input("Select file number: "))
+        if not 1 <= selected <= len(files):
+            raise ValueError("selection out of range")
         return files[selected - 1]
     except (ValueError, IndexError):
         print("Invalid selection.")
