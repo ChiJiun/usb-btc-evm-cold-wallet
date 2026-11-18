@@ -16,6 +16,65 @@ _MAX_PSBT_BYTES = 200_000
 _SEARCH_LIMIT = 100
 _MAX_MONEY = 21_000_000 * 100_000_000
 _HARDENED = 0x80000000
+_PSBT_MAGIC = b"psbt\xff"
+
+
+def _read_exact(stream: BytesIO, size: int) -> bytes:
+    data = stream.read(size)
+    if len(data) != size:
+        raise ValueError("Truncated PSBT")
+    return data
+
+
+def _read_compact_size(stream: BytesIO) -> int:
+    prefix = _read_exact(stream, 1)[0]
+    if prefix < 0xFD:
+        return prefix
+    width = {0xFD: 2, 0xFE: 4, 0xFF: 8}[prefix]
+    value = int.from_bytes(_read_exact(stream, width), "little")
+    if ((prefix == 0xFD and value < 0xFD)
+            or (prefix == 0xFE and value <= 0xFFFF)
+            or (prefix == 0xFF and value <= 0xFFFFFFFF)):
+        raise ValueError("Non-canonical CompactSize")
+    return value
+
+
+def _validate_raw_unsigned_tx(raw: bytes) -> None:
+    """Check BIP174 invariants before embit can normalize the unsigned tx."""
+    stream = BytesIO(raw)
+    if _read_exact(stream, len(_PSBT_MAGIC)) != _PSBT_MAGIC:
+        raise ValueError("Invalid PSBT magic")
+
+    unsigned_tx = None
+    while True:
+        key_len = _read_compact_size(stream)
+        if key_len == 0:
+            break
+        if key_len > _MAX_PSBT_BYTES:
+            raise ValueError("PSBT key exceeds size limit")
+        key = _read_exact(stream, key_len)
+        value_len = _read_compact_size(stream)
+        if value_len > _MAX_PSBT_BYTES:
+            raise ValueError("PSBT value exceeds size limit")
+        value = _read_exact(stream, value_len)
+        if key == b"\x00":
+            if unsigned_tx is not None:
+                raise ValueError("Duplicate global unsigned transaction")
+            unsigned_tx = value
+
+    # PSBT v2 intentionally has no global unsigned transaction and is rejected
+    # later by the version gate. For v0, validate the raw bytes before embit's
+    # PSBT parser clears scriptSig fields while normalizing its internal tx.
+    if unsigned_tx is None:
+        return
+    try:
+        raw_tx = transaction.Transaction.parse(unsigned_tx)
+    except Exception as exc:
+        raise ValueError("Malformed global unsigned transaction") from exc
+    if raw_tx.serialize() != unsigned_tx:
+        raise ValueError("Non-canonical global unsigned transaction")
+    if any(vin.script_sig.data or vin.witness.items for vin in raw_tx.vin):
+        raise ValueError("PSBT unsigned transaction must have empty scriptSig and witness")
 
 
 def _read_psbt(payload: str):
@@ -25,6 +84,7 @@ def _read_psbt(payload: str):
         raw = base64.b64decode(payload.strip(), validate=True)
         if len(raw) > _MAX_PSBT_BYTES:
             raise ValueError("PSBT exceeds size limit")
+        _validate_raw_unsigned_tx(raw)
         stream = BytesIO(raw)
         parsed = psbt.PSBT.read_from(stream, compress=0)
         if stream.read(1):
@@ -37,6 +97,8 @@ def _read_psbt(payload: str):
         raise ValueError("Only one recipient and optional one change output supported")
     if parsed.unknown or parsed.xpubs:
         raise ValueError("Unexpected global PSBT metadata")
+    if any(vin.script_sig.data or vin.witness.items for vin in parsed.tx.vin):
+        raise ValueError("PSBT unsigned transaction must have empty scriptSig and witness")
     return parsed
 
 

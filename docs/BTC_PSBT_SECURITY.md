@@ -5,8 +5,11 @@
 The offline signer accepts only a PSBT v0 with 1–20 native BIP84 testnet
 P2WPKH inputs and one payment output, optionally one change output.
 It rejects unknown metadata, preexisting signatures, unsupported scripts,
-duplicate outpoints, and extra data after the serialized PSBT.
-Base64 input is limited to 200 KB decoded.
+duplicate outpoints, and extra data after the serialized PSBT. Before the
+library parser runs, the raw PSBT global unsigned transaction is checked for
+canonical serialization and the BIP174 requirement that every scriptSig and
+witness is empty. This prevents parser normalization from hiding hostile
+unsigned-transaction fields. Base64 input is limited to 200 KB decoded.
 
 For **each input**, both `witness_utxo` and `non_witness_utxo` are now
 mandatory. The latter must hash to the outpoint TXID and contain a
@@ -28,15 +31,33 @@ and round-tripped before export, alongside the signed PSBT. **Round-tripping
 is not Bitcoin consensus/script validation**; broadcast and external
 verification remain the watch-only host's responsibility.
 
+## External vector provenance
+
+Regression fixtures are vendored in `tests/fixtures/external_psbt_vectors.json`
+so tests do not require network access. They are pinned to:
+
+- Bitcoin Core `bitcoin/bitcoin@e211dd0186e9646167d063a16f0da88e5f72e05f`,
+  from `test/functional/data/rpc_psbt.json` and `src/test/psbt_tests.cpp`.
+- Sparrow's Bitcoin library
+  `sparrowwallet/drongo@f5a0b36b1ff953cf40b32d5fc2a8083ae69fec3f`,
+  from `src/test/java/com/sparrowwallet/drongo/psbt/PSBTTest.java`.
+
+The shared BIP174 v0 fixture is parsed and checked against its independently
+recorded txid/output values. A shared invalid fixture with scriptSig data in
+the unsigned transaction must fail closed, and a Bitcoin Core PSBT v2 fixture
+confirms the explicit v0-only gate.
+
+In addition to 250 reproducible bit mutations, Hypothesis exercises the fee
+boundary and 300 arbitrary binary parser inputs per run. Parser failures must
+be normalized to `ValueError`.
+
 ## Limitations / next security work
 
-- Current vectors are synthetic deterministic transactions built using
-  `embit`, not independently generated Bitcoin Core/Sparrow fixtures.
-  Add known external reference vectors with recorded provenance, amounts,
-  txids, witnesses, and expected results before considering the issue fully
-  closed.
-- 250 reproducible random bit mutations exercise the parser; add sustained
-  coverage-guided fuzzing and resource-limit / timeout testing.
+- The external fixtures validate parser interoperability and fail-closed
+  behavior, but there is not yet an independently generated Core/Sparrow
+  **BIP84 P2WPKH end-to-end signing fixture** tied to this test wallet.
+- Add sustained coverage-guided fuzzing plus explicit resource-limit/timeout
+  campaigns beyond the bounded Hypothesis corpus.
 - There is no full consensus/script interpreter or Bitcoin Core integration,
   and no independent audit. Previous transaction inclusion/unspent status
   is not verified by the offline signer.
