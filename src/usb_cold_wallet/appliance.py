@@ -9,6 +9,7 @@ import sys
 VAULT = Path("/mnt/cold-vault/wallet.vault")
 TRANSFER = Path("/mnt/transfer")
 BOOT_CHECKS = Path("/run/usb-wallet/boot-checks.txt")
+LOCKDOWN = Path("/run/usb-wallet/lockdown")
 SAFE_MOUNT_OPTIONS = "rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077"
 
 
@@ -22,15 +23,31 @@ def _mounted(path: Path) -> bool:
 
 
 def security_status() -> list[str]:
-    status: list[str] = []
-    status.append("PASS network stack absent" if not Path("/proc/net").exists() else "FAIL /proc/net exists")
+    try:
+        boot_lines = BOOT_CHECKS.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ["FAIL: boot security audit missing"]
+
+    status = [line for line in boot_lines if line.startswith(("PASS:", "FAIL:"))]
+    if not status:
+        return ["FAIL: boot security audit contained no checks"]
+
+    # Re-check the two invariants that could materially change during runtime.
+    status.append(
+        "PASS: live network stack absent"
+        if not Path("/proc/net").exists()
+        else "FAIL: live /proc/net exists"
+    )
     try:
         swaps = Path("/proc/swaps").read_text(encoding="utf-8").strip().splitlines()
-        status.append("PASS no active swap" if len(swaps) <= 1 else "FAIL active swap detected")
+        status.append("PASS: live swap remains disabled" if len(swaps) <= 1 else "FAIL: active swap detected")
     except OSError:
-        status.append("WARN unable to inspect swap")
-    status.append("PASS COLD_VAULT mounted" if _mounted(Path("/mnt/cold-vault")) else "FAIL COLD_VAULT unavailable")
+        status.append("FAIL: unable to inspect live swap state")
     return status
+
+
+def _security_locked(status: list[str]) -> bool:
+    return LOCKDOWN.exists() or any(item.startswith("FAIL:") for item in status)
 
 
 def mount_transfer() -> bool:
@@ -121,8 +138,17 @@ def main() -> int:
     while True:
         print("\n=== USB BTC + EVM COLD WALLET ===")
         print("TESTNET RESEARCH APPLIANCE — NOT AUDITED FOR REAL FUNDS")
-        for item in security_status():
+        status = security_status()
+        for item in status:
             print(item)
+        if _security_locked(status):
+            print("\nLOCKDOWN: wallet creation/signing is disabled because a boot security check failed.")
+            print("6) Power off")
+            if input("> ").strip() == "6":
+                unmount_transfer()
+                subprocess.run(["poweroff"], check=False)
+                return 1
+            continue
         print("\n1) Create encrypted TESTNET wallet")
         print("2) Show public BTC testnet + Sepolia addresses")
         print("3) Sign Sepolia native ETH transaction")

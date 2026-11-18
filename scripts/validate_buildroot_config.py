@@ -74,6 +74,7 @@ def main() -> int:
 
         expected_y = [
             "BR2_x86_64",
+            "BR2_REPRODUCIBLE",
             "BR2_TOOLCHAIN_BUILDROOT",
             "BR2_TOOLCHAIN_BUILDROOT_GLIBC",
             "BR2_KERNEL_HEADERS_AS_KERNEL",

@@ -90,13 +90,15 @@ Production kernel config 明確設定：
 
 系統啟動後會直接進入 `usb-wallet-console`，不提供一般 getty/login 作為正常操作介面。
 
-Console 會顯示：
+Console 會顯示啟動安全稽核：
 
-- network stack 檢查
-- swap 檢查
-- `COLD_VAULT` 是否已 mount
+- network stack 必須不存在；
+- swap 必須為空；
+- `/` 必須是 RAM-backed `rootfs` / `tmpfs`；
+- `COLD_VAULT` 必須以 `rw,noexec,nodev,nosuid,sync` 掛載；
+- 不得存在其他 writable non-memory filesystem。
 
-若任何必要檢查顯示 `FAIL`，不要建立或解鎖 wallet。
+若任何檢查為 `FAIL`，系統會建立 `/run/usb-wallet/lockdown`，Console 直接停用建立錢包與簽章功能，只允許關機；不是只顯示警告。
 
 ## 5. 第一次建立測試錢包
 
@@ -190,7 +192,7 @@ unsigned.psbt
 
 - 普通 USB 沒有 Secure Element，解鎖後 private key 會存在 offline PC RAM。
 - 現階段沒有 Secure Boot。
-- 目前 image build 尚未完成獨立 bit-for-bit reproducibility 驗證。
+- Image build 已加入 deterministic metadata 與 `make reproducibility-check` 兩次 clean build 比對；仍需在具完整 Buildroot 工具鏈的相容 host 實際跑完，才能宣稱該 commit 已完成 bit-for-bit runtime 驗證。
 - USB-B 是不可信輸入，parser 仍需 fuzzing。
 - Recovery workflow 仍在 Issue #5 強化中。
 - 主網與 token/contract signing 都尚未開放。

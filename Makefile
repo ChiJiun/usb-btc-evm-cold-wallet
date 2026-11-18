@@ -1,7 +1,7 @@
 SHELL := /bin/sh
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
-.PHONY: help test validate-config prepare-sources configure image verify clean
+.PHONY: help test validate-config prepare-sources configure image verify reproducibility-check clean
 
 help:
 	@echo "USB BTC+EVM Cold Wallet"
@@ -11,6 +11,7 @@ help:
 	@echo "  make configure        resolve the pinned Buildroot configuration"
 	@echo "  make image            build x86_64 UEFI USB image"
 	@echo "  make verify           static checks on a built image"
+	@echo "  make reproducibility-check  two clean builds; require identical image/kernel hashes"
 	@echo "  make clean            remove generated build/ artifacts"
 
 test:
@@ -32,6 +33,9 @@ image:
 
 verify:
 	@./scripts/verify_image.sh
+
+reproducibility-check:
+	@sh ./scripts/check_reproducible.sh
 
 clean:
 	@rm -rf "$(ROOT)/build"

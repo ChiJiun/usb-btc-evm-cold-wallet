@@ -4,11 +4,16 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_buildroot_version_and_hash_are_pinned():
+def test_buildroot_version_hash_and_signature_are_pinned():
     text = (ROOT / "infra/buildroot.env").read_text()
     assert "BUILDROOT_VERSION=2026.08.2" in text
-    match = re.search(r"BUILDROOT_SHA256=([0-9a-f]{64})", text)
-    assert match
+    assert re.search(r"BUILDROOT_SHA256=([0-9a-f]{64})", text)
+    assert re.search(r"BUILDROOT_SIG_SHA256=([0-9a-f]{64})", text)
+    assert re.search(r"BUILDROOT_RELEASE_KEY_FINGERPRINT=([0-9A-F]{40})", text)
+    assert re.search(r"BUILDROOT_RELEASE_KEY_SHA256=([0-9a-f]{64})", text)
+    assert (ROOT / "infra/buildroot-release-key.asc").read_text().startswith(
+        "-----BEGIN PGP PUBLIC KEY BLOCK-----"
+    )
 
 
 def test_kernel_removes_network_and_internal_storage():
@@ -26,6 +31,41 @@ def test_image_has_separate_boot_and_cold_vault_partitions():
     assert 'label = "COLD_VAULT"' in text
     assert "partition boot" in text
     assert "partition vault" in text
+    assert "read-only = true" in text
+
+
+def test_image_generation_is_deterministic():
+    defconfig = (ROOT / "buildroot-external/configs/usb_wallet_x86_64_defconfig").read_text()
+    image = (ROOT / "buildroot-external/board/usb-wallet/genimage.cfg").read_text()
+    repro = (ROOT / "infra/reproducible.env").read_text()
+    assert "BR2_REPRODUCIBLE=y" in defconfig
+    assert image.count('extraargs = "--invariant"') == 2
+    assert 'disk-uuid = "f1448aa1-28cc-54bf-8fdd-3008514c0ab5"' in image
+    assert 'partition-uuid = "e2bd6d1b-8de5-502d-a897-c53a8e60f46b"' in image
+    assert 'partition-uuid = "18f1c36f-d5c0-5052-9cd2-03e9c2a48f00"' in image
+    assert re.search(r"^SOURCE_DATE_EPOCH=[1-9][0-9]+$", repro, re.MULTILINE)
+
+
+def test_buildroot_fetch_verifies_signed_manifest_before_archive_hash():
+    text = (ROOT / "scripts/fetch_buildroot.sh").read_text()
+    assert "--import-options show-only" in text
+    assert "gpgv --keyring" in text
+    assert "SIGNED_SHA256" in text
+    assert "BUILDROOT_RELEASE_KEY_FINGERPRINT" in text
+
+
+def test_boot_audit_covers_memory_swap_and_persistence_and_fails_closed():
+    init = (
+        ROOT
+        / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d/S01airgap"
+    ).read_text()
+    appliance = (ROOT / "src/usb_cold_wallet/appliance.py").read_text()
+    assert "root filesystem is RAM-backed" in init
+    assert "no active swap" in init
+    assert "no unexpected writable persistent filesystem mounted" in init
+    assert 'LOCKDOWN=/run/usb-wallet/lockdown' in init
+    assert "_security_locked" in appliance
+    assert "wallet creation/signing is disabled" in appliance
 
 
 def test_wheelhouse_manifest_is_unique_and_includes_embit():

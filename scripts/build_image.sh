@@ -2,6 +2,7 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+. "$ROOT/infra/reproducible.env"
 MODE="$*"
 [ -n "$MODE" ] || MODE="build"
 
@@ -15,7 +16,8 @@ EXT="$ROOT/buildroot-external"
 
 case "$MODE" in
 	--download-only)
-		BR2_DL_DIR="$DL" make -C "$BR" O="$OUT" BR2_EXTERNAL="$EXT" source
+		SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" BR2_DL_DIR="$DL" \
+			make -C "$BR" O="$OUT" BR2_EXTERNAL="$EXT" source
 		exit 0
 		;;
 	build)
@@ -26,5 +28,6 @@ case "$MODE" in
 		;;
 esac
 
-BR2_DL_DIR="$DL" make -C "$BR" O="$OUT" BR2_EXTERNAL="$EXT"
+SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" BR2_DL_DIR="$DL" \
+	make -C "$BR" O="$OUT" BR2_EXTERNAL="$EXT"
 "$ROOT/scripts/verify_image.sh"

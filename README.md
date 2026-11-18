@@ -47,8 +47,10 @@ USB-A is the boot/cold-storage device and should never be used as transaction tr
 | Internal disks | ATA/NVMe/MMC/VirtIO block drivers are not enabled in production config |
 | Persistent wallet storage | Dedicated `COLD_VAULT` partition on boot USB |
 | Transaction transport | Separate `TX_TRANSFER` USB, mounted `noexec,nodev,nosuid,sync` |
-| Dependency integrity | Buildroot version + target Python artifacts SHA-256 pinned |
-| Image checks | GPT structure, kernel config, target binaries, networking tools, SHA-256 |
+| Dependency integrity | Buildroot release PGP manifest + SHA-256 verified; target Python artifacts hash-pinned |
+| Reproducibility controls | `BR2_REPRODUCIBLE`, fixed epoch/GPT UUIDs, invariant FAT metadata, two-clean-build checker |
+| Startup audit | Fail-closed network/swap/RAM-root/persistence checks before wallet operations |
+| Image checks | GPT structure/UUID/readonly flag, kernel config, target binaries, networking tools, SHA-256 |
 | Mainnet / ERC-20 / EIP-712 | **disabled** |
 | Independent audit | Not done |
 
@@ -103,7 +105,7 @@ Full procedure: [docs/USB_SETUP.md](docs/USB_SETUP.md).
 
 - Ordinary USB flash storage **cannot make keys non-exportable**. While unlocked, the seed and derived keys exist in the offline PC's RAM.
 - No kernel network stack significantly reduces remote attack surface, but does not protect against compromised firmware, malicious USB controllers, DMA/physical attacks, or a tampered build chain.
-- The boot/root filesystem is rebuilt from pinned source inputs, but bit-for-bit reproducibility across independent builders has not yet been demonstrated.
+- The boot/root filesystem uses deterministic-build controls and a two-clean-build hash checker, but this commit still needs that full check on a compatible Buildroot host before claiming runtime-demonstrated bit-for-bit reproducibility.
 - The boot USB contains an empty writable `COLD_VAULT` partition. Reflashing the whole image destroys that partition; the external BIP39 recovery backup remains mandatory.
 - The transfer USB is untrusted input. Transaction parsers and policy checks still need fuzzing and independent audit.
 - There is currently no Secure Boot signing/enrollment flow.
