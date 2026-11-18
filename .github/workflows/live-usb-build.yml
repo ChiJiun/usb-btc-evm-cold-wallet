@@ -1,9 +1,6 @@
 name: Live USB image verification
 
 on:
-  push:
-    branches:
-      - feat/issue-1-reproducible-live-usb
   pull_request:
     paths:
       - ".github/workflows/live-usb-build.yml"
@@ -20,8 +17,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: live-usb-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  group: live-usb-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-and-reproduce:
@@ -31,7 +28,9 @@ jobs:
       DEBIAN_FRONTEND: noninteractive
       BR2_JLEVEL: "2"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Show resource budget
         run: |
@@ -64,7 +63,7 @@ jobs:
 
       - name: Upload SHA-256 evidence (no wallet secrets or images)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: live-usb-build-hashes
           path: build/reproducibility/*.sha256
