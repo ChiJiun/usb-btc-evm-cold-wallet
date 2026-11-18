@@ -1,32 +1,90 @@
 # Threat model / 威脅模型
 
 ## Assets
-BIP39 mnemonic, optional BIP39 passphrase, derived secp256k1 private keys, encrypted vault.
+
+- BIP39 mnemonic and optional BIP39 passphrase
+- Derived secp256k1 private keys
+- Encrypted `wallet.vault`
+- Integrity of unsigned transaction review and signed transaction output
+- Integrity of the boot image and dependency supply chain
 
 ## Trust boundary
-An offline, trusted physical computer boots from verified media. The networked computer is untrusted and only prepares transaction payloads / broadcasts signatures. The USB transport can contain attacker-controlled payloads.
+
+The signing computer is physically offline and boots the project image from **USB-A**. The online computer is treated as untrusted and may create malicious transaction payloads. A separate **USB-B** labelled `TX_TRANSFER` carries only public/transaction data across the air gap.
+
+USB-A contains an EFI boot partition plus `COLD_VAULT`. It is not used as transaction transport.
 
 ## Assumptions
-- Offline host hardware, its firmware, OS image, Python interpreter and dependencies are trustworthy.
-- User separately verifies recipient, amount, network, fees and change address.
-- Mnemonic has backup independent of USB, and any BIP39 passphrase can be reliably recovered.
-- Neither project sources nor GitHub contain live user secrets.
 
-## Controls present
-- AAD-bound AES-256-GCM encrypted vault, scrypt KDF, create-only permission-restricted file.
-- BIP84 testnet addresses and strict PSBT recipient / fee / input ownership policy.
-- EVM Sepolia chainId 11155111, EIP-1559 only; reject calldata, unfamiliar fields and native transfer mismatch.
-- No RPC, no broadcast, no mainnet path; signed transactions only cross air gap.
-- Fixed upstream cryptographic primitives and CI tests with known compromised public test vectors.
+- The offline computer's CPU, firmware, keyboard/display path and USB controllers are not malicious.
+- The user verifies image hashes and independently checks recipient, amount, network, fee and change information.
+- A recovery backup exists outside the USB device.
+- Build inputs were obtained from the pinned sources and hashes in this repository.
+- No production mnemonic is ever introduced into development/CI/cloud environments.
 
-## Out of scope / NOT mitigated
-- Infected host/USB firmware/bootloader; physical theft during unlock.
-- Hidden OS swap, cold boot attacks, DMA, malware in binaries or Python interpreter.
-- RAM zeroization (Python immutable strings are not easily zeroizable).
-- USB transport payload parsers being exploitable. PSBT strictness needs independent audit.
-- Sophisticated physical side channels, hardware anti-tamper, Secure Element or device confirmation screen.
-- Full Bitcoin policy support, multisig, script wallets, all EVM chain transactions and token approvals.
-- Secure randomness/entropy verification on every Linux device; hardening against RNG compromise.
+## Controls implemented
+
+### Network isolation
+
+- Production kernel config contains `# CONFIG_NET is not set`.
+- Common BusyBox network clients are explicitly disabled.
+- The post-build hook fails if common networking tools survive in the target rootfs.
+- The runtime console reports a failure if `/proc/net` unexpectedly exists.
+
+This is stronger than merely disabling Wi-Fi, but it does not prove firmware-level radio or management-engine isolation.
+
+### Storage isolation
+
+- Root filesystem is an initramfs and has no persistent Linux root partition.
+- Production kernel config does not enable ATA, NVMe, MMC or VirtIO block storage.
+- USB mass storage remains enabled because the boot/vault and transaction USB devices require it.
+- `COLD_VAULT` is mounted `noexec,nodev,nosuid,sync`.
+- `TX_TRANSFER` is mounted separately with the same restrictive flags.
+- Active swap is disabled/check-reported at boot.
+
+### Wallet controls
+
+- AAD-bound AES-256-GCM encrypted vault.
+- scrypt password KDF.
+- Vault creation refuses silent overwrite.
+- Bitcoin testnet BIP84 input ownership, output, recipient, amount and fee policy checks.
+- Sepolia chainId 11155111, type-2 transaction only, native transfer only, no calldata/blind signing.
+- No RPC/broadcast code in the signer.
+
+### Supply-chain controls
+
+- Buildroot version and archive SHA-256 pinned.
+- Python target wheel filenames/versions/hashes pinned.
+- embit source tarball hash pinned.
+- Image and kernel hashes emitted after build.
+- Static image verifier checks GPT layout, final kernel config and target network-tool absence.
+
+These controls pin inputs; they do **not yet prove independent bit-for-bit reproducible builds**.
+
+## Not mitigated / out of scope
+
+- Compromised BIOS/UEFI, CPU microcode, keyboard, display or USB controller firmware.
+- Evil-maid attacks while the device is unlocked.
+- Cold-boot/RAM extraction, DMA paths not covered by the current platform/kernel configuration, and physical side channels.
+- Python memory zeroization. Immutable Python strings may leave secret copies in RAM until power-off.
+- Malicious USB firmware (BadUSB) or filesystem/parser vulnerabilities.
+- Supply-chain compromise that also compromises a pinned upstream artifact before its hash is recorded.
+- Secure Boot; current image is not signed/enrolled.
+- Hardware-backed non-exportable keys, tamper resistance or a trusted device display.
+- Bitcoin multisig/Taproot/PSBT v2 and general EVM smart-contract/token signing.
+- Mainnet use.
 
 ## Mainnet readiness gate
-Require formal security review, fuzzing, independent test vectors, hardened read-only boot image, secure offline recovery ceremony, integrity-checked releases, incident handling and thorough operator docs. Until then: **testnet research only**.
+
+Do not enable mainnet merely by changing constants. Mainnet requires, at minimum:
+
+1. successful full Buildroot image builds on clean hosts;
+2. real UEFI boot tests on representative hardware;
+3. independent reproducibility comparison;
+4. parser fuzzing and independent transaction test vectors;
+5. recovery rehearsal;
+6. secure release/signing process;
+7. third-party security review;
+8. incident/disclosure process.
+
+Until those gates are met: **testnet research only**.

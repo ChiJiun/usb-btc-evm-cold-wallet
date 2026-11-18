@@ -1,0 +1,6 @@
+config BR2_PACKAGE_USB_WALLET_APP
+	bool "usb-wallet-app"
+	depends on BR2_PACKAGE_PYTHON3
+	help
+	  Offline-only BTC testnet PSBT + EVM Sepolia signer and console UI.
+	  Python wheels are fetched and hash-verified before the Buildroot build.

@@ -1,105 +1,123 @@
-# USB BTC + EVM Cold Wallet (prototype)
+# USB BTC + EVM Cold Wallet
 
-> **Research prototype / 測試網限定 / 未經安全審計 / 勿存放真實資產。**
+> **Research prototype · testnet only · not independently audited · do not store real assets.**
 >
-> **目前不是可直接開機的 USB 映像。** 這個 repository 提供可在**已隔離網路的 Linux Live USB 環境**執行的錢包核心與 CLI。真正的冷儲存安全性取決於啟動環境、實體隔離、原始碼及相依套件供應鏈的完整性。它不是 YubiKey，也沒有 Secure Element。
+> This project turns a normal x86_64 USB flash drive into a **bootable air-gapped signing environment**. The USB is still ordinary storage, not a YubiKey/Secure Element: the cryptographic operations run on the offline PC after boot.
 
-[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [威脅模型](docs/THREAT_MODEL.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
+[USB 製作與使用](docs/USB_SETUP.md) · [Buildroot 建置](docs/BUILD.md) · [Threat model](docs/THREAT_MODEL.md) · [Open-source references](docs/OPEN_SOURCE_REFERENCES.md)
 
-## Goals / 目標
-
-一般 USB 隨身碟 + 現有電腦即可執行，**不需要特殊硬體**。一台實體離線電腦負責解密錢包、核對交易、簽署；連網電腦只持有公鑰資料、準備未簽署交易並廣播簽署結果。
+## Architecture
 
 ```
-連網電腦（無私鑰）  --[ PSBT / type-2 tx JSON ]-->  離線 Live USB
-連網電腦（只接收簽署結果） <--[ 簽署 PSBT / raw tx ]-- 離線 Live USB
+ONLINE COMPUTER                         OFFLINE COMPUTER
+(no private keys)                      boots USB-A
+┌────────────────────┐                 ┌──────────────────────────────┐
+│ watch-only wallet  │                 │ Buildroot RAM-only rootfs    │
+│ creates unsigned   │                 │ Linux CONFIG_NET=n           │
+│ PSBT / tx JSON     │                 │                              │
+└─────────┬──────────┘                 │ usb-wallet-console           │
+          │                            │   ├─ BTC testnet PSBT signer │
+          │ USB-B: TX_TRANSFER         │   └─ Sepolia tx signer       │
+          ├───────────────────────────▶│                              │
+          │                            │ USB-A partition 2:           │
+          │                            │ COLD_VAULT (encrypted file)  │
+          │ signed PSBT / raw tx       │                              │
+          ◀────────────────────────────┤                              │
+          │                            └──────────────────────────────┘
+┌─────────▼──────────┐
+│ broadcasts signed │
+│ transaction only  │
+└────────────────────┘
 ```
 
-## Current MVP (v0.1.0)
+USB-A is the boot/cold-storage device and should never be used as transaction transport. USB-B is a separate FAT-formatted transfer device labelled `TX_TRANSFER` and must never contain a mnemonic or encrypted vault.
 
-| Feature | Scope |
+## Current implementation
+
+| Area | Status |
 |---|---|
-| One BIP39 master seed | 24-word generated offline, optional BIP39 passphrase for derivation |
-| Encrypted USB vault | Scrypt + AES-256-GCM, mode 0600, reject existing file |
-| Bitcoin | **testnet only**, native SegWit P2WPKH BIP84, PSBT v0 / SIGHASH_ALL, explicit recipient / amount / fee checks |
-| EVM | **Sepolia only**, type-2 EIP-1559 native ETH transfers, explicit chainId / recipient / amount / gas checks |
-| Public outputs | BTC testnet receiving addresses and account tpub; EVM Sepolia address |
-| Safety | No RPC, no broadcast functions, no blind contract calls, no mainnet signing, no private key output |
-| CI | Local Pytest validated; [GitHub Actions template](docs/ci-template.yml) ready, not enabled until GitHub authorization permits workflow upload |
+| BIP39 / BIP32 master wallet | Implemented |
+| Encrypted vault | scrypt + AES-256-GCM |
+| Bitcoin | **testnet only**, BIP84 P2WPKH, PSBT v0, SIGHASH_ALL policy |
+| EVM | **Sepolia only**, EIP-1559 native ETH transfer |
+| Offline console | Implemented; no normal login/getty presented |
+| Live USB image | Buildroot external tree implemented for x86_64 UEFI |
+| Root filesystem | Initramfs/RAM-only; no persistent Linux root partition |
+| Networking | Kernel `CONFIG_NET` explicitly disabled + BusyBox networking applets rejected |
+| Internal disks | ATA/NVMe/MMC/VirtIO block drivers are not enabled in production config |
+| Persistent wallet storage | Dedicated `COLD_VAULT` partition on boot USB |
+| Transaction transport | Separate `TX_TRANSFER` USB, mounted `noexec,nodev,nosuid,sync` |
+| Dependency integrity | Buildroot version + target Python artifacts SHA-256 pinned |
+| Image checks | GPT structure, kernel config, target binaries, networking tools, SHA-256 |
+| Mainnet / ERC-20 / EIP-712 | **disabled** |
+| Independent audit | Not done |
 
-Not yet supported: mainnet, ERC-20, EIP-712, WalletConnect, Taproot, multisig, PSBT v2, QR transport, hardware button/screen confirmation, bootable ISO builder, address discovery beyond first 100 BIP84 inputs, independent audits.
+The image build pipeline is implemented, but this repository still requires a successful full build + real UEFI boot test + independent security review before it should be considered anything beyond a testnet prototype.
 
-## Development & automated tests (safe on connected VM)
+## Host-side tests
 
-Testing uses the **publicly known, compromised BIP39 test vector** only. Never generate/import a production mnemonic on Devspace, GitHub Actions, WSL, or a networked host.
+Tests use a public, already-compromised BIP39 test vector. Never import a real wallet into Devspace, CI, WSL, VPS, or another networked development machine.
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e ".[dev]"
 pytest
-usb-cold-wallet --help
 ```
 
-## Live USB quick start (ONLY on trusted physically disconnected computer)
+## Build the bootable image
 
-Full steps: [docs/USB_SETUP.md](docs/USB_SETUP.md). For legitimate cold storage, **do not run `init` on an internet-connected machine**.
+Use a Linux build host with standard Buildroot prerequisites.
 
 ```bash
-# Prepare packages online and transfer to offline verified Linux using a transport USB:
-python -m pip download -d wheelhouse -e ".[dev]"
-# In offline Live Linux with a local source checkout / prebuilt wheelhouse:
-python -m pip install --no-index --find-links wheelhouse -e ".[dev]"
+# While the build host is online:
+make prepare-sources
 
-# Wallet bootstrap ON OFFLINE HOST ONLY:
-usb-cold-wallet --vault /path/on/offline-media/wallet.vault init --offline-ack --i-have-paper-backup
+# Optionally disconnect the BUILD HOST after the source cache is complete.
+make image
 
-# Print PUBLIC info for your networked watch-only wallet:
-usb-cold-wallet --vault /path/on/offline-media/wallet.vault addresses --count 3
-
-# Sepolia: unsigned JSON must already be created on online machine and independently checked
-usb-cold-wallet --vault /path/on/offline-media/wallet.vault sign-evm \
-  --tx /transport/sepolia-unsigned.json \
-  --to 0x000000000000000000000000000000000000dEaD \
-  --wei 1000000000000 \
-  --out /transport/sepolia-signed.json
-
-# Bitcoin testnet: unsigned PSBT must contain BIP32 derivation paths;
-# --change-index is an internal BIP84 change address index if a change output exists.
-usb-cold-wallet --vault /path/on/offline-media/wallet.vault sign-btc \
-  --psbt /transport/unsigned.psbt \
-  --to tb1qREPLACE_WITH_INDEPENDENTLY_VERIFIED_ADDRESS \
-  --sats 50000 --max-fee-sats 2000 --change-index 0 \
-  --out /transport/signed.json
+# Output:
+# build/output/images/usb-cold-wallet.img
+# build/output/images/usb-cold-wallet.img.sha256
+make verify
 ```
 
-**Never copy encrypted vault or mnemonic to the transport USB used with online computers.** Only move public watch-only output and signed transactions. A signed transaction is broadcast separately using a wallet/node of your choice; broadcasting is intentionally not implemented here.
+The target wheelhouse is not resolved dynamically during the image build. Exact CPython 3.14 x86_64 wheels are pinned in `infra/wheelhouse-requirements.txt` and verified against `infra/wheelhouse.sha256`. Buildroot itself is pinned in `infra/buildroot.env`.
 
-## Security limitations
+See [docs/BUILD.md](docs/BUILD.md) for host prerequisites and the current verification status.
 
-- The passphrase decrypts the seed **into RAM on the offline PC**. The seed is not protected from the host OS, firmware, malicious peripherals, or physical RAM attacks.
-- The encrypted vault does **not** replace a separate and verified paper/metal BIP39 recovery backup. The software does not yet implement a secure restore/check workflow.
-- A USB flash drive is a storage device and cannot protect a private key independently like a microcontroller with trusted screen.
-- A compromised online system can prepare malformed transaction payloads; limited output policy checks reduce some risk but are **not a substitute for security review**.
-- The initial source, test coverage, dependency integrity, operational hardening and packaging have not been independently reviewed.
+## Operator flow
 
-## Architecture
+1. Flash `usb-cold-wallet.img` to USB-A. This erases the target USB.
+2. Power off the signing PC and physically disconnect Ethernet; disable Wi-Fi/Bluetooth in firmware when possible.
+3. Boot USB-A in UEFI mode. The image does not compile a Linux network stack.
+4. Create the testnet wallet from the console. Write the 24-word mnemonic on paper and confirm it; the encrypted vault is written only to `COLD_VAULT`.
+5. Export only public addresses/tpub information to the online side.
+6. Prepare an unsigned PSBT or Sepolia JSON transaction online and place it on a separate USB-B labelled `TX_TRANSFER`.
+7. Insert USB-B into the offline PC, independently verify recipient/amount/fee, sign, then take only the signed output back online for broadcast.
+8. Power the signing PC off after use.
 
-- `vault.py`: BIP39 encrypted vault
-- `keys.py`: BIP32 derivation via upstream `embit`
-- `btc.py`: conservative P2WPKH PSBT review + signing
-- `evm.py`: Sepolia type-2 native transfer review + signing using `eth-account`
-- `cli.py`: interactive approval and file-based air-gap exchange
-- `tests/`: deterministic known-vector and rejection tests
+Full procedure: [docs/USB_SETUP.md](docs/USB_SETUP.md).
 
-We intentionally **do not implement cryptographic curves, SHA3/Keccak, PSBT serialization or AES ourselves**. [Upstream references](docs/OPEN_SOURCE_REFERENCES.md) explain the libraries and analogous open-source designs.
+## Security properties and limitations
 
-## Development roadmap
+- Ordinary USB flash storage **cannot make keys non-exportable**. While unlocked, the seed and derived keys exist in the offline PC's RAM.
+- No kernel network stack significantly reduces remote attack surface, but does not protect against compromised firmware, malicious USB controllers, DMA/physical attacks, or a tampered build chain.
+- The boot/root filesystem is rebuilt from pinned source inputs, but bit-for-bit reproducibility across independent builders has not yet been demonstrated.
+- The boot USB contains an empty writable `COLD_VAULT` partition. Reflashing the whole image destroys that partition; the external BIP39 recovery backup remains mandatory.
+- The transfer USB is untrusted input. Transaction parsers and policy checks still need fuzzing and independent audit.
+- There is currently no Secure Boot signing/enrollment flow.
+- Mainnet signing, contract calldata and blind signing remain disabled.
 
-1. Pin transitive dependencies with hashes; independent reproducible offline Linux wheelhouse/build workflow.
-2. Independent reference transaction vectors (Bitcoin Core/Sparrow/Electrum and Ethereum client), mutation tests / fuzzing, PSBT input/output verification, security review.
-3. Build tested, reproducible read-only Live USB image with network disabled; encrypted persistence and QR/file transport.
-4. Better on-device UI for recipient/fee review, wallet recovery rehearsal and full mainnet readiness criteria.
-5. Optional hardware device version with independent screen/buttons and secure boot.
+## Project layout
 
-License: MIT. New original code; links to upstream projects for architecture, not copied vendor firmware.
+- `src/usb_cold_wallet/` — vault, key derivation, BTC/EVM signing, appliance console
+- `buildroot-external/` — Buildroot defconfig, kernel config, rootfs overlay and image layout
+- `infra/` — Buildroot/Python artifact version and SHA-256 locks
+- `scripts/` — fetch, target installation, build and static image verification
+- `tests/` — deterministic unit and security-invariant tests
+- `docs/` — build, USB operation, threat model and design references
+
+We intentionally do **not** implement ECDSA/secp256k1, Keccak, AES or PSBT serialization ourselves. The project uses established upstream libraries and pins the artifacts used in the appliance build.
+
+License: MIT.
