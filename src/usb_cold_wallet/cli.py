@@ -10,7 +10,8 @@ from pathlib import Path
 
 from .btc import review_btc_psbt, sign_btc_psbt
 from .evm import review_evm_transaction, sign_evm
-from .exchange import read as read_exchange, write as write_exchange
+from .exchange import (read as read_exchange, read_envelope, read_bounded,
+                       _unique_object, write as write_exchange)
 from .keys import root_from_mnemonic, watch_only
 from .recovery import rehearsal, restore_paper_wallet
 from .vault import encrypt_mnemonic, load_vault, new_mnemonic, save_vault
@@ -134,27 +135,26 @@ def main(argv=None):
 
         if args.command == "pack-request":
             if args.kind == "btc-request":
-                raw = args.input.read_text(encoding="utf-8").strip()
+                raw = read_bounded(args.input).decode("utf-8").strip()
             else:
-                raw = json.loads(args.input.read_text(encoding="utf-8"))
+                raw = json.loads(read_bounded(args.input).decode("utf-8"),
+                                 object_pairs_hook=_unique_object)
             write_exchange(args.out, args.kind, raw)
             print(f"Created {args.kind} integrity envelope: {args.out} (NOT authenticated)")
             return 0
 
         if args.command == "inspect-transfer":
-            # Check format and hash before exposing even public envelope metadata.
-            data = read_exchange(args.input)
-            from .exchange import _unique_object
-            envelope = json.loads(args.input.read_text(encoding="utf-8"),
-                                  object_pairs_hook=_unique_object)
+            # Load once: avoid a second unbounded read after validating integrity.
+            envelope = read_envelope(args.input)
             print(json.dumps({"kind": envelope["kind"], "network": envelope["network"],
-                              "sha256": envelope["sha256"], "payload_type": type(data).__name__,
+                              "sha256": envelope["sha256"], "payload_type": type(envelope["payload"]).__name__,
                               "integrity_only_not_authenticated": True}, indent=2))
             return 0
 
         if args.command == "show-watch-only":
             public = read_exchange(args.input, "watch-only")
             print("PUBLIC ONLY / UNTRUSTED USB / BITCOIN TESTNET + SEPOLIA")
+            print("WARNING: checksum is NOT authentication. Independently verify every receiving address.")
             print(json.dumps(public, indent=2, ensure_ascii=True))
             return 0
 

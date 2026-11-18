@@ -69,7 +69,10 @@ Supported kinds: `btc-request`/`btc-signed` (`bitcoin-testnet`),
 (`testnet-sepolia`). The parser bounds input size, rejects duplicate
 JSON keys, extra envelope fields, nonfinite JSON values, wrong network,
 mismatched kind and sensitive key names (mnemonic, seed, private_key,
-passphrase, vault, etc.).
+passphrase, vault, etc.). Exchange reads are limited to regular files,
+refuse symbolic links, and validate a **single read** to avoid inspecting
+metadata from a different file than the payload just checked. The online
+request packer also enforces bounded input size and duplicate-key rejection.
 
 Prepare an unsigned request on online PC:
 

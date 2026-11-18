@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from usb_cold_wallet import cli
-from usb_cold_wallet.exchange import package, read, verify, write
+from usb_cold_wallet.exchange import package, read, read_bounded, read_envelope, verify, write
 from usb_cold_wallet.keys import root_from_mnemonic, watch_only
 from usb_cold_wallet.recovery import PUBLIC_TEST_MNEMONIC, rehearsal, restore_paper_wallet
 from usb_cold_wallet.vault import load_vault
@@ -228,6 +228,57 @@ def test_cli_approved_btc_envelope_signing_roundtrip(tmp_path, monkeypatch):
     assert signed["signature_count"] == 1
     assert signed["fee_sats"] == 1200
     assert len(psbt.PSBT.parse(__import__("base64").b64decode(signed["signed_psbt_base64"])).inputs[0].partial_sigs) == 1
+
+
+def test_transfer_rejects_symlinks_and_nonregular_files(tmp_path):
+    real = tmp_path / "valid.json"
+    write(real, "watch-only", PUBLIC)
+    link = tmp_path / "symlink.json"
+    link.symlink_to(real)
+    with pytest.raises(OSError):
+        read(link)
+    with pytest.raises(ValueError, match="regular file"):
+        read(tmp_path)
+    assert read(real, "watch-only") == PUBLIC
+
+
+def test_bounded_transfer_read_blocks_large_file(tmp_path):
+    file = tmp_path / "large.json"
+    file.write_bytes(b"x" * 210_000)
+    with pytest.raises(ValueError, match="too large"):
+        read(file)
+    with pytest.raises(ValueError, match="too large"):
+        read_bounded(file)
+
+
+def test_single_pass_inspection_uses_verified_envelope(tmp_path, monkeypatch, capsys):
+    envelope = tmp_path / "single-pass.json"
+    write(envelope, "watch-only", PUBLIC)
+    from usb_cold_wallet import exchange
+    original = exchange.read_bounded
+    calls = []
+    def capture(path, *args, **kwargs):
+        calls.append(path)
+        if len(calls) > 1:
+            raise AssertionError("Re-reading attacker-controlled USB after verifying it")
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(exchange, "read_bounded", capture)
+    assert cli.main(["inspect-transfer", "--input", str(envelope)]) == 0
+    assert len(calls) == 1
+    assert "integrity_only_not_authenticated" in capsys.readouterr().out
+
+
+def test_cli_pack_rejects_duplicate_json_fields_and_oversize(tmp_path):
+    file = tmp_path / "unsigned.json"
+    out = tmp_path / "transport.json"
+    file.write_text('{"chainId":11155111,"chainId":1}')
+    assert cli.main(["pack-request", "--kind", "evm-request", "--input", str(file),
+                     "--out", str(out)]) == 1
+    assert not out.exists()
+    file.write_bytes(b"x" * 210_000)
+    assert cli.main(["pack-request", "--kind", "evm-request", "--input", str(file),
+                     "--out", str(out)]) == 1
+    assert not out.exists()
 
 
 def test_cli_recover_no_overwrite(tmp_path, monkeypatch):

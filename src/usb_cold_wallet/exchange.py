@@ -6,6 +6,8 @@ independent recipient/amount policy check on the offline screen/terminal.
 import hashlib
 import hmac
 import json
+import os
+import stat
 from pathlib import Path
 
 from .vault import save_vault
@@ -110,17 +112,35 @@ def _unique_object(pairs):
     return result
 
 
-def read(path: Path, expected_kind=None):
-    path = Path(path)
-    if path.stat().st_size > MAX_BYTES + 8192:
-        raise ValueError("Exchange file too large")
+def read_bounded(path: Path, limit=MAX_BYTES + 8192):
+    """Read a single regular file once, never follow a symbolic link or block on devices."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(Path(path), flags)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"),
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("Transfer must be a regular file, not a device or pipe")
+        raw = os.read(fd, limit + 1)
+        if len(raw) > limit:
+            raise ValueError("Exchange file too large")
+        return raw
+    finally:
+        os.close(fd)
+
+
+def read_envelope(path: Path, expected_kind=None):
+    raw = read_bounded(path)
+    try:
+        data = json.loads(raw.decode("utf-8"),
                           object_pairs_hook=_unique_object,
                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Non-finite JSON number")))
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("Invalid exchange JSON") from exc
-    return verify(data, expected_kind)
+    verify(data, expected_kind)
+    return data
+
+
+def read(path: Path, expected_kind=None):
+    return read_envelope(path, expected_kind)["payload"]
 
 
 def write(path: Path, kind: str, payload):
