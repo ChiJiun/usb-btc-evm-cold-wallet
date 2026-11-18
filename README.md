@@ -4,7 +4,7 @@
 >
 > This project turns a normal x86_64 USB flash drive into a **bootable air-gapped signing environment**. The USB is still ordinary storage, not a YubiKey/Secure Element: the cryptographic operations run on the offline PC after boot.
 
-[Security](SECURITY.md) · [USB 製作與使用](docs/USB_SETUP.md) · [Buildroot 建置](docs/BUILD.md) · [Threat model](docs/THREAT_MODEL.md) · [CI / 供應鏈安全](docs/CI_SECURITY.md) · [Open-source references](docs/OPEN_SOURCE_REFERENCES.md)
+[Security](SECURITY.md) · [USB 製作與使用](docs/USB_SETUP.md) · [Buildroot 建置](docs/BUILD.md) · [Threat model](docs/THREAT_MODEL.md) · [EVM 測試向量](docs/EVM_TEST_VECTORS.md) · [CI / 供應鏈安全](docs/CI_SECURITY.md) · [Open-source references](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## Architecture
 
@@ -38,16 +38,16 @@ USB-A is the boot/cold-storage device and should never be used as transaction tr
 |---|---|
 | BIP39 / BIP32 master wallet | 24-word generated offline; optional BIP39 passphrase |
 | Encrypted vault | scrypt + AES-256-GCM, mode 0600, reject existing file |
-| Bitcoin | **testnet only**, BIP84 P2WPKH, PSBT v0, SIGHASH_ALL policy |
-| EVM | **Sepolia only**, EIP-1559 native ETH transfer |
+| Bitcoin | **testnet only**, BIP84 P2WPKH, strict PSBT v0 / SIGHASH_ALL, explicit recipient/amount/fee checks, no RBF/locktime semantics |
+| EVM | **Sepolia only**, type-2 EIP-1559 native transfer, explicit chainId/recipient/amount/gas checks, signed raw transaction re-decoding + sender recovery |
 | Public outputs | BTC testnet receiving addresses/account tpub; EVM Sepolia address |
 | Offline console | Implemented; no normal login/getty presented |
 | Live USB image | Buildroot external tree implemented for x86_64 UEFI |
 | Root filesystem | Initramfs/RAM-only; no persistent Linux root partition |
 | Networking | Kernel `CONFIG_NET` explicitly disabled + BusyBox networking applets rejected |
 | Internal disks | ATA/NVMe/MMC/VirtIO block drivers are not enabled in production config |
-| Persistent wallet storage | Dedicated `COLD_VAULT` partition on boot USB |
-| Transaction transport | Separate `TX_TRANSFER` USB, mounted `noexec,nodev,nosuid,sync` |
+| Persistent wallet storage | Dedicated `COLD_VAULT` partition on boot USB, bound by unique PARTUUID |
+| Transaction transport | Separate unique `TX_TRANSFER` USB, exact mount-source checked with `noexec,nodev,nosuid,sync` |
 | Dependency integrity | Buildroot release PGP manifest + SHA-256 verified; target Python artifacts hash-pinned |
 | Reproducibility controls | `BR2_REPRODUCIBLE`, fixed epoch/GPT UUIDs, invariant FAT metadata, two-clean-build checker |
 | Startup audit | Fail-closed network/swap/RAM-root/persistence checks before wallet operations |
