@@ -65,3 +65,32 @@ def test_cli_signs_issue5_evm_request_envelope(tmp_path, monkeypatch):
     signed = read_envelope(output, "evm-signed")["payload"]
     assert signed["chain_id"] == 11155111
     assert signed["to"].lower() == SEPOLIA["to"].lower()
+
+
+def test_cli_rejects_wrong_request_envelope_kind(tmp_path, monkeypatch):
+    wrong_for_evm = tmp_path / "btc-request.json"
+    wrong_for_btc = tmp_path / "evm-request.json"
+    output = tmp_path / "must-not-exist.json"
+    write(wrong_for_evm, "btc-request", "cHNidP8BAA==")
+    write(wrong_for_btc, "evm-request", SEPOLIA)
+    root = root_from_mnemonic("abandon " * 11 + "about")
+    monkeypatch.setattr(cli, "_wallet_root", lambda args: root)
+    monkeypatch.setattr(cli, "_approve", lambda phrase: None)
+
+    evm_result = cli.main([
+        "--vault", str(tmp_path / "unused.vault"),
+        "sign-evm", "--request", str(wrong_for_evm),
+        "--to", SEPOLIA["to"], "--wei", str(SEPOLIA["value"]),
+        "--out", str(output),
+    ])
+    assert evm_result == 1
+    assert not output.exists()
+
+    btc_result = cli.main([
+        "--vault", str(tmp_path / "unused.vault"),
+        "sign-btc", "--request", str(wrong_for_btc),
+        "--to", "tb1qexample", "--sats", "1000",
+        "--max-fee-sats", "100", "--out", str(output),
+    ])
+    assert btc_result == 1
+    assert not output.exists()

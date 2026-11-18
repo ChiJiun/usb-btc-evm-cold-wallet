@@ -139,11 +139,10 @@ def test_file_selector_rejects_zero_and_negative_indices(monkeypatch, tmp_path, 
     assert capsys.readouterr().out.count("Invalid selection.") == 3
 
 
-def test_evm_envelope_routes_to_request_flag(monkeypatch, tmp_path):
+def test_evm_json_always_routes_to_request_without_pre_read(monkeypatch, tmp_path):
     request = tmp_path / "evm-request.json"
-    request.write_text("{}", encoding="utf-8")
+    request.write_text("untrusted bytes are not inspected by appliance", encoding="utf-8")
     monkeypatch.setattr(appliance, "_select_file", lambda suffix: request)
-    monkeypatch.setattr(appliance, "_exchange_kind", lambda path: "evm-request")
     answers = iter(["0x000000000000000000000000000000000000dEaD", "1000"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
     calls = []
@@ -157,41 +156,10 @@ def test_evm_envelope_routes_to_request_flag(monkeypatch, tmp_path):
     assert str(request) in calls[0]
 
 
-def test_evm_legacy_json_routes_to_tx_flag(monkeypatch, tmp_path):
-    request = tmp_path / "legacy.json"
-    request.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(appliance, "_select_file", lambda suffix: request)
-    monkeypatch.setattr(appliance, "_exchange_kind", lambda path: None)
-    answers = iter(["0x000000000000000000000000000000000000dEaD", "1000"])
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
-    calls = []
-    monkeypatch.setattr(appliance, "_run_cli", lambda args: calls.append(args))
-    monkeypatch.setattr(appliance, "TRANSFER", tmp_path)
-
-    appliance._sign_evm()
-
-    assert calls[0][0:2] == ["sign-evm", "--tx"]
-
-
-def test_evm_rejects_wrong_envelope_kind(monkeypatch, tmp_path, capsys):
-    request = tmp_path / "wrong.json"
-    request.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(appliance, "_select_file", lambda suffix: request)
-    monkeypatch.setattr(appliance, "_exchange_kind", lambda path: "btc-request")
-    calls = []
-    monkeypatch.setattr(appliance, "_run_cli", lambda args: calls.append(args))
-
-    appliance._sign_evm()
-
-    assert not calls
-    assert "Wrong exchange envelope kind" in capsys.readouterr().out
-
-
-def test_btc_envelope_routes_to_request_flag(monkeypatch, tmp_path):
+def test_btc_json_routes_to_request_without_pre_read(monkeypatch, tmp_path):
     request = tmp_path / "btc-request.json"
-    request.write_text("{}", encoding="utf-8")
+    request.write_text("untrusted bytes are not inspected by appliance", encoding="utf-8")
     monkeypatch.setattr(appliance, "_select_file", lambda suffix: request)
-    monkeypatch.setattr(appliance, "_exchange_kind", lambda path: "btc-request")
     answers = iter(["tb1qexample", "50000", "2000", "0"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
     calls = []
@@ -203,17 +171,3 @@ def test_btc_envelope_routes_to_request_flag(monkeypatch, tmp_path):
     assert calls
     assert calls[0][0:2] == ["sign-btc", "--request"]
     assert str(request) in calls[0]
-
-
-def test_btc_rejects_plain_json(monkeypatch, tmp_path, capsys):
-    request = tmp_path / "not-envelope.json"
-    request.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(appliance, "_select_file", lambda suffix: request)
-    monkeypatch.setattr(appliance, "_exchange_kind", lambda path: None)
-    calls = []
-    monkeypatch.setattr(appliance, "_run_cli", lambda args: calls.append(args))
-
-    appliance._sign_btc()
-
-    assert not calls
-    assert "verified btc-request envelope" in capsys.readouterr().out

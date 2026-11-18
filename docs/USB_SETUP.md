@@ -201,5 +201,5 @@ unsigned.psbt
 - 現階段沒有 Secure Boot。
 - Image build 已加入 deterministic metadata 與 `make reproducibility-check` 兩次 clean build 比對；仍需在具完整 Buildroot 工具鏈的相容 host 實際跑完，才能宣稱該 commit 已完成 bit-for-bit runtime 驗證。
 - USB-B 是不可信輸入，parser 仍需 fuzzing。
-- 本分支已相容 Issue #5 / PR #11 的 bounded integrity request envelope：只在實際解析且 kind 為 `evm-request` / `btc-request` 時使用 `--request`；legacy Sepolia JSON 與 BTC PSBT 仍可使用。SHA-256 envelope 只提供完整性檢查，不是來源認證。
+- 本分支已相容 Issue #5 / PR #11 的 bounded integrity request envelope。Appliance 的 EVM `.json` 一律交給 `--request` 嚴格 envelope parser；BTC `.json` 走 `--request`、`.psbt` 才走 legacy PSBT。Appliance 不會先讀一次 USB 內容再交給 CLI 重讀，以避免惡意 USB 在兩次讀取間換內容。legacy Sepolia raw JSON 仍可由 CLI 明確使用 `--tx`，但不再由 appliance 自動判斷。SHA-256 envelope 只提供完整性檢查，不是來源認證。
 - 主網與 token/contract signing 都尚未開放。

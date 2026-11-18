@@ -6,8 +6,6 @@ from pathlib import Path
 import subprocess
 import sys
 
-from .exchange import read_envelope
-
 VAULT = Path("/mnt/cold-vault/wallet.vault")
 TRANSFER = Path("/mnt/transfer")
 BOOT_CHECKS = Path("/run/usb-wallet/boot-checks.txt")
@@ -184,13 +182,6 @@ def _select_file(suffix: str | tuple[str, ...]) -> Path | None:
         return None
 
 
-def _exchange_kind(path: Path) -> str | None:
-    try:
-        return read_envelope(path)["kind"]
-    except (ValueError, OSError, KeyError, TypeError):
-        return None
-
-
 def _new_wallet() -> None:
     if VAULT.exists():
         print("Encrypted vault already exists; refusing to overwrite it.")
@@ -209,16 +200,14 @@ def _sign_evm() -> None:
     source = _select_file(".json")
     if source is None:
         return
-    kind = _exchange_kind(source)
-    if kind not in (None, "evm-request"):
-        print(f"Wrong exchange envelope kind for EVM signing: {kind}")
-        return
     recipient = input("Independently verified Sepolia recipient (0x...): ").strip()
     wei = input("Independently verified value in wei: ").strip()
     output = TRANSFER / (source.stem + ".signed.json")
-    source_flag = "--request" if kind == "evm-request" else "--tx"
+    # Appliance JSON transport is always the bounded #5/#11 request envelope.
+    # Do not pre-read untrusted USB content here and then read it again in the
+    # CLI: a malicious device could present different bytes between reads.
     _run_cli([
-        "sign-evm", source_flag, str(source), "--to", recipient,
+        "sign-evm", "--request", str(source), "--to", recipient,
         "--wei", wei, "--out", str(output),
     ])
 
@@ -227,16 +216,14 @@ def _sign_btc() -> None:
     source = _select_file((".psbt", ".json"))
     if source is None:
         return
-    kind = _exchange_kind(source) if source.suffix.lower() == ".json" else None
-    if source.suffix.lower() == ".json" and kind != "btc-request":
-        print("Bitcoin JSON transport must be a verified btc-request envelope.")
-        return
     recipient = input("Independently verified Bitcoin TESTNET recipient (tb1...): ").strip()
     sats = input("Independently verified value in satoshis: ").strip()
     max_fee = input("Maximum acceptable fee in satoshis: ").strip()
     change = input("Expected BIP84 change index (blank if no change): ").strip()
     output = TRANSFER / (source.stem + ".signed.json")
-    source_flag = "--request" if kind == "btc-request" else "--psbt"
+    # The suffix decides only the transport parser. JSON is always a strict
+    # btc-request envelope; content is read exactly once by the CLI parser.
+    source_flag = "--request" if source.suffix.lower() == ".json" else "--psbt"
     args = [
         "sign-btc", source_flag, str(source), "--to", recipient,
         "--sats", sats, "--max-fee-sats", max_fee, "--out", str(output),
