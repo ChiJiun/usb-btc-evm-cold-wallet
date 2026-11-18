@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 
@@ -13,9 +12,9 @@ VAULT = Path("/mnt/cold-vault/wallet.vault")
 TRANSFER = Path("/mnt/transfer")
 BOOT_CHECKS = Path("/run/usb-wallet/boot-checks.txt")
 LOCKDOWN = Path("/run/usb-wallet/lockdown")
+BOOT_PARENT_FILE = Path("/run/usb-wallet/boot-parent")
+VAULT_DEVICE_FILE = Path("/run/usb-wallet/vault-device")
 SAFE_MOUNT_OPTIONS = "rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077"
-BOOT_PARTUUID = "e2bd6d1b-8de5-502d-a897-c53a8e60f46b"
-VAULT_PARTUUID = "18f1c36f-d5c0-5052-9cd2-03e9c2a48f00"
 
 
 def _mount_info(path: Path) -> tuple[str, str, set[str]] | None:
@@ -35,51 +34,49 @@ def _mounted(path: Path) -> bool:
     return _mount_info(path) is not None
 
 
-def _blkid_devices(tag: str) -> list[str]:
+def _block_parent(device: str) -> str | None:
+    try:
+        resolved = (Path("/sys/class/block") / Path(device).name).resolve(strict=True)
+    except OSError:
+        return None
+    parent = resolved.parent.name
+    if not (Path("/sys/class/block") / parent).exists():
+        return None
+    return parent
+
+
+def _blkid(*args: str) -> list[str]:
     result = subprocess.run(
-        ["blkid", "-t", tag, "-o", "device"],
+        ["blkid", *args],
         check=False,
         capture_output=True,
         text=True,
     )
-    if result.returncode != 0:
+    if result.returncode not in (0, 2):
         return []
-    return [
-        line.strip()
-        for line in result.stdout.splitlines()
-        if line.strip().startswith("/dev/")
-    ]
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-def _unique_blkid_device(tag: str) -> str | None:
-    devices = _blkid_devices(tag)
-    return devices[0] if len(devices) == 1 else None
+def _unique_transfer_device() -> str | None:
+    devices = _blkid("-t", "LABEL=TX_TRANSFER", "-o", "device")
+    if len(devices) != 1:
+        return None
+    device = devices[0]
 
-
-def _scsi_parent(device: str) -> str | None:
-    match = re.fullmatch(r"(/dev/sd[a-z]+)\d+", device)
-    return match.group(1) if match else None
-
-
-def _transfer_candidate() -> str | None:
-    candidate = _unique_blkid_device("LABEL=TX_TRANSFER")
-    boot = _unique_blkid_device(f"PARTUUID={BOOT_PARTUUID}")
-    vault = _unique_blkid_device(f"PARTUUID={VAULT_PARTUUID}")
-    if candidate is None or boot is None or vault is None:
+    types = _blkid("-s", "TYPE", "-o", "value", device)
+    if types != ["vfat"]:
         return None
 
-    boot_parent = _scsi_parent(boot)
-    vault_parent = _scsi_parent(vault)
-    transfer_parent = _scsi_parent(candidate)
-    if (
-        boot_parent is None
-        or vault_parent is None
-        or transfer_parent is None
-        or boot_parent != vault_parent
-        or transfer_parent == boot_parent
-    ):
+    try:
+        boot_parent = BOOT_PARENT_FILE.read_text(encoding="utf-8").strip()
+        vault_device = VAULT_DEVICE_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
         return None
-    return candidate
+
+    parent = _block_parent(device)
+    if not parent or parent == boot_parent or device == vault_device:
+        return None
+    return device
 
 
 def _safe_transfer_mount(expected_source: str) -> bool:
@@ -104,6 +101,15 @@ def security_status() -> list[str]:
     if not status:
         return ["FAIL: boot security audit contained no checks"]
 
+    try:
+        boot_parent = BOOT_PARENT_FILE.read_text(encoding="utf-8").strip()
+        vault_device = VAULT_DEVICE_FILE.read_text(encoding="utf-8").strip()
+        if not boot_parent or not vault_device:
+            raise ValueError
+        status.append("PASS: verified boot/vault device identity remains available")
+    except (OSError, ValueError):
+        status.append("FAIL: verified boot/vault device identity missing")
+
     status.append(
         "PASS: live network stack absent"
         if not Path("/proc/net").exists()
@@ -127,19 +133,16 @@ def _security_locked(status: list[str]) -> bool:
 
 def mount_transfer() -> bool:
     TRANSFER.mkdir(parents=True, exist_ok=True)
-    candidate = _transfer_candidate()
-    if candidate is None:
+    device = _unique_transfer_device()
+    if device is None:
         return False
     if _mounted(TRANSFER):
-        return _safe_transfer_mount(candidate)
+        return _safe_transfer_mount(device)
     result = subprocess.run(
-        [
-            "mount", "-t", "vfat", "-o", SAFE_MOUNT_OPTIONS,
-            candidate, str(TRANSFER),
-        ],
+        ["mount", "-t", "vfat", "-o", SAFE_MOUNT_OPTIONS, device, str(TRANSFER)],
         check=False,
     )
-    return result.returncode == 0 and _safe_transfer_mount(candidate)
+    return result.returncode == 0 and _safe_transfer_mount(device)
 
 
 def unmount_transfer() -> None:
@@ -157,8 +160,8 @@ def _run_cli(arguments: list[str]) -> None:
 def _select_file(suffix: str | tuple[str, ...]) -> Path | None:
     if not mount_transfer():
         print(
-            "TX_TRANSFER USB missing/ambiguous/unsafe. "
-            "Use exactly one separate FAT USB labelled TX_TRANSFER."
+            "TX_TRANSFER USB unavailable or ambiguous. "
+            "Use exactly one separate VFAT USB labelled TX_TRANSFER."
         )
         return None
     suffixes = (suffix,) if isinstance(suffix, str) else suffix

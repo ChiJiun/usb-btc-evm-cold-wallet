@@ -26,7 +26,12 @@ def test_kernel_removes_network_and_internal_storage():
     assert "# CONFIG_NET is not set" in text
     assert "CONFIG_USB_STORAGE=y" in text
     assert "CONFIG_VFAT_FS=y" in text
-    for forbidden in ("CONFIG_ATA=y", "CONFIG_BLK_DEV_NVME=y", "CONFIG_MMC=y", "CONFIG_VIRTIO_BLK=y"):
+    for forbidden in (
+        "CONFIG_ATA=y",
+        "CONFIG_BLK_DEV_NVME=y",
+        "CONFIG_MMC=y",
+        "CONFIG_VIRTIO_BLK=y",
+    ):
         assert forbidden not in text
 
 
@@ -59,7 +64,21 @@ def test_buildroot_fetch_verifies_signed_manifest_before_archive_hash():
     assert "BUILDROOT_RELEASE_KEY_FINGERPRINT" in text
 
 
-def test_boot_audit_covers_memory_swap_persistence_and_partition_identity():
+def test_boot_audit_binds_vault_to_unique_partuuid_and_boot_device():
+    init = (
+        ROOT
+        / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d/S01airgap"
+    ).read_text()
+    assert "BOOT_PARTUUID=e2bd6d1b-8de5-502d-a897-c53a8e60f46b" in init
+    assert "VAULT_PARTUUID=18f1c36f-d5c0-5052-9cd2-03e9c2a48f00" in init
+    assert 'blkid -t "PARTUUID=$partuuid" -o device' in init
+    assert "boot and vault partitions share verified block parent" in init
+    assert '"$VAULT_DEVICE" /mnt/cold-vault' in init
+    assert "COLD_VAULT mount source matches verified PARTUUID device" in init
+    assert "-L COLD_VAULT" not in init
+
+
+def test_boot_audit_covers_memory_swap_and_persistence_and_fails_closed():
     init = (
         ROOT
         / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d/S01airgap"
@@ -69,14 +88,21 @@ def test_boot_audit_covers_memory_swap_persistence_and_partition_identity():
     assert "no active swap" in init
     assert "no unexpected writable persistent filesystem mounted" in init
     assert 'LOCKDOWN=/run/usb-wallet/lockdown' in init
-    assert "PARTUUID=$BOOT_PARTUUID" in init
-    assert "PARTUUID=$VAULT_PARTUUID" in init
-    assert '"$VAULT_DEVICE" /mnt/cold-vault' in init
-    assert "mount -t vfat" in init
-    assert "-L COLD_VAULT" not in init
-    assert 'VAULT_SOURCE" = "$VAULT_DEVICE' in init
+    assert 'BOOT_PARENT_FILE=/run/usb-wallet/boot-parent' in init
+    assert 'VAULT_DEVICE_FILE=/run/usb-wallet/vault-device' in init
     assert "_security_locked" in appliance
     assert "wallet creation/signing is disabled" in appliance
+
+
+def test_target_dependency_lock_matches_main_cryptography_version():
+    requirements = (ROOT / "infra/wheelhouse-requirements.txt").read_text()
+    manifest = (ROOT / "infra/wheelhouse.sha256").read_text()
+    project = (ROOT / "pyproject.toml").read_text()
+    assert '"cryptography==50.0.2"' in project
+    assert "cryptography==50.0.2 " in requirements
+    assert "cryptography-50.0.2-cp311-abi3-manylinux2014_x86_64" in manifest
+    assert "cryptography==47.0.0" not in requirements
+    assert "cryptography-47.0.0" not in manifest
 
 
 def test_wheelhouse_manifest_is_unique_and_includes_embit():
@@ -93,17 +119,6 @@ def test_wheelhouse_manifest_is_unique_and_includes_embit():
     assert len(names) >= 20
 
 
-def test_target_cryptography_matches_hardened_project_dependency():
-    project = (ROOT / "pyproject.toml").read_text()
-    requirements = (ROOT / "infra/wheelhouse-requirements.txt").read_text()
-    manifest = (ROOT / "infra/wheelhouse.sha256").read_text()
-    assert '"cryptography==50.0.2"' in project
-    assert "cryptography==50.0.2 " in requirements
-    assert "cryptography-50.0.2-cp311-abi3-manylinux2014_x86_64" in manifest
-    assert "cryptography==47.0.0" not in requirements
-    assert "cryptography-47.0.0" not in manifest
-
-
 def test_busybox_network_clients_are_explicitly_disabled():
     text = (ROOT / "buildroot-external/board/usb-wallet/busybox.fragment").read_text()
     for symbol in ("PING", "WGET", "NC", "IP", "IFCONFIG", "UDHCPC"):
@@ -117,7 +132,9 @@ def test_target_installer_keeps_only_x86_64_embit_binary(tmp_path):
         TARGET_EMBIT_PREBUILT,
         "libsecp256k1_linux_aarch64.so",
         "libsecp256k1_linux_armv7l.so",
+        "libsecp256k1_linux_armv6l.so",
         "libsecp256k1_darwin_x86_64.dylib",
+        "libsecp256k1_darwin_arm64.dylib",
         "libsecp256k1_windows_amd64.dll",
     ):
         (prebuilt / name).write_bytes(b"fixture")

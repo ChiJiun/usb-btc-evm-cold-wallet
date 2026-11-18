@@ -9,7 +9,8 @@ The appliance build fixes:
 - Python target: CPython `3.14`
 - `embit`: `0.8.0` source tarball
 - `eth-account`: `0.14.0`
-- every transitive target wheel filename + SHA-256, including `cryptography==50.0.2` to match the hardened host dependency
+- `cryptography`: `50.0.2` (kept in sync with the hardened main project dependency)
+- every transitive target wheel filename + SHA-256
 - a fixed `SOURCE_DATE_EPOCH` for generated metadata
 
 Lock/provenance files:
@@ -135,22 +136,17 @@ At boot, `S01airgap` performs a fail-closed audit before wallet operations are e
 - `/proc/net` must be absent;
 - no swap may be active;
 - `/` must be a RAM-backed `rootfs` or `tmpfs`;
-- boot EFI and `COLD_VAULT` PARTUUIDs must each resolve uniquely and to sibling partitions on the same USB SCSI disk;
-- `COLD_VAULT` must be mounted from that exact verified block device as VFAT with `rw,noexec,nodev,nosuid,sync`;
+- the boot and vault partitions must each resolve uniquely by their fixed GPT PARTUUIDs;
+- the verified boot and vault partitions must share the same block-device parent discovered through sysfs;
+- `COLD_VAULT` must be mounted from that exact verified vault device as VFAT with `rw,noexec,nodev,nosuid,sync`;
 - no other writable non-memory filesystem may be mounted.
+
+If two cloned cold-wallet USBs with the same deterministic PARTUUIDs are attached, uniqueness fails and the appliance enters lockdown rather than guessing which device is authoritative.
 
 Any failure creates `/run/usb-wallet/lockdown`. The appliance console then disables wallet creation/signing and only permits power-off.
 
-## Current Devspace verification limitation
+## Build verification environments
 
-The project VM used during implementation is ARM64 and lacks the normal Buildroot host compiler/tool set such as `make`, `gcc`, `g++` and `bzip2`. Project policy forbids changing host system packages.
+The Devspace VM is ARM64 and intentionally lacks the normal Buildroot host compiler toolchain, so it is used for unit/static tests, source/hash verification and cross-platform wheelhouse validation only. The repository also includes an x86_64 GitHub Actions workflow that performs the authoritative full Buildroot image build, two-clean-build reproducibility comparison and OVMF/QEMU UEFI boot smoke test.
 
-Therefore this VM can validate:
-
-- PGP release verification and SHA-256 checks;
-- Python/shell syntax;
-- unit tests;
-- static Buildroot Kconfig resolution when the existing project Python environment is available;
-- deterministic image configuration and boot-audit invariants.
-
-It cannot complete the x86_64 Buildroot image compilation or the two-clean-build reproducibility check. Those must run on a compatible build host or authorized CI before Issue #1 can be considered fully runtime-verified.
+The automated UEFI smoke test validates firmware → bootloader → kernel/initramfs → startup-audit execution for the generated image. It is still not a substitute for physically booting a removable USB on representative hardware before any future real-asset release.

@@ -7,55 +7,115 @@ from usb_cold_wallet import appliance
 SAFE = {"rw", "nodev", "noexec", "nosuid", "sync"}
 
 
-def _candidate(monkeypatch, value="/dev/sdb1"):
-    monkeypatch.setattr(appliance, "_transfer_candidate", lambda: value)
+def _identity(monkeypatch, device="/dev/sdb1"):
+    monkeypatch.setattr(appliance, "_unique_transfer_device", lambda: device)
+    return device
 
 
-def test_transfer_candidate_requires_unique_separate_usb_disk(monkeypatch):
-    mapping = {
-        f"PARTUUID={appliance.BOOT_PARTUUID}": "/dev/sda1",
-        f"PARTUUID={appliance.VAULT_PARTUUID}": "/dev/sda2",
-        "LABEL=TX_TRANSFER": "/dev/sdb1",
-    }
-    monkeypatch.setattr(appliance, "_unique_blkid_device", lambda tag: mapping.get(tag))
-    assert appliance._transfer_candidate() == "/dev/sdb1"
-
-    mapping["LABEL=TX_TRANSFER"] = "/dev/sda3"
-    assert appliance._transfer_candidate() is None
+def _identity_files(monkeypatch, tmp_path, boot_parent="sda", vault_device="/dev/sda2"):
+    boot_file = tmp_path / "boot-parent"
+    vault_file = tmp_path / "vault-device"
+    boot_file.write_text(boot_parent + "\n", encoding="utf-8")
+    vault_file.write_text(vault_device + "\n", encoding="utf-8")
+    monkeypatch.setattr(appliance, "BOOT_PARENT_FILE", boot_file)
+    monkeypatch.setattr(appliance, "VAULT_DEVICE_FILE", vault_file)
 
 
-def test_unique_blkid_rejects_ambiguous_label(monkeypatch):
-    monkeypatch.setattr(appliance, "_blkid_devices", lambda tag: ["/dev/sdb1", "/dev/sdc1"])
-    assert appliance._unique_blkid_device("LABEL=TX_TRANSFER") is None
+def test_transfer_mount_rejects_ambiguous_or_missing_label(monkeypatch, tmp_path):
+    monkeypatch.setattr(appliance, "TRANSFER", tmp_path)
+    monkeypatch.setattr(appliance, "_unique_transfer_device", lambda: None)
+    assert appliance.mount_transfer() is False
+
+
+def test_unique_transfer_device_rejects_duplicate_label(monkeypatch):
+    monkeypatch.setattr(
+        appliance,
+        "_blkid",
+        lambda *args: ["/dev/sdb1", "/dev/sdc1"] if "LABEL=TX_TRANSFER" in args else [],
+    )
+    assert appliance._unique_transfer_device() is None
+
+
+def test_unique_transfer_device_rejects_boot_parent(monkeypatch, tmp_path):
+    _identity_files(monkeypatch, tmp_path)
+
+    def blkid(*args):
+        if "LABEL=TX_TRANSFER" in args:
+            return ["/dev/sda3"]
+        if "TYPE" in args:
+            return ["vfat"]
+        return []
+
+    monkeypatch.setattr(appliance, "_blkid", blkid)
+    monkeypatch.setattr(appliance, "_block_parent", lambda device: "sda")
+    assert appliance._unique_transfer_device() is None
+
+
+def test_unique_transfer_device_rejects_non_vfat(monkeypatch, tmp_path):
+    _identity_files(monkeypatch, tmp_path)
+
+    def blkid(*args):
+        if "LABEL=TX_TRANSFER" in args:
+            return ["/dev/sdb1"]
+        if "TYPE" in args:
+            return ["ext4"]
+        return []
+
+    monkeypatch.setattr(appliance, "_blkid", blkid)
+    assert appliance._unique_transfer_device() is None
+
+
+def test_unique_transfer_device_accepts_separate_vfat_usb(monkeypatch, tmp_path):
+    _identity_files(monkeypatch, tmp_path)
+
+    def blkid(*args):
+        if "LABEL=TX_TRANSFER" in args:
+            return ["/dev/sdb1"]
+        if "TYPE" in args:
+            return ["vfat"]
+        return []
+
+    monkeypatch.setattr(appliance, "_blkid", blkid)
+    monkeypatch.setattr(appliance, "_block_parent", lambda device: "sdb")
+    assert appliance._unique_transfer_device() == "/dev/sdb1"
+
+
+def test_transfer_mount_rejects_wrong_existing_source(monkeypatch, tmp_path):
+    monkeypatch.setattr(appliance, "TRANSFER", tmp_path)
+    _identity(monkeypatch, "/dev/sdb1")
+    monkeypatch.setattr(
+        appliance,
+        "_mount_info",
+        lambda path: ("/dev/sdc1", "vfat", SAFE),
+    )
+    assert appliance.mount_transfer() is False
 
 
 def test_transfer_mount_rejects_unsafe_existing_mount(monkeypatch, tmp_path):
     monkeypatch.setattr(appliance, "TRANSFER", tmp_path)
-    _candidate(monkeypatch)
-    monkeypatch.setattr(appliance, "_mount_info", lambda path: ("/dev/sdb1", "vfat", {"rw", "nodev"}))
+    device = _identity(monkeypatch)
+    monkeypatch.setattr(appliance, "_mount_info", lambda path: (device, "vfat", {"rw", "nodev"}))
     assert appliance.mount_transfer() is False
 
 
-def test_transfer_mount_rejects_wrong_filesystem_or_source(monkeypatch, tmp_path):
+def test_transfer_mount_rejects_nonfat_existing_mount(monkeypatch, tmp_path):
     monkeypatch.setattr(appliance, "TRANSFER", tmp_path)
-    _candidate(monkeypatch)
-    monkeypatch.setattr(appliance, "_mount_info", lambda path: ("/dev/sdb1", "ext4", SAFE))
-    assert appliance.mount_transfer() is False
-    monkeypatch.setattr(appliance, "_mount_info", lambda path: ("/dev/sdc1", "vfat", SAFE))
+    device = _identity(monkeypatch)
+    monkeypatch.setattr(appliance, "_mount_info", lambda path: (device, "ext4", SAFE))
     assert appliance.mount_transfer() is False
 
 
 def test_transfer_mount_accepts_expected_source_and_flags(monkeypatch, tmp_path):
     monkeypatch.setattr(appliance, "TRANSFER", tmp_path)
-    _candidate(monkeypatch)
-    monkeypatch.setattr(appliance, "_mount_info", lambda path: ("/dev/sdb1", "vfat", SAFE))
+    device = _identity(monkeypatch)
+    monkeypatch.setattr(appliance, "_mount_info", lambda path: (device, "vfat", SAFE))
     assert appliance.mount_transfer() is True
 
 
 def test_transfer_mount_checks_new_mount_source_and_flags(monkeypatch, tmp_path):
     monkeypatch.setattr(appliance, "TRANSFER", tmp_path)
-    _candidate(monkeypatch)
-    states = iter([None, ("/dev/sdb1", "vfat", SAFE)])
+    device = _identity(monkeypatch)
+    states = iter([None, (device, "vfat", SAFE)])
     monkeypatch.setattr(appliance, "_mount_info", lambda path: next(states))
     calls = []
     monkeypatch.setattr(
@@ -64,7 +124,8 @@ def test_transfer_mount_checks_new_mount_source_and_flags(monkeypatch, tmp_path)
         lambda args, **kwargs: calls.append(args) or SimpleNamespace(returncode=0),
     )
     assert appliance.mount_transfer() is True
-    assert calls[0][-2:] == ["/dev/sdb1", str(tmp_path)]
+    assert calls[0][5] == device
+    assert calls[0][-1] == str(tmp_path)
     assert "-L" not in calls[0]
 
 
@@ -80,7 +141,7 @@ def test_file_selector_rejects_zero_and_negative_indices(monkeypatch, tmp_path, 
 
 def test_evm_envelope_routes_to_request_flag(monkeypatch, tmp_path):
     request = tmp_path / "evm-request.json"
-    request.write_text("{}")
+    request.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(appliance, "_select_file", lambda suffix: request)
     monkeypatch.setattr(appliance, "_exchange_kind", lambda path: "evm-request")
     answers = iter(["0x000000000000000000000000000000000000dEaD", "1000"])
@@ -96,9 +157,39 @@ def test_evm_envelope_routes_to_request_flag(monkeypatch, tmp_path):
     assert str(request) in calls[0]
 
 
+def test_evm_legacy_json_routes_to_tx_flag(monkeypatch, tmp_path):
+    request = tmp_path / "legacy.json"
+    request.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(appliance, "_select_file", lambda suffix: request)
+    monkeypatch.setattr(appliance, "_exchange_kind", lambda path: None)
+    answers = iter(["0x000000000000000000000000000000000000dEaD", "1000"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    calls = []
+    monkeypatch.setattr(appliance, "_run_cli", lambda args: calls.append(args))
+    monkeypatch.setattr(appliance, "TRANSFER", tmp_path)
+
+    appliance._sign_evm()
+
+    assert calls[0][0:2] == ["sign-evm", "--tx"]
+
+
+def test_evm_rejects_wrong_envelope_kind(monkeypatch, tmp_path, capsys):
+    request = tmp_path / "wrong.json"
+    request.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(appliance, "_select_file", lambda suffix: request)
+    monkeypatch.setattr(appliance, "_exchange_kind", lambda path: "btc-request")
+    calls = []
+    monkeypatch.setattr(appliance, "_run_cli", lambda args: calls.append(args))
+
+    appliance._sign_evm()
+
+    assert not calls
+    assert "Wrong exchange envelope kind" in capsys.readouterr().out
+
+
 def test_btc_envelope_routes_to_request_flag(monkeypatch, tmp_path):
     request = tmp_path / "btc-request.json"
-    request.write_text("{}")
+    request.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(appliance, "_select_file", lambda suffix: request)
     monkeypatch.setattr(appliance, "_exchange_kind", lambda path: "btc-request")
     answers = iter(["tb1qexample", "50000", "2000", "0"])
@@ -112,3 +203,17 @@ def test_btc_envelope_routes_to_request_flag(monkeypatch, tmp_path):
     assert calls
     assert calls[0][0:2] == ["sign-btc", "--request"]
     assert str(request) in calls[0]
+
+
+def test_btc_rejects_plain_json(monkeypatch, tmp_path, capsys):
+    request = tmp_path / "not-envelope.json"
+    request.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(appliance, "_select_file", lambda suffix: request)
+    monkeypatch.setattr(appliance, "_exchange_kind", lambda path: None)
+    calls = []
+    monkeypatch.setattr(appliance, "_run_cli", lambda args: calls.append(args))
+
+    appliance._sign_btc()
+
+    assert not calls
+    assert "verified btc-request envelope" in capsys.readouterr().out
