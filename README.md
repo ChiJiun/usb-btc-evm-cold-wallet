@@ -4,7 +4,7 @@
 >
 > **目前不是可直接開機的 USB 映像。** 這個 repository 提供可在**已隔離網路的 Linux Live USB 環境**執行的錢包核心與 CLI。真正的冷儲存安全性取決於啟動環境、實體隔離、原始碼及相依套件供應鏈的完整性。它不是 YubiKey，也沒有 Secure Element。
 
-[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [威脅模型](docs/THREAT_MODEL.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
+[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [紙本復原與 USB 交換格式](docs/RECOVERY_AND_USB_EXCHANGE.md) · [威脅模型](docs/THREAT_MODEL.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## Goals / 目標
 
@@ -23,7 +23,7 @@
 | Encrypted USB vault | Scrypt + AES-256-GCM, mode 0600, reject existing file |
 | Bitcoin | **testnet only**, native SegWit P2WPKH BIP84, PSBT v0 / SIGHASH_ALL, explicit recipient / amount / fee checks |
 | EVM | **Sepolia only**, type-2 EIP-1559 native ETH transfers, explicit chainId / recipient / amount / gas checks |
-| Public outputs | BTC testnet receiving addresses and account tpub; EVM Sepolia address |
+| Public outputs | BTC testnet receiving addresses and account tpub; EVM Sepolia address; integrity-checked watch-only export |\n| Paper recovery | Offline BIP39 restoration, dual-address confirmation, create-only encrypted vault; destructive test-vector rehearsal |\n| USB transfer | Strict, size-bounded SHA-256 exchange envelopes; detects corruption but **does not authenticate sender** |
 | Safety | No RPC, no broadcast functions, no blind contract calls, no mainnet signing, no private key output |
 | CI | Local Pytest validated; [GitHub Actions template](docs/ci-template.yml) ready, not enabled until GitHub authorization permits workflow upload |
 
@@ -78,7 +78,7 @@ usb-cold-wallet --vault /path/on/offline-media/wallet.vault sign-btc \
 ## Security limitations
 
 - The passphrase decrypts the seed **into RAM on the offline PC**. The seed is not protected from the host OS, firmware, malicious peripherals, or physical RAM attacks.
-- The encrypted vault does **not** replace a separate and verified paper/metal BIP39 recovery backup. The software does not yet implement a secure restore/check workflow.
+- The encrypted vault does **not** replace a separate and verified paper/metal BIP39 recovery backup. A paper-only recovery and public-vector rehearsal are available, but have not been hardware-audited; see [recovery guide](docs/RECOVERY_AND_USB_EXCHANGE.md). Never import real mnemonic words on a connected developer VM.
 - A USB flash drive is a storage device and cannot protect a private key independently like a microcontroller with trusted screen.
 - A compromised online system can prepare malformed transaction payloads; limited output policy checks reduce some risk but are **not a substitute for security review**.
 - The initial source, test coverage, dependency integrity, operational hardening and packaging have not been independently reviewed.
@@ -89,7 +89,7 @@ usb-cold-wallet --vault /path/on/offline-media/wallet.vault sign-btc \
 - `keys.py`: BIP32 derivation via upstream `embit`
 - `btc.py`: conservative P2WPKH PSBT review + signing
 - `evm.py`: Sepolia type-2 native transfer review + signing using `eth-account`
-- `cli.py`: interactive approval and file-based air-gap exchange
+- `cli.py`: explicit-network interactive review, independent challenge approval and air-gap exchange\n- `exchange.py`: integrity-checked, bounded, testnet-labeled transport envelopes\n- `recovery.py`: test-only destructive rehearsal and offline paper restore with dual-address confirmation
 - `tests/`: deterministic known-vector and rejection tests
 
 We intentionally **do not implement cryptographic curves, SHA3/Keccak, PSBT serialization or AES ourselves**. [Upstream references](docs/OPEN_SOURCE_REFERENCES.md) explain the libraries and analogous open-source designs.
