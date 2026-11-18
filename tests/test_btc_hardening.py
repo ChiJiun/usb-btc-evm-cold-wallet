@@ -42,6 +42,45 @@ def review(p):
     return review_btc_psbt(ROOT, p.to_base64(), DEST, 60_000, 1500, 0)
 
 
+def _compact_size(value):
+    if value < 0xFD:
+        return bytes([value])
+    if value <= 0xFFFF:
+        return b"\xfd" + value.to_bytes(2, "little")
+    if value <= 0xFFFFFFFF:
+        return b"\xfe" + value.to_bytes(4, "little")
+    return b"\xff" + value.to_bytes(8, "little")
+
+
+def _read_compact(raw, offset):
+    prefix = raw[offset]
+    offset += 1
+    if prefix < 0xFD:
+        return prefix, offset
+    width = {0xFD: 2, 0xFE: 4, 0xFF: 8}[prefix]
+    return int.from_bytes(raw[offset:offset + width], "little"), offset + width
+
+
+def _map_end(raw, offset):
+    while True:
+        key_len, offset = _read_compact(raw, offset)
+        if key_len == 0:
+            return offset
+        offset += key_len
+        value_len, offset = _read_compact(raw, offset)
+        offset += value_len
+
+
+def _inject_map_entry(encoded, map_index, key, value):
+    raw = base64.b64decode(encoded)
+    offset = 5  # PSBT magic
+    for _ in range(map_index):
+        offset = _map_end(raw, offset)
+    end = _map_end(raw, offset)
+    entry = _compact_size(len(key)) + key + _compact_size(len(value)) + value
+    return base64.b64encode(raw[:end - 1] + entry + raw[end - 1:]).decode()
+
+
 def test_signatures_verify_using_public_key():
     p = vector()
     result = sign_btc_psbt(ROOT, p.to_base64(), DEST, 60_000, 1500, 0)
@@ -105,6 +144,33 @@ def test_reject_duplicate_outpoint():
     p = vector()
     p.inputs.append(p.inputs[0])
     with pytest.raises(ValueError, match="Duplicate"):
+        review(p)
+
+
+@pytest.mark.parametrize("map_index,key,value", [
+    (0, b"\x02", (1).to_bytes(4, "little")),  # PSBT_GLOBAL_TX_VERSION
+    (0, b"\x03", (500).to_bytes(4, "little")),  # PSBT_GLOBAL_FALLBACK_LOCKTIME
+    (1, b"\x0e", b"\x11" * 32),  # PSBT_IN_PREVIOUS_TXID
+    (1, b"\x0f", (1).to_bytes(4, "little")),  # PSBT_IN_OUTPUT_INDEX
+    (1, b"\x10", (0xFFFFFFFD).to_bytes(4, "little")),  # PSBT_IN_SEQUENCE
+    (2, b"\x03", (60_001).to_bytes(8, "little")),  # PSBT_OUT_AMOUNT
+    (2, b"\x04", script.address_to_scriptpubkey(btc_address(ROOT, 0, 2)).data),
+])
+def test_reject_psbtv2_transaction_fields_smuggled_into_v0(map_index, key, value):
+    malicious = _inject_map_entry(vector().to_base64(), map_index, key, value)
+    with pytest.raises(ValueError):
+        _read_psbt(malicious)
+
+
+@pytest.mark.parametrize("mutator", [
+    lambda p: setattr(p, "tx_version", 1),
+    lambda p: setattr(p, "locktime", 1),
+    lambda p: setattr(p.inputs[0], "sequence", 0xFFFFFFFD),
+])
+def test_reject_hidden_transaction_semantics(mutator):
+    p = vector()
+    mutator(p)
+    with pytest.raises(ValueError):
         review(p)
 
 

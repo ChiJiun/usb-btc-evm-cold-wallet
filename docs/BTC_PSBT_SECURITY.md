@@ -3,13 +3,22 @@
 **Research prototype; Bitcoin testnet only. Mainnet signing remains disabled.**
 
 The offline signer accepts only a PSBT v0 with 1–20 native BIP84 testnet
-P2WPKH inputs and one payment output, optionally one change output.
+P2WPKH inputs and one payment output, optionally one change output. The
+embedded Bitcoin transaction must use transaction version 2, locktime 0, and
+final (`0xffffffff`) input sequences; RBF and relative/absolute locktime
+semantics remain disabled until the offline review UI can approve them
+explicitly.
+
 It rejects unknown metadata, preexisting signatures, unsupported scripts,
 duplicate outpoints, and extra data after the serialized PSBT. Before the
-library parser runs, the raw PSBT global unsigned transaction is checked for
-canonical serialization and the BIP174 requirement that every scriptSig and
-witness is empty. This prevents parser normalization from hiding hostile
-unsigned-transaction fields. Base64 input is limited to 200 KB decoded.
+library parser runs, every raw PSBT map is checked for duplicate keys and
+PSBTv2 transaction-construction fields that BIP370 requires to be excluded
+from PSBTv0. The raw global unsigned transaction is checked for canonical
+serialization and the BIP174 requirement that every scriptSig and witness is
+empty. After `embit` parses the PSBT, the reconstructed unsigned transaction
+must serialize byte-for-byte identically to that raw global transaction. This
+prevents parser normalization or mixed-version fields from changing what the
+signer actually signs. Base64 input is limited to 200 KB decoded.
 
 For **each input**, both `witness_utxo` and `non_witness_utxo` are now
 mandatory. The latter must hash to the outpoint TXID and contain a
@@ -45,7 +54,12 @@ so tests do not require network access. They are pinned to:
 The shared BIP174 v0 fixture is parsed and checked against its independently
 recorded txid/output values. A shared invalid fixture with scriptSig data in
 the unsigned transaction must fail closed, and a Bitcoin Core PSBT v2 fixture
-confirms the explicit v0-only gate.
+confirms the explicit v0-only gate. Regression tests additionally inject the
+BIP370 v2-only global (`0x02`–`0x06`), input (`0x0e`–`0x12`), and output
+(`0x03`, `0x04`) transaction-construction fields into otherwise valid v0 maps;
+all such mixed-version payloads must fail closed.
+
+BIP370 reference: https://bips.dev/370/
 
 In addition to 250 reproducible bit mutations, Hypothesis exercises the fee
 boundary and 300 arbitrary binary parser inputs per run. Parser failures must

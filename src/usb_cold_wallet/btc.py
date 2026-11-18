@@ -17,6 +17,9 @@ _SEARCH_LIMIT = 100
 _MAX_MONEY = 21_000_000 * 100_000_000
 _HARDENED = 0x80000000
 _PSBT_MAGIC = b"psbt\xff"
+_GLOBAL_V2_KEYS = {b"\x02", b"\x03", b"\x04", b"\x05", b"\x06"}
+_INPUT_V2_KEYS = {b"\x0e", b"\x0f", b"\x10", b"\x11", b"\x12"}
+_OUTPUT_V2_KEYS = {b"\x03", b"\x04"}
 
 
 def _read_exact(stream: BytesIO, size: int) -> bytes:
@@ -39,34 +42,40 @@ def _read_compact_size(stream: BytesIO) -> int:
     return value
 
 
-def _validate_raw_unsigned_tx(raw: bytes) -> None:
-    """Check BIP174 invariants before embit can normalize the unsigned tx."""
+def _read_raw_map(stream: BytesIO, forbidden_keys: set[bytes], context: str) -> dict[bytes, bytes]:
+    """Read one raw PSBT map while enforcing exact-key uniqueness and v0-only fields."""
+    entries = {}
+    while True:
+        key_len = _read_compact_size(stream)
+        if key_len == 0:
+            return entries
+        if key_len > _MAX_PSBT_BYTES:
+            raise ValueError("PSBT key exceeds size limit")
+        key = _read_exact(stream, key_len)
+        if key in entries:
+            raise ValueError(f"Duplicate {context} PSBT key")
+        if key in forbidden_keys:
+            raise ValueError(f"PSBTv2-only {context} field is forbidden in PSBT v0")
+        value_len = _read_compact_size(stream)
+        if value_len > _MAX_PSBT_BYTES:
+            raise ValueError("PSBT value exceeds size limit")
+        entries[key] = _read_exact(stream, value_len)
+
+
+def _validate_raw_psbt(raw: bytes) -> bytes | None:
+    """Check BIP174 v0 invariants before embit can normalize or merge PSBT fields."""
     stream = BytesIO(raw)
     if _read_exact(stream, len(_PSBT_MAGIC)) != _PSBT_MAGIC:
         raise ValueError("Invalid PSBT magic")
 
-    unsigned_tx = None
-    while True:
-        key_len = _read_compact_size(stream)
-        if key_len == 0:
-            break
-        if key_len > _MAX_PSBT_BYTES:
-            raise ValueError("PSBT key exceeds size limit")
-        key = _read_exact(stream, key_len)
-        value_len = _read_compact_size(stream)
-        if value_len > _MAX_PSBT_BYTES:
-            raise ValueError("PSBT value exceeds size limit")
-        value = _read_exact(stream, value_len)
-        if key == b"\x00":
-            if unsigned_tx is not None:
-                raise ValueError("Duplicate global unsigned transaction")
-            unsigned_tx = value
+    global_map = _read_raw_map(stream, _GLOBAL_V2_KEYS, "global")
+    unsigned_tx = global_map.get(b"\x00")
 
-    # PSBT v2 intentionally has no global unsigned transaction and is rejected
-    # later by the version gate. For v0, validate the raw bytes before embit's
-    # PSBT parser clears scriptSig fields while normalizing its internal tx.
+    # A genuine PSBTv2 has no global unsigned transaction. The normal parser
+    # will reject it via the explicit version gate; v2 transaction-construction
+    # fields are rejected above even when a malicious payload omits version=2.
     if unsigned_tx is None:
-        return
+        return None
     try:
         raw_tx = transaction.Transaction.parse(unsigned_tx)
     except Exception as exc:
@@ -76,6 +85,17 @@ def _validate_raw_unsigned_tx(raw: bytes) -> None:
     if any(vin.script_sig.data or vin.witness.items for vin in raw_tx.vin):
         raise ValueError("PSBT unsigned transaction must have empty scriptSig and witness")
 
+    # embit 0.8.0 also understands PSBTv2 per-input/per-output transaction
+    # fields when parsing a v0 PSBT. Those fields can otherwise overwrite the
+    # transaction reconstructed from the v0 global unsigned transaction.
+    for idx in range(len(raw_tx.vin)):
+        _read_raw_map(stream, _INPUT_V2_KEYS, f"input {idx}")
+    for idx in range(len(raw_tx.vout)):
+        _read_raw_map(stream, _OUTPUT_V2_KEYS, f"output {idx}")
+    if stream.read(1):
+        raise ValueError("Trailing bytes after PSBT")
+    return unsigned_tx
+
 
 def _read_psbt(payload: str):
     if not isinstance(payload, str) or len(payload) > (_MAX_PSBT_BYTES * 4 // 3 + 16):
@@ -84,11 +104,13 @@ def _read_psbt(payload: str):
         raw = base64.b64decode(payload.strip(), validate=True)
         if len(raw) > _MAX_PSBT_BYTES:
             raise ValueError("PSBT exceeds size limit")
-        _validate_raw_unsigned_tx(raw)
+        unsigned_tx = _validate_raw_psbt(raw)
         stream = BytesIO(raw)
         parsed = psbt.PSBT.read_from(stream, compress=0)
         if stream.read(1):
             raise ValueError("Trailing bytes after PSBT")
+        if unsigned_tx is not None and parsed.tx.serialize() != unsigned_tx:
+            raise ValueError("Parsed transaction differs from PSBT v0 global unsigned transaction")
     except Exception as exc:
         raise ValueError("Malformed or unsupported PSBT") from exc
     if parsed.version is not None or not 1 <= len(parsed.inputs) <= _MAX_INPUTS:
@@ -132,6 +154,10 @@ def review_btc_psbt(root, psbt_b64: str, expected_recipient: str, expected_sats:
     if change_index is not None and (type(change_index) is not int or not 0 <= change_index <= 999):
         raise ValueError("Invalid change index")
     parsed = _read_psbt(psbt_b64)
+    if parsed.tx.version != 2 or parsed.tx.locktime != 0:
+        raise ValueError("Only transaction version 2 with locktime 0 is supported")
+    if any(vin.sequence != 0xFFFFFFFF for vin in parsed.tx.vin):
+        raise ValueError("RBF, relative locktime, and non-final input sequences are disabled")
     seen_outpoints = set()
     input_total = 0
     for idx, inp in enumerate(parsed.inputs):
@@ -202,7 +228,8 @@ def review_btc_psbt(root, psbt_b64: str, expected_recipient: str, expected_sats:
         "psbt": parsed, "network": "bitcoin-testnet",
         "recipient": expected_recipient, "amount_sats": expected_sats,
         "change_sats": change_sats, "fee_sats": fee,
-        "input_count": len(parsed.inputs),
+        "input_count": len(parsed.inputs), "transaction_version": parsed.tx.version,
+        "locktime": parsed.tx.locktime, "rbf": False,
     }
 
 
@@ -223,7 +250,7 @@ def sign_btc_psbt(root, psbt_b64: str, expected_recipient: str, expected_sats: i
             if (len(signature) < 2 or signature[-1] != 1 or
                     pub not in inp.bip32_derivations or
                     not pub.verify(ec.Signature.parse(signature[:-1]), parsed.sighash(idx, sighash=1))):
-                raise ValueError(f"Input {idx} signature failed independent verification")
+                raise ValueError(f"Input {idx} signature failed post-signature verification")
             finalized.vin[idx].witness = transaction.Witness([signature, pub.sec()])
         raw_final = finalized.serialize()
         reparsed = transaction.Transaction.parse(raw_final)

@@ -21,7 +21,7 @@
 |---|---|
 | One BIP39 master seed | 24-word generated offline, optional BIP39 passphrase for derivation |
 | Encrypted USB vault | Scrypt + AES-256-GCM, mode 0600, reject existing file |
-| Bitcoin | **testnet only**, native SegWit P2WPKH BIP84, PSBT v0 / SIGHASH_ALL, explicit recipient / amount / fee checks |
+| Bitcoin | **testnet only**, native SegWit P2WPKH BIP84, strict PSBT v0 / SIGHASH_ALL, explicit recipient / amount / fee checks, no RBF/locktime semantics |
 | EVM | **Sepolia only**, type-2 EIP-1559 native ETH transfers, explicit chainId / recipient / amount / gas checks |
 | Public outputs | BTC testnet receiving addresses and account tpub; EVM Sepolia address |
 | Safety | No RPC, no broadcast functions, no blind contract calls, no mainnet signing, no private key output |
