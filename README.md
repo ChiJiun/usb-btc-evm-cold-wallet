@@ -4,7 +4,7 @@
 >
 > **目前不是可直接開機的 USB 映像。** 這個 repository 提供可在**已隔離網路的 Linux Live USB 環境**執行的錢包核心與 CLI。真正的冷儲存安全性取決於啟動環境、實體隔離、原始碼及相依套件供應鏈的完整性。它不是 YubiKey，也沒有 Secure Element。
 
-[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [威脅模型](docs/THREAT_MODEL.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
+[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [威脅模型](docs/THREAT_MODEL.md) · [CI / 供應鏈安全](docs/CI_SECURITY.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## Goals / 目標
 
@@ -25,7 +25,7 @@
 | EVM | **Sepolia only**, type-2 EIP-1559 native ETH transfers, explicit chainId / recipient / amount / gas checks |
 | Public outputs | BTC testnet receiving addresses and account tpub; EVM Sepolia address |
 | Safety | No RPC, no broadcast functions, no blind contract calls, no mainnet signing, no private key output |
-| CI | Local Pytest validated; [GitHub Actions template](docs/ci-template.yml) ready, not enabled until GitHub authorization permits workflow upload |
+| CI | GitHub Actions: Python 3.12/3.13 pytest, hash-locked dependencies, pip-audit, Gitleaks, dependency review and reproducible-wheel check |
 
 Not yet supported: mainnet, ERC-20, EIP-712, WalletConnect, Taproot, multisig, PSBT v2, QR transport, hardware button/screen confirmation, bootable ISO builder, address discovery beyond first 100 BIP84 inputs, independent audits.
 
@@ -96,7 +96,7 @@ We intentionally **do not implement cryptographic curves, SHA3/Keccak, PSBT seri
 
 ## Development roadmap
 
-1. Pin transitive dependencies with hashes; independent reproducible offline Linux wheelhouse/build workflow.
+1. Independent reproducible offline Linux wheelhouse workflow for Live USB provisioning (CI dependency hashes and reproducible project wheel are now enforced).
 2. Independent reference transaction vectors (Bitcoin Core/Sparrow/Electrum and Ethereum client), mutation tests / fuzzing, PSBT input/output verification, security review.
 3. Build tested, reproducible read-only Live USB image with network disabled; encrypted persistence and QR/file transport.
 4. Better on-device UI for recipient/fee review, wallet recovery rehearsal and full mainnet readiness criteria.
