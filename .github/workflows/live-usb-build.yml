@@ -1,6 +1,9 @@
 name: Live USB image verification
 
 on:
+  push:
+    branches:
+      - feat/issue-1-reproducible-live-usb
   pull_request:
     paths:
       - ".github/workflows/live-usb-build.yml"
