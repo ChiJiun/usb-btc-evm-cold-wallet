@@ -105,6 +105,7 @@ function renderPending(p) {
 $("importBtn").addEventListener("click",()=>action(async()=>{
   const data=await api("/api/import",{raw:await fileContents("watchFile")});
   renderWallet(data);
+  await refreshBtc();
   message("公開帳戶已載入。請獨立核對所匯入的完整地址。");
 }));
 $("refreshBtn").addEventListener("click",()=>action(async()=>{
@@ -166,4 +167,128 @@ $("cancelBtn").addEventListener("click",()=>action(async()=>{
   $("prepareBtn").disabled=!walletLoaded;
   message("已清除本機 Session。鏈上交易不會被撤回。");
 }));
-action(async()=>{const data=await api("/api/wallet");renderWallet(data);});
+action(async()=>{const data=await api("/api/wallet");renderWallet(data);if(data.loaded)await refreshBtc();});
+
+let btcPending=null;
+let btcExchange=null;
+let btcReady=false;
+
+function btcSats(n) {
+  const value=BigInt(n);
+  const whole=value/100000000n;
+  const fraction=(value%100000000n).toString().padStart(8,"0");
+  return whole+"."+fraction+" BTC";
+}
+function renderBtc(p) {
+  btcPending=p;
+  const prepared=!!p && p.stage==="prepared";
+  $("btcPrepareBtn").disabled=!btcReady || !!p;
+  $("btcRefreshBtn").disabled=!walletLoaded;
+  $("btcDownloadBtn").disabled=!prepared;
+  $("btcLegacyBtn").disabled=!prepared;
+  $("btcVerifyBtn").disabled=!prepared;
+  $("btcBroadcastBtn").disabled=!(p && p.stage==="verified");
+  $("btcStatusBtn").disabled=!(p && p.txid);
+  $("btcCancelBtn").disabled=!p;
+  if(!p){
+    $("btcPending").textContent="尚無待簽 BTC 交易";
+    $("btcStatus").textContent="尚未廣播";
+    return;
+  }
+  $("btcPending").textContent="Network：Bitcoin Testnet"+
+    "\n收款人："+p.recipient+
+    "\n金額："+btcSats(p.amount_sats)+
+    "\n預估總手續費："+p.fee_sats+" sats"+
+    "\n費率估計："+p.fee_rate+" sat/vB"+
+    "\n找零："+btcSats(p.change_sats)+
+    "\n找零索引："+(p.change_index===null?"無":p.change_index)+
+    "\n輸入 UTXO 數："+p.input_count+
+    "\nPSBT SHA-256："+p.digest+
+    "\n請在離線 signer 獨立核對完整地址、金額、費用及找零。"+
+    (p.txid?"\n\n驗證後交易 ID："+p.txid:"");
+  $("btcStatus").textContent=(p.result?"RPC 回報狀態："+p.result:"狀態："+p.stage)+
+    (p.txid?"\nTxID："+p.txid:"")+
+    (p.reorg_warning?"\n⚠ 偵測到疑似重組，請重新確認區塊狀態":"");
+}
+async function refreshBtc(){
+  if(!walletLoaded)return;
+  const wallet=await api("/api/btc/wallet");
+  btcReady=wallet.spending_ready;
+  $("btcWalletStatus").textContent=
+    "Bitcoin Testnet Esplora："+wallet.endpoint+
+    (btcReady?"\n✓ 已有公開 master fingerprint，可建立測試網 PSBT。":
+      "\n⚠ 舊版公開帳戶缺少 master fingerprint，請在更新的離線 Signer 重新匯出。")+
+    "\n公開資料/網路回覆仍不代表真實鏈上狀態。";
+  renderBtc(wallet.pending);
+}
+$("btcRefreshBtn").addEventListener("click",()=>action(async()=>{
+  const data=await api("/api/btc/overview");
+  $("btcOverview").textContent=
+    "Network："+data.network+"\nEndpoint："+data.endpoint+
+    "\n已確認餘額："+btcSats(data.confirmed_sats)+
+    "\n已確認 UTXO："+data.confirmed_utxo_count+
+    "\n建議費率："+data.fee_rate_sat_vb+" sat/vB"+
+    "\n掃描接收地址："+data.scan_receive_addresses+
+    "\n掃描找零地址："+data.scan_change_addresses+
+    "\n⚠ 掃描範圍有限，僅視為網路端估計；需要離線核對。";
+  message("BTC Testnet 資料已更新。");
+}));
+$("btcSendForm").addEventListener("submit",(event)=>{
+  event.preventDefault();
+  action(async()=>{
+    const feeText=$("btcMaxFee").value.trim();
+    const rateText=$("btcRate").value.trim();
+    if(!/^[0-9]{1,6}$/.test(feeText) || (rateText!=="" && !/^[0-9]{1,3}$/.test(rateText)))
+      throw new Error("BTC 費率與最大手續費必須是有限正整數");
+    const data=await api("/api/btc/prepare",{
+      recipient:$("btcRecipient").value.trim(),
+      amount_btc:$("btcAmount").value.trim(),
+      max_fee_sats:Number(feeText),
+      fee_rate_sat_vb:rateText===""?null:Number(rateText)
+    });
+    btcExchange=data.envelope;
+    renderBtc(data.pending);
+    message("已建立 BTC Testnet PSBT，請下載後在離線 Signer 上逐項核對。");
+  });
+});
+$("btcDownloadBtn").addEventListener("click",()=>action(async()=>{
+  if(!btcPending || btcPending.stage!=="prepared")throw new Error("目前沒有待簽 BTC PSBT");
+  if(!btcExchange)btcExchange=await api("/api/btc/request");
+  saveJson("bitcoin-testnet-unsigned-"+btcPending.request_id+".json",btcExchange);
+  message("已下載 BTC PSBT 交換封裝，請使用純資料 USB-B 傳輸。");
+}));
+$("btcLegacyBtn").addEventListener("click",()=>action(async()=>{
+  if(!btcPending || btcPending.stage!=="prepared")throw new Error("目前沒有待簽 BTC PSBT");
+  const psbtText=await api("/api/btc/request-plain");
+  const blob=new Blob([psbtText+"\n"],{type:"text/plain"});
+  const url=URL.createObjectURL(blob);
+  const anchor=document.createElement("a");
+  anchor.href=url;
+  anchor.download="bitcoin-testnet-legacy-"+btcPending.request_id+".psbt";
+  document.body.append(anchor);anchor.click();anchor.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+  message("已下載舊版 PSBT，適用 --psbt 路徑；請離線核對完整交易。");
+}));
+$("btcVerifyBtn").addEventListener("click",()=>action(async()=>{
+  const result=await api("/api/btc/accept",{raw:await fileContents("btcSignedFile")});
+  renderBtc(result);
+  message("BTC 簽署 PSBT 已通過原始請求與密碼學簽章驗證，尚未廣播。");
+}));
+$("btcBroadcastBtn").addEventListener("click",()=>action(async()=>{
+  if(!btcPending || btcPending.stage!=="verified")throw new Error("尚未完成離線簽章驗證");
+  if(!window.confirm("確定廣播 Bitcoin Testnet 測試交易？\n收款人："+btcPending.recipient+
+      "\n金額："+btcSats(btcPending.amount_sats)+"\n總手續費："+btcPending.fee_sats+" sats"))return;
+  renderBtc(await api("/api/btc/broadcast",{}));
+  message("BTC 測試交易已送往 Esplora。請查詢 TxID 狀態，勿自動重送。");
+}));
+$("btcStatusBtn").addEventListener("click",()=>action(async()=>{
+  renderBtc(await api("/api/btc/status",{}));
+  message("BTC 測試網狀態已更新；未找到不等於交易未曾被網路接受。");
+}));
+$("btcCancelBtn").addEventListener("click",()=>action(async()=>{
+  if(!window.confirm("清除本機 BTC 交易？這無法撤銷已廣播的交易。"))return;
+  await api("/api/btc/cancel",{});
+  btcExchange=null;
+  renderBtc(null);
+  message("已清除本機 BTC 工作階段。");
+}));

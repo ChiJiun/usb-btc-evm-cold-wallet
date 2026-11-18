@@ -86,10 +86,57 @@
     </section>
 
     <section class="panel btc">
-      <div class="step"><span>BTC</span> Watch-only</div>
-      <h2>Bitcoin Testnet 公開收款地址</h2>
-      <p>可以離線導出並檢視收款地址，但本階段尚未包含 BTC UTXO 同步、PSBT 生成／廣播；不會假裝 BTC 交易已支援。</p>
+      <div class="step"><span>BTC</span> Bitcoin Testnet · watch-only</div>
+      <h2>Bitcoin Testnet 收款與轉出</h2>
+      <p>只支援 BIP84／PSBT v0／已確認 UTXO。線上端產生 PSBT，離線端仍須用現有 signer 核對並逐筆簽署。若公開匯出缺少 master fingerprint，僅可查看地址，須重新匯出後才能建立 PSBT。</p>
       <div id="btcList" class="address-list">請先匯入 Watch-only 檔案。</div>
+      <div id="btcWalletStatus" class="facts">尚未匯入 BTC 帳戶</div>
+    </section>
+    <section class="grid btc">
+      <article class="panel">
+        <div class="step"><span>BTC 01</span> UTXO / Fee</div>
+        <h2>測試網餘額與可用輸入</h2>
+        <p>向預先指定的 Esplora 查詢已確認 UTXO；結果是連網端估計，離線端仍必須重新驗證每筆輸入。</p>
+        <button id="btcRefreshBtn" class="secondary" type="button" disabled>查詢 BTC 已確認餘額</button>
+        <div class="facts" id="btcOverview">匯入公開資料後查詢</div>
+      </article>
+      <article class="panel">
+        <div class="step"><span>BTC 02</span> 建立付款</div>
+        <h2>建立未簽署 PSBT</h2>
+        <form id="btcSendForm">
+          <label for="btcRecipient">Bitcoin Testnet 收款地址（tb1q…）</label>
+          <input id="btcRecipient" type="text" autocomplete="off" spellcheck="false" placeholder="tb1q..." required>
+          <label for="btcAmount">BTC 數量（最多 8 位小數）</label>
+          <input id="btcAmount" type="text" inputmode="decimal" placeholder="0.0005" required>
+          <label for="btcRate">費率 sat/vB（可留空使用網路估算，最高 250）</label>
+          <input id="btcRate" type="text" inputmode="numeric" placeholder="自動估算">
+          <label for="btcMaxFee">最高總手續費 sats（最高 50,000）</label>
+          <input id="btcMaxFee" type="text" inputmode="numeric" value="50000" required>
+          <button id="btcPrepareBtn" type="submit" disabled>建立 PSBT</button>
+        </form>
+      </article>
+      <article class="panel">
+        <div class="step"><span>BTC 03</span> 離線簽名</div>
+        <h2>交易詳情與檔案交換</h2>
+        <div class="facts" id="btcPending">尚無待簽 BTC 交易</div>
+        <div class="actions">
+          <button id="btcDownloadBtn" type="button" disabled>下載 BTC PSBT 交換檔</button>
+          <button id="btcLegacyBtn" class="secondary" type="button" disabled>下載舊版 PSBT</button>
+        </div>
+        <p class="fine">BTC 交換檔相容 #5 的 btc-request；離線使用 sign-btc --request、--to、--sats、--max-fee-sats、--change-index。未合併 #5 時可下載舊版 PSBT 檔，交給 sign-btc --psbt。</p>
+        <label for="btcSignedFile">選擇離線輸出的簽章 JSON</label>
+        <input id="btcSignedFile" type="file" accept=".json,application/json">
+        <button id="btcVerifyBtn" type="button" disabled>驗證簽署 PSBT</button>
+      </article>
+      <article class="panel">
+        <div class="step"><span>BTC 04</span> 廣播</div>
+        <h2>明確廣播與查詢</h2>
+        <p>簽名解析成功、PSBT 與原交易完全相符後，才能由使用者明確廣播。</p>
+        <button id="btcBroadcastBtn" type="button" disabled>確認廣播 BTC Testnet</button>
+        <button id="btcStatusBtn" class="secondary" type="button" disabled>查詢 BTC 交易狀態</button>
+        <button id="btcCancelBtn" class="danger" type="button" disabled>清除目前 BTC 交易</button>
+        <div class="facts" id="btcStatus">尚未廣播</div>
+      </article>
     </section>
     <footer>僅繫結 127.0.0.1 · 本機 session 不存入瀏覽器永久儲存 · 不會向遠端上傳錢包私鑰 · 任何 QR/USB 檔案都應視為不可信。</footer>
   </main>

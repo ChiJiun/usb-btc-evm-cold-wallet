@@ -41,7 +41,7 @@ usb-cold-companion --rpc-url https://YOUR-SEPOLIA-RPC --open-browser
 - Build EIP-1559 test ETH transfers without hand-crafting JSON or looking up nonce/gas manually.
 - Download envelope for the #5 signer (or plain JSON for the original signer), then sign on trusted offline hardware; the cold-side CLI remains until #19.
 - Upload signed file to verify raw transaction fields and recovered signer, then click to broadcast. The online tool **never auto-signs or silently resends**.
-- BTC testnet public addresses/tpub are read-only in this phase; UTXO synchronization, PSBT construction and BTC broadcasting **remain unimplemented**.
+- BTC testnet BIP84: public tpub and master fingerprint support; fetch confirmed UTXOs from configurable Esplora, create bounded PSBT v0 with verified non-witness prevouts and change, validate cold-signed PSBT signatures and unsigned-field equality, and explicitly broadcast the finalized testnet transaction. Old watch-only exports without master fingerprint remain read-only and must be re-exported for spending.
 
 Read [the operator guide and limitations](docs/ONLINE_COMPANION.md) before testing.
 
@@ -89,7 +89,7 @@ usb-cold-wallet --vault /path/on/offline-media/wallet.vault sign-btc \
   --out /transport/signed.json
 ```
 
-**Never copy encrypted vault or mnemonic to the transport USB used with online computers.** Only move public watch-only output and signed transactions. The offline signer deliberately has **no** broadcast function; the separate online companion can broadcast **verified EVM Sepolia** signed transactions, or you can use another networked wallet/node.
+**Never copy encrypted vault or mnemonic to the transport USB used with online computers.** Only move public watch-only output and signed transactions. The offline signer deliberately has **no** broadcast function; the separate online companion can broadcast **verified EVM Sepolia and Bitcoin testnet** signed transactions, or you can use another networked wallet/node.
 
 ## Security limitations
 
@@ -107,6 +107,7 @@ usb-cold-wallet --vault /path/on/offline-media/wallet.vault sign-btc \
 - `evm.py`: Sepolia type-2 native transfer review + signing using `eth-account`
 - `cli.py`: offline interactive approval and file-based air-gap exchange
 - `companion_core.py`: ONLINE watch-only importer, bounded Sepolia RPC, unsigned request builder, strict signed raw tx matching, explicit broadcast/status
+- `companion_btc.py`: ONLINE Bitcoin testnet Esplora UTXO discovery, PSBT v0 creation, change management, signed-PSBT verification/finalization, explicit broadcast/status
 - `companion_web.py` and `companion_static/`: local-only browser UI (not bundled into Live USB image by default)
 - `tests/`: deterministic known-vector and rejection tests
 

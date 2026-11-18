@@ -34,6 +34,8 @@ KIND_NETWORK = {
     "watch-only": "testnet-sepolia",
     "evm-request": "sepolia",
     "evm-signed": "sepolia",
+    "btc-request": "bitcoin-testnet",
+    "btc-signed": "bitcoin-testnet",
 }
 TX_FIELDS = ("type", "chainId", "nonce", "to", "value", "gas", "maxFeePerGas", "maxPriorityFeePerGas", "data")
 ADDRESS_RE = re.compile(r"^0x[0-9A-Fa-f]{40}$")
@@ -147,7 +149,9 @@ def validate_watch_only(data) -> dict:
             or evm["derivation"] != EVM_PATH):
         raise ValueError("Unsupported EVM watch-only account")
     evm_addr = checked_address(evm["address"])
-    if (not isinstance(btc, dict) or set(btc) != {"network", "derivation", "account_tpub", "receive_addresses"}
+    required_btc = {"network", "derivation", "account_tpub", "receive_addresses"}
+    if (not isinstance(btc, dict) or not required_btc <= set(btc)
+            or set(btc) - required_btc - {"master_fingerprint"}
             or btc["network"] != "testnet" or btc["derivation"] != BTC_PATH
             or not isinstance(btc["account_tpub"], str) or len(btc["account_tpub"]) > 150
             or not isinstance(btc["receive_addresses"], list)
@@ -163,6 +167,9 @@ def validate_watch_only(data) -> dict:
         raise ValueError("Invalid BTC account public key") from exc
     if btc["receive_addresses"] != expected:
         raise ValueError("BTC receive addresses do not match account tpub")
+    fp = btc.get("master_fingerprint")
+    if fp is not None and (type(fp) is not str or not re.fullmatch(r"[0-9a-f]{8}", fp)):
+        raise ValueError("Invalid BTC master fingerprint")
     return {"bitcoin": {**btc}, "evm": {**evm, "address": evm_addr}}
 
 
