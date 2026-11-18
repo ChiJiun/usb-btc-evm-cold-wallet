@@ -4,7 +4,7 @@
 >
 > This project turns a normal x86_64 USB flash drive into a **bootable air-gapped signing environment**. The USB is still ordinary storage, not a YubiKey/Secure Element: the cryptographic operations run on the offline PC after boot.
 
-[English security summary](SECURITY.md) · [USB 製作與使用](docs/USB_SETUP.md) · [Buildroot 建置](docs/BUILD.md) · [Threat model](docs/THREAT_MODEL.md) · [CI / 供應鏈安全](docs/CI_SECURITY.md) · [Open-source references](docs/OPEN_SOURCE_REFERENCES.md)
+[English security summary](SECURITY.md) · [USB 製作與使用](docs/USB_SETUP.md) · [Buildroot 建置](docs/BUILD.md) · [Threat model](docs/THREAT_MODEL.md) · [EVM 測試向量](docs/EVM_TEST_VECTORS.md) · [CI / 供應鏈安全](docs/CI_SECURITY.md) · [Open-source references](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## Architecture
 
@@ -39,19 +39,21 @@ USB-A is the boot/cold-storage device and should never be used as transaction tr
 | BIP39 / BIP32 master wallet | 24-word generated offline; optional BIP39 passphrase |
 | Encrypted vault | scrypt + AES-256-GCM; mode 0600; existing files are not overwritten |
 | Bitcoin | **testnet only**, BIP84 P2WPKH, strict PSBT v0 / SIGHASH_ALL, explicit recipient / amount / fee checks, no RBF/locktime semantics |
-| EVM | **Sepolia only**, EIP-1559 native ETH transfers, explicit chainId / recipient / amount / gas checks |
+| EVM | **Sepolia only**, type-2 EIP-1559 native ETH transfers, explicit chainId / recipient / amount / gas checks, signed raw transaction re-decoding + sender recovery |
+| Public outputs | BTC testnet receiving addresses and account tpub; EVM Sepolia address |
 | Offline console | Implemented; no normal login/getty presented |
 | Live USB image | Buildroot external tree implemented for x86_64 UEFI |
 | Root filesystem | Initramfs/RAM-only; no persistent Linux root partition |
 | Networking | Kernel `CONFIG_NET` explicitly disabled + BusyBox networking applets rejected |
 | Internal disks | ATA/NVMe/MMC/VirtIO block drivers are not enabled in production config |
-| Persistent wallet storage | Dedicated `COLD_VAULT` partition on boot USB |
-| Transaction transport | Separate `TX_TRANSFER` USB, mounted `noexec,nodev,nosuid,sync` after source validation |
+| Persistent wallet storage | Dedicated `COLD_VAULT` partition on boot USB, bound to verified PARTUUID/device identity |
+| Transaction transport | Separate `TX_TRANSFER` USB, uniquely identified and mounted `noexec,nodev,nosuid,sync` |
 | Dependency integrity | Buildroot release PGP manifest + SHA-256 verified; target Python artifacts hash-pinned |
 | Reproducibility controls | `BR2_REPRODUCIBLE`, fixed epoch/GPT UUIDs, invariant FAT metadata, two-clean-build checker |
-| Startup audit | Fail-closed network/swap/RAM-root/persistence checks before wallet operations |
+| Startup audit | Fail-closed network/swap/RAM-root/device/persistence checks before wallet operations |
 | Image checks | GPT structure/UUID/readonly flag, kernel config, target binaries, networking tools, SHA-256 |
 | CI | Python 3.12/3.13 pytest, hash-locked dependencies, pip-audit, Gitleaks, dependency review, reproducible project wheel, plus Live USB build/reproducibility/UEFI smoke workflow |
+| Safety | No RPC, no broadcast functions, no blind contract calls, no mainnet signing, no private key output |
 | Mainnet / ERC-20 / EIP-712 | **disabled** |
 | Independent audit | Not done |
 
@@ -112,6 +114,7 @@ Full procedure: [docs/USB_SETUP.md](docs/USB_SETUP.md).
 - No kernel network stack significantly reduces remote attack surface, but does not protect against compromised firmware, malicious USB controllers, DMA/physical attacks, or a tampered build chain.
 - The boot/root filesystem uses deterministic-build controls and a two-clean-build hash checker.
 - The boot USB contains an empty writable `COLD_VAULT` partition. Reflashing the whole image destroys that partition; the external BIP39 recovery backup remains mandatory.
+- Attaching two cloned cold-wallet USBs with identical deterministic PARTUUIDs causes startup lockdown rather than ambiguous vault selection.
 - The transfer USB is untrusted input. Transaction parsers and policy checks still require fuzzing and independent audit.
 - There is currently no Secure Boot signing/enrollment flow.
 - Mainnet signing, contract calldata and blind signing remain disabled.
@@ -119,7 +122,7 @@ Full procedure: [docs/USB_SETUP.md](docs/USB_SETUP.md).
 ## Roadmap
 
 1. Maintain the reproducible offline Linux wheelhouse and Live USB verification pipeline.
-2. Continue independent transaction vectors, mutation/property fuzzing and parser/security review.
+2. Continue independent EVM/Bitcoin vectors, mutation/property fuzzing and parser/security review.
 3. Complete physical-hardware validation of the read-only Live USB and removable-media workflow.
 4. Improve on-device review UI, recovery rehearsal and mainnet readiness criteria.
 5. Optionally build a hardware-device version with independent screen/buttons and secure boot.
@@ -132,7 +135,7 @@ Full procedure: [docs/USB_SETUP.md](docs/USB_SETUP.md).
 - `scripts/` — fetch, target installation, build and static image/UEFI verification
 - `requirements/` — hash-locked CI dependency set
 - `tests/` — deterministic unit and security-invariant tests
-- `docs/` — build, USB operation, CI security, threat model and design references
+- `docs/` — build, USB operation, CI security, EVM vectors, threat model and design references
 
 We intentionally **do not implement ECDSA/secp256k1, Keccak, AES or PSBT serialization ourselves**. The project uses established upstream libraries and pins the artifacts used in the appliance build.
 
