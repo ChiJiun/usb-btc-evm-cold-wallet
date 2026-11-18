@@ -21,7 +21,7 @@ permissions:
 
 concurrency:
   group: live-usb-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build-and-reproduce:
@@ -46,7 +46,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential make gcc g++ patch rsync perl tar cpio file bc gawk gzip \
             bzip2 xz-utils python3 python3-venv python3-pip curl wget gnupg \
-            coreutils findutils diffutils unzip ca-certificates
+            coreutils findutils diffutils unzip ca-certificates qemu-system-x86 ovmf
 
       - name: Verify host prerequisites
         run: |
@@ -58,6 +58,9 @@ jobs:
 
       - name: Build image and verify reproducibility (two clean builds)
         run: sh scripts/check_reproducible.sh
+
+      - name: Boot generated USB image using UEFI OVMF/QEMU (TCG)
+        run: sh scripts/verify_uefi_boot.sh
 
       - name: Upload SHA-256 evidence (no wallet secrets or images)
         if: always()

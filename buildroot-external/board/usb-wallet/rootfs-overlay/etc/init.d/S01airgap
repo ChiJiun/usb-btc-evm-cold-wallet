@@ -90,3 +90,13 @@ if [ "$FAILED" -ne 0 ]; then
 else
 	pass "offline startup audit complete"
 fi
+
+# Report only the final audit result on the emulated UART. No wallet secrets or
+# addresses are written to this diagnostic channel.
+if [ -c /dev/ttyS0 ]; then
+	if [ "$FAILED" -eq 0 ]; then
+		printf 'USB_WALLET_UEFI_AUDIT_OK\n' > /dev/ttyS0
+	else
+		printf 'USB_WALLET_UEFI_AUDIT_LOCKDOWN\n' > /dev/ttyS0
+	fi
+fi
