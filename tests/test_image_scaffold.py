@@ -54,6 +54,19 @@ def test_buildroot_fetch_verifies_signed_manifest_before_archive_hash():
     assert "BUILDROOT_RELEASE_KEY_FINGERPRINT" in text
 
 
+def test_boot_audit_binds_vault_to_unique_partuuid_and_boot_device():
+    init = (
+        ROOT
+        / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d/S01airgap"
+    ).read_text()
+    assert "BOOT_PARTUUID=e2bd6d1b-8de5-502d-a897-c53a8e60f46b" in init
+    assert "VAULT_PARTUUID=18f1c36f-d5c0-5052-9cd2-03e9c2a48f00" in init
+    assert 'blkid -t "PARTUUID=$partuuid" -o device' in init
+    assert "boot and vault partitions share verified block parent" in init
+    assert '"$VAULT_DEVICE" /mnt/cold-vault' in init
+    assert "mount source matches verified PARTUUID device" in init
+
+
 def test_boot_audit_covers_memory_swap_and_persistence_and_fails_closed():
     init = (
         ROOT
@@ -66,6 +79,23 @@ def test_boot_audit_covers_memory_swap_and_persistence_and_fails_closed():
     assert 'LOCKDOWN=/run/usb-wallet/lockdown' in init
     assert "_security_locked" in appliance
     assert "wallet creation/signing is disabled" in appliance
+
+
+def test_target_dependency_lock_matches_main_cryptography_version():
+    requirements = (ROOT / "infra/wheelhouse-requirements.txt").read_text()
+    manifest = (ROOT / "infra/wheelhouse.sha256").read_text()
+    project = (ROOT / "pyproject.toml").read_text()
+    assert "cryptography==50.0.2" in project
+    assert "cryptography==50.0.2" in requirements
+    assert "cryptography-50.0.2-" in manifest
+    assert "cryptography==47.0.0" not in requirements
+
+
+def test_embit_foreign_arch_prebuilt_libraries_are_pruned():
+    installer = (ROOT / "scripts/install_target_python.py").read_text()
+    assert 'keep = "libsecp256k1_linux_x86_64.so"' in installer
+    assert 'prebuilt.glob("libsecp256k1_linux_*.so")' in installer
+    assert "binary.unlink()" in installer
 
 
 def test_wheelhouse_manifest_is_unique_and_includes_embit():

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=70"]
+requires = ["setuptools==84.2.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -12,11 +12,20 @@ license = "MIT"
 dependencies = [
   "embit==0.8.0",
   "eth-account==0.14.0",
-  "cryptography==47.0.0",
+  "cryptography==50.0.2",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==9.2.0", "kconfiglib==14.1.0"]
+dev = [
+  "pytest==9.2.0",
+  "hypothesis==6.170.15",
+  "build==1.6.1",
+  "pip-audit==2.10.1",
+  "pip-tools==7.7.0",
+  "setuptools==84.2.1",
+  "wheel==0.48.0",
+  "kconfiglib==14.1.0",
+]
 
 [project.scripts]
 usb-cold-wallet = "usb_cold_wallet.cli:main"

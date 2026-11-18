@@ -68,6 +68,18 @@ def main() -> int:
     shutil.copytree(extracted, site / "embit", dirs_exist_ok=True)
     shutil.rmtree(args.target / "tmp/embit-extract")
 
+    # embit's source distribution contains Linux secp256k1 prebuilt libraries
+    # for several CPU architectures. This appliance is x86_64-only; allowing
+    # ARM/AArch64 ELF objects into the target both bloats the trusted image and
+    # is correctly rejected by Buildroot's target-architecture validation.
+    prebuilt = site / "embit/util/prebuilt"
+    keep = "libsecp256k1_linux_x86_64.so"
+    for binary in prebuilt.glob("libsecp256k1_linux_*.so"):
+        if binary.name != keep:
+            binary.unlink()
+    if not (prebuilt / keep).is_file():
+        raise SystemExit("embit x86_64 secp256k1 prebuilt library missing")
+
     shutil.copytree(args.source / "src/usb_cold_wallet", site / "usb_cold_wallet", dirs_exist_ok=True)
 
     bindir = args.target / "usr/bin"

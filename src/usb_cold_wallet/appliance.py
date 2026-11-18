@@ -1,6 +1,7 @@
 """Single-purpose text console for the bootable air-gapped appliance."""
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -10,10 +11,12 @@ VAULT = Path("/mnt/cold-vault/wallet.vault")
 TRANSFER = Path("/mnt/transfer")
 BOOT_CHECKS = Path("/run/usb-wallet/boot-checks.txt")
 LOCKDOWN = Path("/run/usb-wallet/lockdown")
+BOOT_PARENT_FILE = Path("/run/usb-wallet/boot-parent")
+VAULT_DEVICE_FILE = Path("/run/usb-wallet/vault-device")
 SAFE_MOUNT_OPTIONS = "rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077"
 
 
-def _mount_info(path: Path) -> tuple[str, set[str]] | None:
+def _mount_info(path: Path) -> tuple[str, str, set[str]] | None:
     try:
         entries = Path("/proc/mounts").read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -22,7 +25,7 @@ def _mount_info(path: Path) -> tuple[str, set[str]] | None:
     for line in entries:
         fields = line.split()
         if len(fields) >= 4 and fields[1] == needle:
-            return fields[2], set(fields[3].split(","))
+            return fields[0], fields[2], set(fields[3].split(","))
     return None
 
 
@@ -30,12 +33,61 @@ def _mounted(path: Path) -> bool:
     return _mount_info(path) is not None
 
 
-def _safe_transfer_mount() -> bool:
+def _block_parent(device: str) -> str | None:
+    try:
+        resolved = (Path("/sys/class/block") / Path(device).name).resolve(strict=True)
+    except OSError:
+        return None
+    parent = resolved.parent.name
+    if not (Path("/sys/class/block") / parent).exists():
+        return None
+    return parent
+
+
+def _blkid(*args: str) -> list[str]:
+    result = subprocess.run(
+        ["blkid", *args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode not in (0, 2):
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _unique_transfer_device() -> str | None:
+    devices = _blkid("-t", "LABEL=TX_TRANSFER", "-o", "device")
+    if len(devices) != 1:
+        return None
+    device = devices[0]
+
+    types = _blkid("-s", "TYPE", "-o", "value", device)
+    if types != ["vfat"]:
+        return None
+
+    try:
+        boot_parent = BOOT_PARENT_FILE.read_text(encoding="utf-8").strip()
+        vault_device = VAULT_DEVICE_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+    parent = _block_parent(device)
+    if not parent or parent == boot_parent or device == vault_device:
+        return None
+    return device
+
+
+def _safe_transfer_mount(expected_source: str) -> bool:
     info = _mount_info(TRANSFER)
     if info is None:
         return False
-    filesystem, options = info
-    return filesystem == "vfat" and {"rw", "noexec", "nodev", "nosuid", "sync"} <= options
+    source, filesystem, options = info
+    return (
+        source == expected_source
+        and filesystem == "vfat"
+        and {"rw", "noexec", "nodev", "nosuid", "sync"} <= options
+    )
 
 
 def security_status() -> list[str]:
@@ -48,7 +100,16 @@ def security_status() -> list[str]:
     if not status:
         return ["FAIL: boot security audit contained no checks"]
 
-    # Re-check the two invariants that could materially change during runtime.
+    try:
+        boot_parent = BOOT_PARENT_FILE.read_text(encoding="utf-8").strip()
+        vault_device = VAULT_DEVICE_FILE.read_text(encoding="utf-8").strip()
+        if not boot_parent or not vault_device:
+            raise ValueError
+        status.append("PASS: verified boot/vault device identity remains available")
+    except (OSError, ValueError):
+        status.append("FAIL: verified boot/vault device identity missing")
+
+    # Re-check invariants that could materially change during runtime.
     status.append(
         "PASS: live network stack absent"
         if not Path("/proc/net").exists()
@@ -68,13 +129,16 @@ def _security_locked(status: list[str]) -> bool:
 
 def mount_transfer() -> bool:
     TRANSFER.mkdir(parents=True, exist_ok=True)
+    device = _unique_transfer_device()
+    if device is None:
+        return False
     if _mounted(TRANSFER):
-        return _safe_transfer_mount()
+        return _safe_transfer_mount(device)
     result = subprocess.run(
-        ["mount", "-t", "vfat", "-o", SAFE_MOUNT_OPTIONS, "-L", "TX_TRANSFER", str(TRANSFER)],
+        ["mount", "-t", "vfat", "-o", SAFE_MOUNT_OPTIONS, device, str(TRANSFER)],
         check=False,
     )
-    return result.returncode == 0 and _safe_transfer_mount()
+    return result.returncode == 0 and _safe_transfer_mount(device)
 
 
 def unmount_transfer() -> None:
@@ -89,9 +153,22 @@ def _run_cli(arguments: list[str]) -> None:
     )
 
 
+def _supports_request_envelopes() -> bool:
+    """Allow #5 request envelopes automatically once that module is present.
+
+    This keeps the appliance compatible with the current legacy CLI while
+    avoiding a future appliance-only fork when the bounded exchange format from
+    PR #11 lands.
+    """
+    return importlib.util.find_spec("usb_cold_wallet.exchange") is not None
+
+
 def _select_file(suffix: str) -> Path | None:
     if not mount_transfer():
-        print("TX_TRANSFER USB not found. Format a separate FAT USB with label TX_TRANSFER.")
+        print(
+            "TX_TRANSFER USB unavailable or ambiguous. "
+            "Use exactly one separate VFAT USB labelled TX_TRANSFER."
+        )
         return None
     files = sorted(p for p in TRANSFER.iterdir() if p.is_file() and p.name.lower().endswith(suffix))
     if not files:
@@ -130,11 +207,13 @@ def _sign_evm() -> None:
     recipient = input("Independently verified Sepolia recipient (0x...): ").strip()
     wei = input("Independently verified value in wei: ").strip()
     output = TRANSFER / (source.stem + ".signed.json")
-    _run_cli(["sign-evm", "--tx", str(source), "--to", recipient, "--wei", wei, "--out", str(output)])
+    source_flag = "--request" if _supports_request_envelopes() else "--tx"
+    _run_cli(["sign-evm", source_flag, str(source), "--to", recipient, "--wei", wei, "--out", str(output)])
 
 
 def _sign_btc() -> None:
-    source = _select_file(".psbt")
+    envelope_mode = _supports_request_envelopes()
+    source = _select_file(".json" if envelope_mode else ".psbt")
     if source is None:
         return
     recipient = input("Independently verified Bitcoin TESTNET recipient (tb1...): ").strip()
@@ -143,8 +222,17 @@ def _sign_btc() -> None:
     change = input("Expected BIP84 change index (blank if no change): ").strip()
     output = TRANSFER / (source.stem + ".signed.json")
     args = [
-        "sign-btc", "--psbt", str(source), "--to", recipient, "--sats", sats,
-        "--max-fee-sats", max_fee, "--out", str(output),
+        "sign-btc",
+        "--request" if envelope_mode else "--psbt",
+        str(source),
+        "--to",
+        recipient,
+        "--sats",
+        sats,
+        "--max-fee-sats",
+        max_fee,
+        "--out",
+        str(output),
     ]
     if change:
         args.extend(["--change-index", change])
@@ -184,7 +272,7 @@ def main() -> int:
             _sign_btc()
         elif choice == "5":
             unmount_transfer()
-            print("TX_TRANSFER mounted." if mount_transfer() else "TX_TRANSFER not found.")
+            print("TX_TRANSFER mounted." if mount_transfer() else "TX_TRANSFER not found or unsafe.")
         elif choice == "6":
             unmount_transfer()
             subprocess.run(["poweroff"], check=False)

@@ -51,11 +51,13 @@ sha256sum -c usb-cold-wallet.img.sha256
 
 ## 3. 準備 USB-B
 
-將另一支 USB 格式化 FAT32，Volume Label 設為：
+將另一支、**與 USB-A 不同的實體裝置**格式化 FAT32，Volume Label 設為：
 
 ```
 TX_TRANSFER
 ```
+
+簽署時只允許接上一支 `TX_TRANSFER`。若出現多個同名裝置、來源與 boot USB 相同、不是 VFAT，或 mount source/options 不符，系統會 fail closed，不會猜測應使用哪支 USB。
 
 只允許以下類型資料出現在 USB-B：
 
@@ -95,8 +97,12 @@ Console 會顯示啟動安全稽核：
 - network stack 必須不存在；
 - swap 必須為空；
 - `/` 必須是 RAM-backed `rootfs` / `tmpfs`；
-- `COLD_VAULT` 必須以 `rw,noexec,nodev,nosuid,sync` 掛載；
+- boot partition 與 `COLD_VAULT` 必須各自能由固定 GPT PARTUUID 唯一定位；
+- 兩者必須屬於同一個 block-device parent；
+- `COLD_VAULT` 必須從已驗證的確切 device source，以 `rw,noexec,nodev,nosuid,sync` 掛載；
 - 不得存在其他 writable non-memory filesystem。
+
+因此同時插入兩支由同一 image clone 出來的 Cold Wallet USB 會因 PARTUUID 重複而進入 lockdown，避免把 vault 寫到錯誤裝置。
 
 若任何檢查為 `FAIL`，系統會建立 `/run/usb-wallet/lockdown`，Console 直接停用建立錢包與簽章功能，只允許關機；不是只顯示警告。
 
@@ -194,5 +200,5 @@ unsigned.psbt
 - 現階段沒有 Secure Boot。
 - Image build 已加入 deterministic metadata 與 `make reproducibility-check` 兩次 clean build 比對；仍需在具完整 Buildroot 工具鏈的相容 host 實際跑完，才能宣稱該 commit 已完成 bit-for-bit runtime 驗證。
 - USB-B 是不可信輸入，parser 仍需 fuzzing。
-- Recovery workflow 仍在 Issue #5 強化中。
+- Recovery / bounded request-envelope workflow 仍由 Issue #5 / PR #11 強化中；appliance 已做相容性切換：該 exchange module 存在時會使用 `--request` envelope 路徑，否則維持目前 legacy testnet `--tx` / `--psbt` 路徑。
 - 主網與 token/contract signing 都尚未開放。
