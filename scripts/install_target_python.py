@@ -14,6 +14,18 @@ import tarfile
 from zipfile import ZipFile
 
 PYTHON = "3.14"
+TARGET_EMBIT_PREBUILT = "libsecp256k1_linux_x86_64.so"
+
+
+def _keep_target_embit_prebuilt(extracted: Path) -> None:
+    """Remove hash-pinned embit binaries that target other OS/CPU combinations."""
+    prebuilt = extracted / "util/prebuilt"
+    allowed = prebuilt / TARGET_EMBIT_PREBUILT
+    if not allowed.is_file():
+        raise SystemExit("embit x86_64 libsecp256k1 prebuilt library is missing")
+    for artifact in prebuilt.iterdir():
+        if artifact.is_file() and artifact != allowed:
+            artifact.unlink()
 
 
 def _manifest(path: Path) -> dict[str, str]:
@@ -65,6 +77,7 @@ def main() -> int:
         members = [m for m in archive.getmembers() if m.name.startswith("embit-0.8.0/src/embit/")]
         archive.extractall(args.target / "tmp/embit-extract", members=members, filter="data")
     extracted = args.target / "tmp/embit-extract/embit-0.8.0/src/embit"
+    _keep_target_embit_prebuilt(extracted)
     shutil.copytree(extracted, site / "embit", dirs_exist_ok=True)
     shutil.rmtree(args.target / "tmp/embit-extract")
 

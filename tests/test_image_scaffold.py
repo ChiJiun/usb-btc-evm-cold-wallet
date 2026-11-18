@@ -1,6 +1,11 @@
 from pathlib import Path
 import re
 
+from scripts.install_target_python import (
+    TARGET_EMBIT_PREBUILT,
+    _keep_target_embit_prebuilt,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -103,3 +108,20 @@ def test_busybox_network_clients_are_explicitly_disabled():
     text = (ROOT / "buildroot-external/board/usb-wallet/busybox.fragment").read_text()
     for symbol in ("PING", "WGET", "NC", "IP", "IFCONFIG", "UDHCPC"):
         assert f"# CONFIG_{symbol} is not set" in text
+
+
+def test_target_installer_keeps_only_x86_64_embit_binary(tmp_path):
+    prebuilt = tmp_path / "util/prebuilt"
+    prebuilt.mkdir(parents=True)
+    for name in (
+        TARGET_EMBIT_PREBUILT,
+        "libsecp256k1_linux_aarch64.so",
+        "libsecp256k1_linux_armv7l.so",
+        "libsecp256k1_darwin_x86_64.dylib",
+        "libsecp256k1_windows_amd64.dll",
+    ):
+        (prebuilt / name).write_bytes(b"fixture")
+
+    _keep_target_embit_prebuilt(tmp_path)
+
+    assert [path.name for path in prebuilt.iterdir()] == [TARGET_EMBIT_PREBUILT]
