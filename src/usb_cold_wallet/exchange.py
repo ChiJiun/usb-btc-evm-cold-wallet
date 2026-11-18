@@ -127,16 +127,37 @@ def read_bounded(path: Path, limit=MAX_BYTES + 8192):
         os.close(fd)
 
 
-def read_envelope(path: Path, expected_kind=None):
-    raw = read_bounded(path)
+def decode_envelope(raw: bytes | bytearray | str, expected_kind=None):
+    """Decode one bounded envelope from USB bytes or a QR-decoded text payload.
+
+    Both transports intentionally terminate in the same strict JSON + digest
+    verification path so the review UI cannot have a weaker QR parser.
+    """
+    if isinstance(raw, str):
+        try:
+            encoded = raw.encode("utf-8")
+        except UnicodeError as exc:
+            raise ValueError("Invalid exchange text") from exc
+    elif isinstance(raw, (bytes, bytearray)):
+        encoded = bytes(raw)
+    else:
+        raise ValueError("Exchange input must be bytes or text")
+    if len(encoded) > MAX_BYTES + 8192:
+        raise ValueError("Exchange input too large")
     try:
-        data = json.loads(raw.decode("utf-8"),
-                          object_pairs_hook=_unique_object,
-                          parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Non-finite JSON number")))
+        data = json.loads(
+            encoded.decode("utf-8"),
+            object_pairs_hook=_unique_object,
+            parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Non-finite JSON number")),
+        )
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("Invalid exchange JSON") from exc
     verify(data, expected_kind)
     return data
+
+
+def read_envelope(path: Path, expected_kind=None):
+    return decode_envelope(read_bounded(path), expected_kind)
 
 
 def read(path: Path, expected_kind=None):
