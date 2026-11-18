@@ -1,0 +1,3 @@
+# USB cold wallet: intentionally no physical network configuration.
+auto lo
+iface lo inet loopback

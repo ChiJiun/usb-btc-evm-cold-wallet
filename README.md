@@ -2,9 +2,9 @@
 
 > **Research prototype / 測試網限定 / 未經安全審計 / 勿存放真實資產。**
 >
-> **目前不是可直接開機的 USB 映像。** 這個 repository 提供可在**已隔離網路的 Linux Live USB 環境**執行的錢包核心與 CLI。真正的冷儲存安全性取決於啟動環境、實體隔離、原始碼及相依套件供應鏈的完整性。它不是 YubiKey，也沒有 Secure Element。
+> Repository 目前包含**可重現的 Debian Live USB remaster builder**，會產生 read-only、無 persistence、開機強制 air-gap audit 的 amd64 hybrid ISO。仍屬測試網研究原型，尚未完成獨立安全審計與多硬體實機開機驗證。它不是 YubiKey，也沒有 Secure Element。
 
-[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [威脅模型](docs/THREAT_MODEL.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
+[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [可重現 Live Image](docs/LIVE_IMAGE.md) · [威脅模型](docs/THREAT_MODEL.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## Goals / 目標
 
@@ -25,9 +25,10 @@
 | EVM | **Sepolia only**, type-2 EIP-1559 native ETH transfers, explicit chainId / recipient / amount / gas checks |
 | Public outputs | BTC testnet receiving addresses and account tpub; EVM Sepolia address |
 | Safety | No RPC, no broadcast functions, no blind contract calls, no mainnet signing, no private key output |
+| Live USB | Pinned Debian 13.7 base, signed-checksum verification, hash-locked Python artifacts, read-only/non-persistent root, boot-time network/swap audit |
 | CI | Local Pytest validated; [GitHub Actions template](docs/ci-template.yml) ready, not enabled until GitHub authorization permits workflow upload |
 
-Not yet supported: mainnet, ERC-20, EIP-712, WalletConnect, Taproot, multisig, PSBT v2, QR transport, hardware button/screen confirmation, bootable ISO builder, address discovery beyond first 100 BIP84 inputs, independent audits.
+Not yet supported: mainnet, ERC-20, EIP-712, WalletConnect, Taproot, multisig, PSBT v2, QR transport, hardware button/screen confirmation, automatic USB-A vault partitioning, address discovery beyond first 100 BIP84 inputs, independent audits.
 
 ## Development & automated tests (safe on connected VM)
 
@@ -43,13 +44,13 @@ usb-cold-wallet --help
 
 ## Live USB quick start (ONLY on trusted physically disconnected computer)
 
-Full steps: [docs/USB_SETUP.md](docs/USB_SETUP.md). For legitimate cold storage, **do not run `init` on an internet-connected machine**.
+Build/verification: [docs/LIVE_IMAGE.md](docs/LIVE_IMAGE.md). Flashing and operator workflow: [docs/USB_SETUP.md](docs/USB_SETUP.md). For legitimate cold storage, **do not run `init` on an internet-connected machine**.
+
+The generated image embeds the exact hash-locked Python runtime dependencies; it does not run `pip` at boot. Before unlocking a wallet, the automatic audit must pass:
 
 ```bash
-# Prepare packages online and transfer to offline verified Linux using a transport USB:
-python -m pip download -d wheelhouse -e ".[dev]"
-# In offline Live Linux with a local source checkout / prebuilt wheelhouse:
-python -m pip install --no-index --find-links wheelhouse -e ".[dev]"
+sudo usb-cold-wallet-offline-audit
+# Expected: OFFLINE AUDIT: PASS
 
 # Wallet bootstrap ON OFFLINE HOST ONLY:
 usb-cold-wallet --vault /path/on/offline-media/wallet.vault init --offline-ack --i-have-paper-backup
@@ -90,15 +91,17 @@ usb-cold-wallet --vault /path/on/offline-media/wallet.vault sign-btc \
 - `btc.py`: conservative P2WPKH PSBT review + signing
 - `evm.py`: Sepolia type-2 native transfer review + signing using `eth-account`
 - `cli.py`: interactive approval and file-based air-gap exchange
-- `tests/`: deterministic known-vector and rejection tests
+- `tests/`: deterministic known-vector, rejection and image-pipeline tests
+- `image/`: pinned base image, Python artifact lock, build-tool versions and runtime hardening policy
+- `tools/`: authenticated fetch, safe offline artifact unpacking and reproducible ISO remaster builder
 
 We intentionally **do not implement cryptographic curves, SHA3/Keccak, PSBT serialization or AES ourselves**. [Upstream references](docs/OPEN_SOURCE_REFERENCES.md) explain the libraries and analogous open-source designs.
 
 ## Development roadmap
 
-1. Pin transitive dependencies with hashes; independent reproducible offline Linux wheelhouse/build workflow.
+1. ✅ Hash-pin the full runtime dependency closure and add an authenticated, reproducible read-only Live USB builder with boot-time air-gap/swap/persistence audit.
 2. Independent reference transaction vectors (Bitcoin Core/Sparrow/Electrum and Ethereum client), mutation tests / fuzzing, PSBT input/output verification, security review.
-3. Build tested, reproducible read-only Live USB image with network disabled; encrypted persistence and QR/file transport.
+3. Physical boot matrix, byte-for-byte independent rebuild verification, and safer USB-A vault partition / transport workflow.
 4. Better on-device UI for recipient/fee review, wallet recovery rehearsal and full mainnet readiness criteria.
 5. Optional hardware device version with independent screen/buttons and secure boot.
 

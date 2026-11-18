@@ -1,0 +1,2 @@
+# Keep newly-added network interfaces administratively down.
+SUBSYSTEM=="net", ACTION=="add", KERNEL!="lo", ENV{NM_UNMANAGED}="1", RUN+="/usr/local/sbin/usb-cold-wallet-net-down %k"

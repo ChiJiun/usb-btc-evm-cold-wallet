@@ -1,0 +1,14 @@
+[Unit]
+Description=USB cold wallet offline boot audit
+Requires=usb-cold-wallet-airgap.service
+After=usb-cold-wallet-airgap.service local-fs.target
+Before=getty.target
+
+[Service]
+Type=oneshot
+LimitCORE=0
+ExecStart=/usr/local/sbin/usb-cold-wallet-offline-audit
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

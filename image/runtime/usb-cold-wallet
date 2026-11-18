@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+MARKER=/run/usb-cold-wallet/airgap-ok
+if [ ! -f "$MARKER" ]; then
+    echo "REFUSING TO START: offline boot audit has not passed." >&2
+    echo "Run: sudo usb-cold-wallet-offline-audit" >&2
+    exit 70
+fi
+
+umask 077
+ulimit -c 0 2>/dev/null || true
+export PYTHONNOUSERSITE=1
+export PYTHONDONTWRITEBYTECODE=1
+export HOME=/run/usb-cold-wallet/home
+mkdir -p "$HOME"
+chmod 0700 "$HOME"
+
+exec /usr/bin/python3 -I -B /opt/usb-cold-wallet/entry.py "$@"

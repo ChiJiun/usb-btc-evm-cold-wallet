@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "distribution": "Debian",
+  "release": "13.7.0",
+  "architecture": "amd64",
+  "flavor": "standard",
+  "iso_filename": "debian-live-13.7.0-amd64-standard.iso",
+  "base_url": "https://cdimage.debian.org/debian-cd/13.7.0-live/amd64/iso-hybrid",
+  "sha256": "040a44f35186321eb6cdaab52a8a2d06224fe6b77f6fbb9f1861ad89c14e17ec",
+  "checksums_filename": "SHA256SUMS",
+  "signature_filename": "SHA256SUMS.sign",
+  "signing_key_url": "https://www.debian.org/CD/key-DA87E80D6294BE9B.txt",
+  "signing_key_fingerprint": "DF9B9C49EAA9298432589D76DA87E80D6294BE9B",
+  "release_signature_epoch": 1789230034,
+  "python_version": "3.13"
+}

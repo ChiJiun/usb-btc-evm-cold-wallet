@@ -1,29 +1,170 @@
-# USB 製作與使用指南（尚無自動化 ISO Builder）
+# USB setup and operator guide
 
-目前交付的是 Python CLI，**不是一鍵刷入即可開機的 ISO**。下列步驟為預定開發／測試流程；請先在測試網完成驗證。
+> **TESTNET research only. The image is not independently audited.**
 
-## USB 需求
+The intended workflow uses **USB-A as the cold boot device** and **USB-B only as a transaction transport device**. The live root is read-only and non-persistent.
 
-- **USB-A（系統）**：8 GB 以上，燒錄官方 Linux Live ISO（例如 Ubuntu Desktop Live）。這會清除 USB-A 原有內容。
-- **USB-B（資料交換）**：儲存公開帳戶資料、未簽署的 PSBT/JSON、已簽署交易，**不可儲存 vault/seed**。
-- **離線 vault 媒體**：必須是只有離線環境使用的獨立加密持久儲存媒體/分區；早期測試請用第三支離線專用 USB，避免與 USB-B 混用。
-- 一台可從 USB 開機的電腦，並能在啟動前物理斷開所有網路。
+## 1. Build or obtain the image
 
-一般隨身碟只能儲存金鑰檔案，不能自行執行簽署；此流程是由離線電腦完成簽署。
+For source builds, follow [LIVE_IMAGE.md](LIVE_IMAGE.md). Before flashing, verify the sidecar:
 
-## 安裝概觀
+```bash
+sha256sum -c usb-btc-evm-cold-wallet-amd64.iso.sha256
+```
 
-1. 在線上可信電腦下載官方 Linux ISO，校驗發行者提供的雜湊/簽章；用官方指南製作 USB-A（會格式化）。
-2. **在斷網前**下載 Python 套件與此 repo 的來源碼；將版本、雜湊與上游來源一併記錄，放在可信的安裝傳輸媒體。
-3. 將電腦完全關機；拔除 Ethernet、停用 Wi-Fi / Bluetooth、移除其他網路路徑；再從 USB-A 開啟 Live 系統，不掛載原本的硬碟。
-4. 離線建立 Python 虛擬環境。使用預先下載的 wheels 以 `pip --no-index --find-links` 安裝；**wheel 必須與離線主機的 Python 版本、CPU 架構、作業系統匹配**。
-5. 只在離線系統建立 vault；手抄 24 個助記詞並另外備份，確認能夠離線復原。
-6. 公開帳戶資訊轉給在線錢包，於線上準備 unsigned tx；將其放在 USB-B，回到離線主機核對並簽署，再將簽署結果帶回在線環境廣播。
-7. 簽署時留意：真實目標地址與金額應由可信且獨立的來源核對，不只是複製連網電腦顯示內容。
+The project build additionally authenticates the pinned Debian base ISO using Debian's signed `SHA256SUMS` and the pinned Debian CD signing-key fingerprint.
 
-## 首次使用的限制
+## 2. Flash USB-A
 
-- v0.1 沒有自帶只讀 Live ISO、自動建置輪子離線包、QR 模組，也沒有硬體可信螢幕。
-- 採用一般 Live OS，操作期間仍可能把機密寫入交換空間、USB persistence、磁碟、日誌、休眠檔。必須對啟動方式與儲存掛載方式做額外稽核。
-- 加密 vault 遺失、損壞或忘記密碼，唯一可用的復原方式是**外部保存的 BIP39 助記詞及其選用 passphrase**。重新產生 vault 的正式 CLI 尚未實作。
-- **不要把 `init` 實作上的旗標當作實體離線證明。**
+Use an 8 GB+ USB stick and a raw-image writer (for example Rufus in DD/raw mode, Etcher, or `dd`). **Flashing destroys the selected USB device.** Verify the device identity yourself before writing.
+
+Linux example:
+
+```bash
+sudo dd if=usb-btc-evm-cold-wallet-amd64.iso of=/dev/REPLACE_USB_DEVICE \
+  bs=4M conv=fsync status=progress
+```
+
+Do not use a mounted partition path such as `/dev/sdX1`; the target is the whole USB device.
+
+The ISO root is intentionally non-persistent. If you want a two-stick workflow, USB-A needs a separate writable data partition (for example an ext4 partition labeled `COLDVAULT`) in unused space after the ISO image. **The current repository does not automate partition-table changes**, because selecting the wrong block device would destroy data. Create that partition only after independently identifying USB-A. Never mount that vault partition on an online computer.
+
+If USB-A has no `COLDVAULT` partition, use a third, offline-only storage device for `wallet.vault`.
+
+## 3. Prepare USB-B
+
+USB-B is a normal small transport drive. It may touch the online computer, so it must contain **only**:
+
+- public watch-only data;
+- unsigned PSBT / EVM transaction JSON;
+- signed PSBT / raw EVM transaction output.
+
+Never put these on USB-B:
+
+- BIP39 words;
+- BIP39 passphrase;
+- `wallet.vault`;
+- raw private keys.
+
+Treat every file arriving from USB-B as attacker-controlled input.
+
+## 4. Boot offline
+
+1. Fully shut down the signing computer.
+2. Disconnect Ethernet.
+3. Disable/remove Wi-Fi and Bluetooth hardware where practical.
+4. Boot from USB-A.
+5. **Do not insert USB-B yet.**
+6. Check the automatic boot audit:
+
+```bash
+sudo usb-cold-wallet-offline-audit
+```
+
+Expected final line:
+
+```text
+OFFLINE AUDIT: PASS
+```
+
+The wallet launcher refuses to run without the current-boot PASS marker.
+
+Useful manual checks:
+
+```bash
+cat /proc/swaps
+cat /proc/cmdline
+ip -o addr show scope global
+findmnt /run/live/medium
+sudo nft list chain inet usb_cold_wallet output
+```
+
+Expected: no active swap, `nopersistence` in the kernel command line, no global IP address, live medium mounted `ro`, nftables output policy `drop`.
+
+## 5. Mount the offline vault
+
+For a USB-A data partition labeled `COLDVAULT`:
+
+```bash
+sudo mkdir -p /mnt/coldvault
+sudo mount -o nodev,nosuid,noexec /dev/disk/by-label/COLDVAULT /mnt/coldvault
+```
+
+Create a wallet **only on the physically offline machine**:
+
+```bash
+usb-cold-wallet --vault /mnt/coldvault/wallet.vault \
+  init --offline-ack --i-have-paper-backup
+```
+
+Write the displayed BIP39 words on paper/metal and keep that recovery material separate from the USB. Never photograph it.
+
+Export public data:
+
+```bash
+usb-cold-wallet --vault /mnt/coldvault/wallet.vault addresses --count 3
+```
+
+Only the resulting public data may go to USB-B.
+
+## 6. Sign with USB-B
+
+Insert USB-B **after the boot audit has passed** and mount it with restrictive options:
+
+```bash
+sudo mkdir -p /mnt/transport
+sudo mount -o nodev,nosuid,noexec /dev/REPLACE_TRANSPORT_PARTITION /mnt/transport
+```
+
+### EVM Sepolia
+
+```bash
+usb-cold-wallet --vault /mnt/coldvault/wallet.vault sign-evm \
+  --tx /mnt/transport/sepolia-unsigned.json \
+  --to 0x000000000000000000000000000000000000dEaD \
+  --wei 1000000000000 \
+  --out /mnt/transport/sepolia-signed.json
+```
+
+### Bitcoin testnet
+
+```bash
+usb-cold-wallet --vault /mnt/coldvault/wallet.vault sign-btc \
+  --psbt /mnt/transport/unsigned.psbt \
+  --to tb1qREPLACE_WITH_INDEPENDENTLY_VERIFIED_ADDRESS \
+  --sats 50000 \
+  --max-fee-sats 2000 \
+  --change-index 0 \
+  --out /mnt/transport/signed.json
+```
+
+Verify recipient, amount, network and fee from an independent trusted source, not solely from text supplied by the online computer.
+
+Then:
+
+```bash
+sync
+sudo umount /mnt/transport
+```
+
+Move USB-B to the online computer and broadcast the signed transaction using a separate wallet/node. Broadcasting is intentionally absent from this project.
+
+## 7. End the signing session
+
+Unmount the vault and fully power off:
+
+```bash
+sync
+sudo umount /mnt/coldvault
+sudo poweroff
+```
+
+Do not suspend/hibernate. The encrypted vault is protected at rest, but decrypted seed material and derived keys may have existed in RAM during the session.
+
+## Current limitations
+
+- Physical boot on representative x86_64 hardware must still be tested for each release.
+- No secure element or trusted hardware display.
+- No automatic creation of USB-A's writable vault partition.
+- No mainnet signing, ERC-20, EIP-712, Taproot, multisig or QR transport.
+- Recovery rehearsal and safer media workflow are tracked separately.

@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+STATE_DIR=/run/usb-cold-wallet
+umask 077
+mkdir -p "$STATE_DIR"
+rm -f "$STATE_DIR/airgap-ok" "$STATE_DIR/airgap-applied"
+
+# Secrets must never be paged to disk.
+swapoff -a
+
+# Tear down every currently present non-loopback interface before installing
+# the firewall. A udev rule repeats this for hot-plugged interfaces.
+for path in /sys/class/net/*; do
+    [ -e "$path" ] || continue
+    iface=$(basename "$path")
+    [ "$iface" = "lo" ] && continue
+    ip addr flush dev "$iface" 2>/dev/null || true
+    ip link set dev "$iface" down 2>/dev/null || true
+done
+
+# Do not rely on a missing network manager alone. A base-chain DROP verdict
+# cannot be overridden by a later ACCEPT in another nftables base chain.
+nft delete table inet usb_cold_wallet 2>/dev/null || true
+nft add table inet usb_cold_wallet
+nft 'add chain inet usb_cold_wallet input { type filter hook input priority -300; policy drop; }'
+nft 'add chain inet usb_cold_wallet output { type filter hook output priority -300; policy drop; }'
+nft 'add chain inet usb_cold_wallet forward { type filter hook forward priority -300; policy drop; }'
+nft add rule inet usb_cold_wallet input iifname lo accept
+nft add rule inet usb_cold_wallet output oifname lo accept
+
+# ARP is outside the inet family. Block it separately so an Ethernet link does
+# not leak layer-2 address-resolution traffic.
+nft delete table arp usb_cold_wallet_arp 2>/dev/null || true
+nft add table arp usb_cold_wallet_arp
+nft 'add chain arp usb_cold_wallet_arp input { type filter hook input priority -300; policy drop; }'
+nft 'add chain arp usb_cold_wallet_arp output { type filter hook output priority -300; policy drop; }'
+
+printf '%s\n' "air-gap controls applied" > "$STATE_DIR/airgap-applied"
+chmod 0600 "$STATE_DIR/airgap-applied"

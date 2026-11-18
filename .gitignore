@@ -1,7 +1,7 @@
 # Temporary: CI YAML cannot be pushed through current GitHub OAuth (missing workflow scope).
 .github/workflows/ci.yml
 # Absolutely never commit wallets, backups, entropy, transfer media or local secrets
-.venv/
+.venv*/
 __pycache__/
 .pytest_cache/
 *.pyc
@@ -15,6 +15,9 @@ __pycache__/
 *.wif
 *.psbt
 *.signed
+*.iso
+*.img
+*.part
 wheelhouse/
 dist/
 build/

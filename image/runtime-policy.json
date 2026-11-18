@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "required_boot_tokens": ["boot=live", "nopersistence"],
+  "forbidden_boot_tokens": ["persistence", "swap=true"],
+  "forbidden_boot_prefixes": ["persistence=", "netboot=", "nfsroot="],
+  "masked_units": [
+    "NetworkManager.service",
+    "NetworkManager-wait-online.service",
+    "ModemManager.service",
+    "bluetooth.service",
+    "ifup@.service",
+    "iwd.service",
+    "networking.service",
+    "systemd-networkd.service",
+    "systemd-networkd.socket",
+    "systemd-networkd-wait-online.service",
+    "systemd-resolved.service",
+    "wpa_supplicant.service",
+    "wpa_supplicant@.service",
+    "systemd-coredump.socket",
+    "systemd-coredump@.service",
+    "swap.target",
+    "sleep.target",
+    "suspend.target",
+    "hibernate.target",
+    "hybrid-sleep.target",
+    "suspend-then-hibernate.target"
+  ],
+  "live_medium_mount": "/run/live/medium",
+  "allowed_root_filesystems": ["overlay", "aufs"]
+}

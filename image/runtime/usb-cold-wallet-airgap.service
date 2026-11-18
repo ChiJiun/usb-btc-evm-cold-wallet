@@ -1,0 +1,13 @@
+[Unit]
+Description=USB cold wallet air-gap controls
+After=local-fs.target systemd-udevd.service
+Before=network-pre.target network.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/usb-cold-wallet-airgap
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

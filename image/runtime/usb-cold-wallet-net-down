@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+iface=${1:-}
+[ -n "$iface" ] || exit 0
+[ "$iface" = "lo" ] && exit 0
+
+ip addr flush dev "$iface" 2>/dev/null || true
+ip link set dev "$iface" down 2>/dev/null || true
