@@ -18,8 +18,8 @@ if [ ! -f "$SIGNATURE" ]; then
 	curl -fL "$BUILDROOT_SIG_URL" -o "$SIGNATURE"
 fi
 
-printf '%s  %s\n' "$BUILDROOT_SIG_SHA256" "$SIGNATURE" | sha256sum -c -
-printf '%s  %s\n' "$BUILDROOT_RELEASE_KEY_SHA256" "$KEY" | sha256sum -c -
+printf '%s  %s\n' "$BUILDROOT_SIG_SHA256" "$SIGNATURE" | sha256sum -c - >&2
+printf '%s  %s\n' "$BUILDROOT_RELEASE_KEY_SHA256" "$KEY" | sha256sum -c - >&2
 
 KEY_FINGERPRINT="$(
 	gpg --batch --with-colons --import-options show-only --import "$KEY" 2>/dev/null |
@@ -44,7 +44,7 @@ if [ "$SIGNED_SHA256" != "$BUILDROOT_SHA256" ]; then
 	echo "ERROR: signed Buildroot SHA-256 does not match pinned SHA-256" >&2
 	exit 1
 fi
-printf '%s  %s\n' "$SIGNED_SHA256" "$ARCHIVE" | sha256sum -c -
+printf '%s  %s\n' "$SIGNED_SHA256" "$ARCHIVE" | sha256sum -c - >&2
 
 if [ ! -f "$DEST/Makefile" ]; then
 	rm -rf "$DEST"
