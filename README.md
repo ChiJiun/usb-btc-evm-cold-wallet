@@ -4,7 +4,7 @@
 >
 > **目前不是可直接開機的 USB 映像。** 這個 repository 提供可在**已隔離網路的 Linux Live USB 環境**執行的錢包核心與 CLI。真正的冷儲存安全性取決於啟動環境、實體隔離、原始碼及相依套件供應鏈的完整性。它不是 YubiKey，也沒有 Secure Element。
 
-[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [威脅模型](docs/THREAT_MODEL.md) · [CI / 供應鏈安全](docs/CI_SECURITY.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
+[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [威脅模型](docs/THREAT_MODEL.md) · [EVM 測試向量](docs/EVM_TEST_VECTORS.md) · [CI / 供應鏈安全](docs/CI_SECURITY.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## Goals / 目標
 
@@ -22,7 +22,7 @@
 | One BIP39 master seed | 24-word generated offline, optional BIP39 passphrase for derivation |
 | Encrypted USB vault | Scrypt + AES-256-GCM, mode 0600, reject existing file |
 | Bitcoin | **testnet only**, native SegWit P2WPKH BIP84, strict PSBT v0 / SIGHASH_ALL, explicit recipient / amount / fee checks, no RBF/locktime semantics |
-| EVM | **Sepolia only**, type-2 EIP-1559 native ETH transfers, explicit chainId / recipient / amount / gas checks |
+| EVM | **Sepolia only**, type-2 EIP-1559 native ETH transfers, explicit chainId / recipient / amount / gas checks, signed raw transaction re-decoding + sender recovery |
 | Public outputs | BTC testnet receiving addresses and account tpub; EVM Sepolia address |
 | Safety | No RPC, no broadcast functions, no blind contract calls, no mainnet signing, no private key output |
 | CI | GitHub Actions: Python 3.12/3.13 pytest, hash-locked dependencies, pip-audit, Gitleaks, dependency review and reproducible-wheel check |
@@ -88,7 +88,7 @@ usb-cold-wallet --vault /path/on/offline-media/wallet.vault sign-btc \
 - `vault.py`: BIP39 encrypted vault
 - `keys.py`: BIP32 derivation via upstream `embit`
 - `btc.py`: conservative P2WPKH PSBT review + signing
-- `evm.py`: Sepolia type-2 native transfer review + signing using `eth-account`
+- `evm.py`: Sepolia type-2 native transfer review + signing using `eth-account`, plus strict RLP re-decoding of signed bytes
 - `cli.py`: interactive approval and file-based air-gap exchange
 - `tests/`: deterministic known-vector and rejection tests
 
@@ -97,7 +97,7 @@ We intentionally **do not implement cryptographic curves, SHA3/Keccak, PSBT seri
 ## Development roadmap
 
 1. Independent reproducible offline Linux wheelhouse workflow for Live USB provisioning (CI dependency hashes and reproducible project wheel are now enforced).
-2. Independent reference transaction vectors (Bitcoin Core/Sparrow/Electrum and Ethereum client), mutation tests / fuzzing, PSBT input/output verification, security review.
+2. Extend external EVM and Bitcoin Core/Sparrow vectors, mutation tests/fuzzing, and deeper PSBT input/output verification and security review.
 3. Build tested, reproducible read-only Live USB image with network disabled; encrypted persistence and QR/file transport.
 4. Better on-device UI for recipient/fee review, wallet recovery rehearsal and full mainnet readiness criteria.
 5. Optional hardware device version with independent screen/buttons and secure boot.
