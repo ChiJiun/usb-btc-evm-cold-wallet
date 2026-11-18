@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="companion-token" content="__COMPANION_TOKEN__">
+  <title>USB Cold Wallet · Online Companion</title>
+  <link rel="stylesheet" href="/companion.css">
+  <script src="/companion.js" defer></script>
+</head>
+<body>
+  <main class="wrap">
+    <header class="top">
+      <div><div class="eyebrow">USB BTC + EVM COLD WALLET · ONLINE ONLY</div>
+        <h1>Watch-only Companion</h1>
+        <p>建立交易、接收離線簽章、廣播。<strong>這個介面沒有私鑰，也不會替你簽名。</strong></p>
+      </div>
+      <div class="network">● Sepolia Testnet<br><small>主網已停用</small></div>
+    </header>
+    <div class="notice">⚠ 研究原型，請勿投入真實資產。線上端無法替你確認收款人真實身分；務必在獨立離線畫面核對完整地址與金額。</div>
+    <div id="message" class="message" role="status" aria-live="polite"></div>
+
+    <section class="grid">
+      <article class="panel" id="importPanel">
+        <div class="step"><span>01</span> 先匯入公開帳戶</div>
+        <h2>離線匯出的 Watch-only 資料</h2>
+        <p>支援目前的 <code>addresses</code> JSON，以及 #5 的 <code>watch-only</code> 交換封裝。不得匯入助記詞、Vault 或私鑰。</p>
+        <label for="watchFile">選擇公開資料檔</label>
+        <input id="watchFile" type="file" accept=".json,application/json">
+        <button id="importBtn" type="button">匯入公開帳戶</button>
+        <div id="walletInfo" class="facts muted">尚未匯入帳戶</div>
+      </article>
+
+      <article class="panel">
+        <div class="step"><span>02</span> 查詢 Sepolia 網路</div>
+        <h2>餘額與費用</h2>
+        <p>只透過已配置的 RPC 查詢，結果仍然不可信；鏈與帳戶必須相符。</p>
+        <button id="refreshBtn" class="secondary" type="button" disabled>更新餘額與預估費用</button>
+        <div class="facts" id="overview">匯入帳戶後顯示</div>
+      </article>
+
+      <article class="panel">
+        <div class="step"><span>03</span> 建立未簽章交易</div>
+        <h2>傳送測試 ETH</h2>
+        <form id="sendForm">
+          <label for="recipient">收款地址（完整 0x 地址）</label>
+          <input id="recipient" name="recipient" type="text" autocomplete="off" spellcheck="false" placeholder="0x..." required maxlength="42">
+          <label for="amount">數量（ETH）</label>
+          <input id="amount" name="amount" type="text" inputmode="decimal" autocomplete="off" placeholder="0.01" required>
+          <label for="maxFee">最高 Gas 單價（Gwei；可留白使用 RPC 估算）</label>
+          <input id="maxFee" name="maxFee" type="text" inputmode="decimal" autocomplete="off" placeholder="自動估算">
+          <button id="prepareBtn" type="submit" disabled>建立並核對交易</button>
+        </form>
+      </article>
+
+      <article class="panel">
+        <div class="step"><span>04</span> 搬到離線電腦簽署</div>
+        <h2>待簽交易摘要</h2>
+        <div class="facts" id="pending">尚無交易</div>
+        <div class="actions">
+          <button id="downloadBtn" type="button" disabled>下載 USB-B 交換檔</button>
+          <button id="legacyBtn" class="secondary" type="button" disabled>下載舊版 JSON</button>
+        </div>
+        <p class="fine">將交換檔帶往離線電腦，使用 USB Cold Signer 核對後簽署。此版本的冷端仍使用 CLI；QR 與 GUI 屬 #18 / #19。</p>
+      </article>
+
+      <article class="panel">
+        <div class="step"><span>05</span> 匯入已簽結果</div>
+        <h2>離線簽章驗證</h2>
+        <p>重新解析 <code>signed raw transaction</code> 並核對帳戶、鏈、Nonce、收款人、金額、Gas 與 Data；任何欄位不符禁止廣播。</p>
+        <label for="signedFile">選擇離線簽章檔</label>
+        <input id="signedFile" type="file" accept=".json,application/json">
+        <button id="verifyBtn" type="button" disabled>驗證離線簽章</button>
+        <div class="facts" id="verification">尚未驗證簽章</div>
+      </article>
+
+      <article class="panel">
+        <div class="step"><span>06</span> 廣播與確認</div>
+        <h2>送出至 Sepolia</h2>
+        <p>必須先驗證簽章，再由使用者明確點擊廣播；網路超時不自動重新廣播。</p>
+        <button id="broadcastBtn" type="button" disabled>確認廣播已驗證的交易</button>
+        <button id="statusBtn" class="secondary" type="button" disabled>查詢鏈上狀態</button>
+        <button id="cancelBtn" class="danger" type="button" disabled>清除目前交易／重新開始</button>
+        <div class="facts" id="status">尚無鏈上交易</div>
+      </article>
+    </section>
+
+    <section class="panel btc">
+      <div class="step"><span>BTC</span> Watch-only</div>
+      <h2>Bitcoin Testnet 公開收款地址</h2>
+      <p>可以離線導出並檢視收款地址，但本階段尚未包含 BTC UTXO 同步、PSBT 生成／廣播；不會假裝 BTC 交易已支援。</p>
+      <div id="btcList" class="address-list">請先匯入 Watch-only 檔案。</div>
+    </section>
+    <footer>僅繫結 127.0.0.1 · 本機 session 不存入瀏覽器永久儲存 · 不會向遠端上傳錢包私鑰 · 任何 QR/USB 檔案都應視為不可信。</footer>
+  </main>
+</body>
+</html>

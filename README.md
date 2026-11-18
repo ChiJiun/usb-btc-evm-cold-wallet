@@ -4,7 +4,7 @@
 >
 > **目前不是可直接開機的 USB 映像。** 這個 repository 提供可在**已隔離網路的 Linux Live USB 環境**執行的錢包核心與 CLI。真正的冷儲存安全性取決於啟動環境、實體隔離、原始碼及相依套件供應鏈的完整性。它不是 YubiKey，也沒有 Secure Element。
 
-[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [威脅模型](docs/THREAT_MODEL.md) · [CI / 供應鏈安全](docs/CI_SECURITY.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
+[English security summary](SECURITY.md) · [USB 製作步驟](docs/USB_SETUP.md) · [Online Companion 操作指南](docs/ONLINE_COMPANION.md) · [威脅模型](docs/THREAT_MODEL.md) · [CI / 供應鏈安全](docs/CI_SECURITY.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## Goals / 目標
 
@@ -28,6 +28,22 @@
 | CI | GitHub Actions: Python 3.12/3.13 pytest, hash-locked dependencies, pip-audit, Gitleaks, dependency review and reproducible-wheel check |
 
 Not yet supported: mainnet, ERC-20, EIP-712, WalletConnect, Taproot, multisig, PSBT v2, QR transport, hardware button/screen confirmation, bootable ISO builder, address discovery beyond first 100 BIP84 inputs, independent audits.
+
+## Online Companion — Issue #17, Phase 1 (testnet only)
+
+A **separate, network-connected** `usb-cold-companion` process now provides a local loopback browser UI for **public watch-only data**, Sepolia native ETH transfer preparation, safe USB-B exchange, independently verified signed-transaction return, **explicit** broadcast and RPC status checking. No private key, seed or vault is imported. The **offline signer itself remains networkless**.
+
+```bash
+usb-cold-companion --rpc-url https://YOUR-SEPOLIA-RPC --open-browser
+```
+
+- Import public `addresses` JSON from the original signer or `watch-only` envelope from pending #5.
+- Build EIP-1559 test ETH transfers without hand-crafting JSON or looking up nonce/gas manually.
+- Download envelope for the #5 signer (or plain JSON for the original signer), then sign on trusted offline hardware; the cold-side CLI remains until #19.
+- Upload signed file to verify raw transaction fields and recovered signer, then click to broadcast. The online tool **never auto-signs or silently resends**.
+- BTC testnet public addresses/tpub are read-only in this phase; UTXO synchronization, PSBT construction and BTC broadcasting **remain unimplemented**.
+
+Read [the operator guide and limitations](docs/ONLINE_COMPANION.md) before testing.
 
 ## Development & automated tests (safe on connected VM)
 
@@ -73,7 +89,7 @@ usb-cold-wallet --vault /path/on/offline-media/wallet.vault sign-btc \
   --out /transport/signed.json
 ```
 
-**Never copy encrypted vault or mnemonic to the transport USB used with online computers.** Only move public watch-only output and signed transactions. A signed transaction is broadcast separately using a wallet/node of your choice; broadcasting is intentionally not implemented here.
+**Never copy encrypted vault or mnemonic to the transport USB used with online computers.** Only move public watch-only output and signed transactions. The offline signer deliberately has **no** broadcast function; the separate online companion can broadcast **verified EVM Sepolia** signed transactions, or you can use another networked wallet/node.
 
 ## Security limitations
 
@@ -89,7 +105,9 @@ usb-cold-wallet --vault /path/on/offline-media/wallet.vault sign-btc \
 - `keys.py`: BIP32 derivation via upstream `embit`
 - `btc.py`: conservative P2WPKH PSBT review + signing
 - `evm.py`: Sepolia type-2 native transfer review + signing using `eth-account`
-- `cli.py`: interactive approval and file-based air-gap exchange
+- `cli.py`: offline interactive approval and file-based air-gap exchange
+- `companion_core.py`: ONLINE watch-only importer, bounded Sepolia RPC, unsigned request builder, strict signed raw tx matching, explicit broadcast/status
+- `companion_web.py` and `companion_static/`: local-only browser UI (not bundled into Live USB image by default)
 - `tests/`: deterministic known-vector and rejection tests
 
 We intentionally **do not implement cryptographic curves, SHA3/Keccak, PSBT serialization or AES ourselves**. [Upstream references](docs/OPEN_SOURCE_REFERENCES.md) explain the libraries and analogous open-source designs.
