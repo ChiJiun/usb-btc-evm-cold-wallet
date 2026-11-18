@@ -9,7 +9,7 @@ The appliance build fixes:
 - Python target: CPython `3.14`
 - `embit`: `0.8.0` source tarball
 - `eth-account`: `0.14.0`
-- every transitive target wheel filename + SHA-256
+- every transitive target wheel filename + SHA-256, including `cryptography==50.0.2` to match the hardened host dependency
 - a fixed `SOURCE_DATE_EPOCH` for generated metadata
 
 Lock/provenance files:
@@ -99,7 +99,7 @@ Checks include:
 - exactly two GPT partitions;
 - deterministic GPT disk and partition UUIDs;
 - first partition is an EFI System Partition and is marked GPT read-only;
-- second partition is the writable FAT `COLD_VAULT`;
+- second partition is the writable FAT `COLD_VAULT` with the expected deterministic PARTUUID;
 - Linux final config has `CONFIG_NET` disabled;
 - USB storage + VFAT are enabled;
 - ATA/NVMe/MMC/VirtIO block are not enabled;
@@ -135,7 +135,8 @@ At boot, `S01airgap` performs a fail-closed audit before wallet operations are e
 - `/proc/net` must be absent;
 - no swap may be active;
 - `/` must be a RAM-backed `rootfs` or `tmpfs`;
-- `COLD_VAULT` must be mounted as VFAT with `rw,noexec,nodev,nosuid,sync`;
+- boot EFI and `COLD_VAULT` PARTUUIDs must each resolve uniquely and to sibling partitions on the same USB SCSI disk;
+- `COLD_VAULT` must be mounted from that exact verified block device as VFAT with `rw,noexec,nodev,nosuid,sync`;
 - no other writable non-memory filesystem may be mounted.
 
 Any failure creates `/run/usb-wallet/lockdown`. The appliance console then disables wallet creation/signing and only permits power-off.

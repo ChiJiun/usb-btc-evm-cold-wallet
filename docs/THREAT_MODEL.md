@@ -38,8 +38,9 @@ This is stronger than merely disabling Wi-Fi, but it does not prove firmware-lev
 - Root filesystem is an initramfs and has no persistent Linux root partition.
 - Production kernel config does not enable ATA, NVMe, MMC or VirtIO block storage.
 - USB mass storage remains enabled because the boot/vault and transaction USB devices require it.
-- `COLD_VAULT` is mounted `noexec,nodev,nosuid,sync`.
-- `TX_TRANSFER` is mounted separately with the same restrictive flags.
+- Boot EFI and `COLD_VAULT` are resolved by deterministic PARTUUID, must be unique, and must be sibling partitions on the same USB disk before persistence is enabled.
+- `COLD_VAULT` is mounted from the exact verified block device with `noexec,nodev,nosuid,sync`.
+- `TX_TRANSFER` must resolve to exactly one labelled block device, must be on a different USB disk, and its actual mount source plus restrictive flags are re-checked after mount.
 - Active swap is disabled/check-reported at boot.
 
 ### Wallet controls
@@ -54,7 +55,7 @@ This is stronger than merely disabling Wi-Fi, but it does not prove firmware-lev
 ### Supply-chain controls
 
 - Buildroot version and archive SHA-256 pinned.
-- Python target wheel filenames/versions/hashes pinned.
+- Python target wheel filenames/versions/hashes pinned; the appliance wheelhouse tracks the same hardened `cryptography` version as the host project.
 - embit source tarball hash pinned.
 - Image and kernel hashes emitted after build.
 - Static image verifier checks GPT layout, final kernel config and target network-tool absence.

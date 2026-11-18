@@ -3,7 +3,11 @@ set -eu
 
 CHECKS=/run/usb-wallet/boot-checks.txt
 LOCKDOWN=/run/usb-wallet/lockdown
+BOOT_PARTUUID=e2bd6d1b-8de5-502d-a897-c53a8e60f46b
+VAULT_PARTUUID=18f1c36f-d5c0-5052-9cd2-03e9c2a48f00
 FAILED=0
+BOOT_DEVICE=
+VAULT_DEVICE=
 
 mkdir -p /run/usb-wallet /mnt/cold-vault /mnt/transfer
 chmod 0700 /mnt/cold-vault /mnt/transfer
@@ -19,14 +23,54 @@ fail() {
 	FAILED=1
 }
 
+unique_blkid_device() {
+	tag="$1"
+	matches="$(blkid -t "$tag" -o device 2>/dev/null || true)"
+	count="$(printf '%s\n' "$matches" | awk 'NF { count++ } END { print count + 0 }')"
+	[ "$count" -eq 1 ] || return 1
+	printf '%s\n' "$matches" | awk 'NF { print; exit }'
+}
+
+usb_scsi_parent() {
+	device="$1"
+	partition="$2"
+	case "$device" in
+		/dev/sd*"$partition")
+			printf '%s\n' "${device%"$partition"}"
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
 # This image intentionally has no swap. Be defensive if firmware or a future
 # image accidentally exposes one.
 swapoff -a 2>/dev/null || true
 
-# The boot USB's second partition is the only place the encrypted vault may
-# persist. It is never the transaction transport medium.
-if ! grep -q ' /mnt/cold-vault ' /proc/mounts 2>/dev/null; then
-	mount -t vfat -o rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077 		-L COLD_VAULT /mnt/cold-vault 2>/dev/null || true
+# Bind persistence to the deterministic GPT partition identities in the image.
+# Labels alone are insufficient because an attacker or accidental second USB can
+# duplicate them. With the production kernel configuration, USB mass-storage
+# partitions are expected to appear as /dev/sd*.
+BOOT_DEVICE="$(unique_blkid_device "PARTUUID=$BOOT_PARTUUID" || true)"
+VAULT_DEVICE="$(unique_blkid_device "PARTUUID=$VAULT_PARTUUID" || true)"
+
+if [ -z "$BOOT_DEVICE" ]; then
+	fail "boot EFI PARTUUID is missing or ambiguous"
+elif [ -z "$VAULT_DEVICE" ]; then
+	fail "COLD_VAULT PARTUUID is missing or ambiguous"
+else
+	BOOT_DISK="$(usb_scsi_parent "$BOOT_DEVICE" 1 || true)"
+	VAULT_DISK="$(usb_scsi_parent "$VAULT_DEVICE" 2 || true)"
+	if [ -z "$BOOT_DISK" ] || [ -z "$VAULT_DISK" ] || [ "$BOOT_DISK" != "$VAULT_DISK" ]; then
+		fail "boot and vault partitions are not the expected siblings on one USB disk"
+	else
+		pass "boot/vault PARTUUIDs uniquely resolve to one USB disk"
+		if ! grep -q ' /mnt/cold-vault ' /proc/mounts 2>/dev/null; then
+			mount -t vfat -o rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077 \
+				"$VAULT_DEVICE" /mnt/cold-vault 2>/dev/null || true
+		fi
+	fi
 fi
 
 if [ -d /proc/net ]; then
@@ -51,10 +95,11 @@ case "$ROOT_TYPE" in
 		;;
 esac
 
+VAULT_SOURCE="$(awk '$2 == "/mnt/cold-vault" { print $1; exit }' /proc/mounts 2>/dev/null || true)"
 VAULT_TYPE="$(awk '$2 == "/mnt/cold-vault" { print $3; exit }' /proc/mounts 2>/dev/null || true)"
 VAULT_OPTS="$(awk '$2 == "/mnt/cold-vault" { print $4; exit }' /proc/mounts 2>/dev/null || true)"
-if [ "$VAULT_TYPE" = "vfat" ]; then
-	pass "COLD_VAULT mounted as vfat"
+if [ "$VAULT_TYPE" = "vfat" ] && [ -n "$VAULT_DEVICE" ] && [ "$VAULT_SOURCE" = "$VAULT_DEVICE" ]; then
+	pass "COLD_VAULT mounted from verified PARTUUID device as vfat"
 	for option in rw noexec nodev nosuid sync; do
 		case ",$VAULT_OPTS," in
 			*",$option,"*) ;;
@@ -62,7 +107,7 @@ if [ "$VAULT_TYPE" = "vfat" ]; then
 		esac
 	done
 else
-	fail "COLD_VAULT not mounted as vfat"
+	fail "COLD_VAULT source/type does not match verified PARTUUID device"
 fi
 
 UNEXPECTED_RW="$(

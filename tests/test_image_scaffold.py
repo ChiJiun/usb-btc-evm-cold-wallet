@@ -54,7 +54,7 @@ def test_buildroot_fetch_verifies_signed_manifest_before_archive_hash():
     assert "BUILDROOT_RELEASE_KEY_FINGERPRINT" in text
 
 
-def test_boot_audit_covers_memory_swap_and_persistence_and_fails_closed():
+def test_boot_audit_covers_memory_swap_persistence_and_partition_identity():
     init = (
         ROOT
         / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d/S01airgap"
@@ -64,6 +64,12 @@ def test_boot_audit_covers_memory_swap_and_persistence_and_fails_closed():
     assert "no active swap" in init
     assert "no unexpected writable persistent filesystem mounted" in init
     assert 'LOCKDOWN=/run/usb-wallet/lockdown' in init
+    assert "PARTUUID=$BOOT_PARTUUID" in init
+    assert "PARTUUID=$VAULT_PARTUUID" in init
+    assert '"$VAULT_DEVICE" /mnt/cold-vault' in init
+    assert "mount -t vfat" in init
+    assert "-L COLD_VAULT" not in init
+    assert 'VAULT_SOURCE" = "$VAULT_DEVICE' in init
     assert "_security_locked" in appliance
     assert "wallet creation/signing is disabled" in appliance
 
@@ -80,6 +86,17 @@ def test_wheelhouse_manifest_is_unique_and_includes_embit():
     assert all(re.fullmatch(r"[0-9a-f]{64}", digest) for digest in hashes)
     assert "embit-0.8.0.tar.gz" in names
     assert len(names) >= 20
+
+
+def test_target_cryptography_matches_hardened_project_dependency():
+    project = (ROOT / "pyproject.toml").read_text()
+    requirements = (ROOT / "infra/wheelhouse-requirements.txt").read_text()
+    manifest = (ROOT / "infra/wheelhouse.sha256").read_text()
+    assert '"cryptography==50.0.2"' in project
+    assert "cryptography==50.0.2 " in requirements
+    assert "cryptography-50.0.2-cp311-abi3-manylinux2014_x86_64" in manifest
+    assert "cryptography==47.0.0" not in requirements
+    assert "cryptography-47.0.0" not in manifest
 
 
 def test_busybox_network_clients_are_explicitly_disabled():

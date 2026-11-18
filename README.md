@@ -4,7 +4,7 @@
 >
 > This project turns a normal x86_64 USB flash drive into a **bootable air-gapped signing environment**. The USB is still ordinary storage, not a YubiKey/Secure Element: the cryptographic operations run on the offline PC after boot.
 
-[USB 製作與使用](docs/USB_SETUP.md) · [Buildroot 建置](docs/BUILD.md) · [Threat model](docs/THREAT_MODEL.md) · [Open-source references](docs/OPEN_SOURCE_REFERENCES.md)
+[Security](SECURITY.md) · [USB 製作與使用](docs/USB_SETUP.md) · [Buildroot 建置](docs/BUILD.md) · [Threat model](docs/THREAT_MODEL.md) · [CI / 供應鏈安全](docs/CI_SECURITY.md) · [Open-source references](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## Architecture
 
@@ -36,10 +36,11 @@ USB-A is the boot/cold-storage device and should never be used as transaction tr
 
 | Area | Status |
 |---|---|
-| BIP39 / BIP32 master wallet | Implemented |
-| Encrypted vault | scrypt + AES-256-GCM |
+| BIP39 / BIP32 master wallet | 24-word generated offline; optional BIP39 passphrase |
+| Encrypted vault | scrypt + AES-256-GCM, mode 0600, reject existing file |
 | Bitcoin | **testnet only**, BIP84 P2WPKH, PSBT v0, SIGHASH_ALL policy |
 | EVM | **Sepolia only**, EIP-1559 native ETH transfer |
+| Public outputs | BTC testnet receiving addresses/account tpub; EVM Sepolia address |
 | Offline console | Implemented; no normal login/getty presented |
 | Live USB image | Buildroot external tree implemented for x86_64 UEFI |
 | Root filesystem | Initramfs/RAM-only; no persistent Linux root partition |
@@ -51,6 +52,7 @@ USB-A is the boot/cold-storage device and should never be used as transaction tr
 | Reproducibility controls | `BR2_REPRODUCIBLE`, fixed epoch/GPT UUIDs, invariant FAT metadata, two-clean-build checker |
 | Startup audit | Fail-closed network/swap/RAM-root/persistence checks before wallet operations |
 | Image checks | GPT structure/UUID/readonly flag, kernel config, target binaries, networking tools, SHA-256 |
+| CI | Python 3.12/3.13 tests, hash-locked dependencies, audit, secret scan, reproducible wheel |
 | Mainnet / ERC-20 / EIP-712 | **disabled** |
 | Independent audit | Not done |
 

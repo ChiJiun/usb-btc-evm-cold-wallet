@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .btc import review_btc_psbt, sign_btc_psbt
 from .evm import review_evm_transaction, sign_evm
+from .exchange import read as read_exchange, write as write_exchange
 from .keys import root_from_mnemonic, watch_only
 from .vault import encrypt_mnemonic, load_vault, new_mnemonic, save_vault
 
@@ -47,12 +48,16 @@ def main(argv=None) -> int:
     addresses = sub.add_parser("addresses", help="Show public testnet addresses and BTC account tpub")
     addresses.add_argument("--count", type=int, default=3)
     evm = sub.add_parser("sign-evm", help="Review and sign a Sepolia native ETH transfer")
-    evm.add_argument("--tx", type=Path, required=True, help="Unsigned type-2 transaction JSON")
+    evm_source = evm.add_mutually_exclusive_group(required=True)
+    evm_source.add_argument("--tx", type=Path, help="Legacy unsigned type-2 transaction JSON")
+    evm_source.add_argument("--request", type=Path, help="Verified exchange envelope")
     evm.add_argument("--to", required=True, help="Independently verified recipient")
     evm.add_argument("--wei", required=True, type=int, help="Independently verified value in wei")
     evm.add_argument("--out", type=Path, required=True)
     btc = sub.add_parser("sign-btc", help="Review and sign Bitcoin testnet BIP84 PSBT")
-    btc.add_argument("--psbt", type=Path, required=True, help="Unsigned PSBT base64 file")
+    btc_source = btc.add_mutually_exclusive_group(required=True)
+    btc_source.add_argument("--psbt", type=Path, help="Legacy unsigned PSBT base64 file")
+    btc_source.add_argument("--request", type=Path, help="Verified exchange envelope")
     btc.add_argument("--to", required=True, help="Independently verified recipient testnet address")
     btc.add_argument("--sats", type=int, required=True, help="Expected recipient satoshis")
     btc.add_argument("--max-fee-sats", type=int, required=True)
@@ -82,19 +87,35 @@ def main(argv=None) -> int:
         if args.command == "addresses":
             print(json.dumps(watch_only(root, count=args.count), ensure_ascii=False, indent=2))
         elif args.command == "sign-evm":
-            raw = json.loads(args.tx.read_text(encoding="utf-8"))
+            raw = (
+                read_exchange(args.request, "evm-request")
+                if args.request
+                else json.loads(args.tx.read_text(encoding="utf-8"))
+            )
             review = review_evm_transaction(raw, args.to, args.wei)
             print(json.dumps({key: value for key, value in review.items() if key != "transaction"}, indent=2))
             _approve("SIGN SEPOLIA")
             result = sign_evm(root, raw, args.to, args.wei)
-            _write_signed(args.out, result)
+            if args.request:
+                write_exchange(args.out, "evm-signed", result)
+                print(f"Signed exchange envelope written to {args.out}.")
+            else:
+                _write_signed(args.out, result)
         elif args.command == "sign-btc":
-            encoded = args.psbt.read_text(encoding="utf-8")
+            encoded = (
+                read_exchange(args.request, "btc-request")
+                if args.request
+                else args.psbt.read_text(encoding="utf-8")
+            )
             review = review_btc_psbt(root, encoded, args.to, args.sats, args.max_fee_sats, args.change_index)
             print(json.dumps({key: value for key, value in review.items() if key != "psbt"}, indent=2))
             _approve("SIGN BITCOIN TESTNET")
             result = sign_btc_psbt(root, encoded, args.to, args.sats, args.max_fee_sats, args.change_index)
-            _write_signed(args.out, result)
+            if args.request:
+                write_exchange(args.out, "btc-signed", result)
+                print(f"Signed exchange envelope written to {args.out}.")
+            else:
+                _write_signed(args.out, result)
         return 0
     except (ValueError, OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

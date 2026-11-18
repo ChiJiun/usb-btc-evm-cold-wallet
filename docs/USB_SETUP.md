@@ -5,7 +5,7 @@
 ## 需要什麼
 
 - **USB-A / Cold Wallet USB**：建議 8 GB 以上。會被完整刷寫成開機映像。
-- **USB-B / Transaction Transfer USB**：另一支 USB，只交換 unsigned / signed transaction；FAT32，Volume Label 設為 `TX_TRANSFER`。
+- **USB-B / Transaction Transfer USB**：另一支 USB，只交換 unsigned / signed transaction；FAT32，Volume Label 設為 `TX_TRANSFER`。操作時只能插入一支此 label 的裝置。
 - **x86_64 UEFI 電腦**：作為真正的離線簽署電腦。
 - **另一台連網電腦**：watch-only、建立 unsigned transaction、廣播 signed transaction。
 - 紙本或金屬 recovery backup。
@@ -62,7 +62,8 @@ TX_TRANSFER
 - 公開 watch-only 資訊
 - Bitcoin testnet unsigned PSBT
 - Sepolia unsigned transaction JSON
-- signed PSBT / signed raw transaction
+- Issue #5 定義的 integrity-checked `btc-request` / `evm-request` JSON envelope
+- signed PSBT / signed raw transaction / signed exchange envelope
 
 **禁止放入：**
 
@@ -95,7 +96,8 @@ Console 會顯示啟動安全稽核：
 - network stack 必須不存在；
 - swap 必須為空；
 - `/` 必須是 RAM-backed `rootfs` / `tmpfs`；
-- `COLD_VAULT` 必須以 `rw,noexec,nodev,nosuid,sync` 掛載；
+- EFI boot partition 與 `COLD_VAULT` 的固定 PARTUUID 必須各自唯一，且必須是同一支 USB-A 上的相鄰 partition；
+- `COLD_VAULT` 必須從驗證後的實際 block device 以 `rw,noexec,nodev,nosuid,sync` 掛載；
 - 不得存在其他 writable non-memory filesystem。
 
 若任何檢查為 `FAIL`，系統會建立 `/run/usb-wallet/lockdown`，Console 直接停用建立錢包與簽章功能，只允許關機；不是只顯示警告。
