@@ -1,9 +1,11 @@
 """Adversarial USB-transfer schema/size tests using a public compromised seed."""
 import copy
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
-from embit import bip32, psbt, script, transaction
+from embit import bip32, ec, psbt, script, transaction
 
 from usb_cold_wallet import cli
 from usb_cold_wallet.btc import sign_btc_psbt
@@ -121,8 +123,54 @@ def test_signed_btc_payload_rejects_extra_and_mismatched_outpoint_data():
         {**signed, "signed_psbt_base64": "cHNidP8BAA=="},
     ]
     for payload in attacks:
-        with pytest.raises((ValueError, IndexError)):
+        with pytest.raises(ValueError):
             package("btc-signed", payload)
+
+
+def test_signed_btc_rejects_valid_signature_from_wrong_utxo_key():
+    """Valid ECDSA alone must never imply that the prevout can be spent."""
+    signed = _real_signed_btc()
+    p = psbt.PSBT.from_base64(signed["signed_psbt_base64"])
+    wrong_key = btc_key(ROOT, 0, 2).key
+    wrong_pub = wrong_key.get_public_key()
+    assert script.p2wpkh(wrong_pub).data != p.inputs[0].witness_utxo.script_pubkey.data
+    wrong_sig = wrong_key.sign(p.sighash(0, sighash=1)).serialize() + b"\x01"
+    assert wrong_pub.verify(
+        ec.Signature.parse(wrong_sig[:-1]), p.sighash(0, sighash=1)
+    )
+    p.inputs[0].partial_sigs = {wrong_pub: wrong_sig}
+    final_tx = transaction.Transaction.parse(bytes.fromhex(signed["finalized_tx_hex"]))
+    final_tx.vin[0].witness = transaction.Witness([wrong_sig, wrong_pub.sec()])
+    forged = {
+        **signed,
+        "signed_psbt_base64": p.to_base64(),
+        "finalized_tx_hex": final_tx.serialize().hex(),
+    }
+    with pytest.raises(ValueError, match="(public key|P2WPKH|UTXO)"):
+        package("btc-signed", forged)
+
+
+def test_signed_btc_rejects_out_of_range_prevout_as_value_error_and_cli_fails_closed(tmp_path, capsys):
+    """Even a checksum-valid malicious envelope must not crash the CLI."""
+    signed = _real_signed_btc()
+    p = psbt.PSBT.from_base64(signed["signed_psbt_base64"])
+    p.inputs[0].vout = len(p.inputs[0].non_witness_utxo.vout)
+    malformed = {**signed, "signed_psbt_base64": p.to_base64()}
+    assert psbt.PSBT.from_base64(malformed["signed_psbt_base64"]).tx.vin[0].vout == 1
+    with pytest.raises(ValueError, match="(prevout|outpoint|out of range|index)"):
+        package("btc-signed", malformed)
+
+    envelope = package("btc-signed", signed)
+    envelope["payload"] = malformed
+    content = {key: value for key, value in envelope.items() if key != "sha256"}
+    envelope["sha256"] = hashlib.sha256(
+        json.dumps(content, sort_keys=True, ensure_ascii=True,
+                   separators=(",", ":"), allow_nan=False).encode("ascii")
+    ).hexdigest()
+    attacker = tmp_path / "malformed-signed-envelope.json"
+    attacker.write_text(json.dumps(envelope), encoding="utf-8")
+    assert cli.main(["inspect-transfer", "--input", str(attacker)]) == 1
+    assert "ERROR:" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("kind,command", [

@@ -229,13 +229,20 @@ def _validate_btc_signed(payload):
             raise ValueError("Unexpected signed Bitcoin input metadata")
         if scope.non_witness_utxo.txid() != psbt.tx.vin[ix].txid:
             raise ValueError("Bitcoin previous transaction mismatch")
-        prev = scope.non_witness_utxo.vout[psbt.tx.vin[ix].vout]
+        prevout_index = psbt.tx.vin[ix].vout
+        if not 0 <= prevout_index < len(scope.non_witness_utxo.vout):
+            raise ValueError("Bitcoin prevout index out of range")
+        prev = scope.non_witness_utxo.vout[prevout_index]
         if prev.value != scope.witness_utxo.value or prev.script_pubkey.data != scope.witness_utxo.script_pubkey.data:
             raise ValueError("Bitcoin input UTXO mismatch")
         if not prev.script_pubkey.data.startswith(b"\x00\x14") or len(prev.script_pubkey.data) != 22:
             raise ValueError("Bitcoin input not P2WPKH")
         inputs_total += prev.value
         pub, sig = next(iter(scope.partial_sigs.items()))
+        # A mathematically valid ECDSA signature from an unrelated key cannot
+        # spend this P2WPKH prevout. Bind the witness key to its HASH160 script.
+        if script.p2wpkh(pub).data != prev.script_pubkey.data:
+            raise ValueError("Signed Bitcoin public key does not match P2WPKH UTXO")
         if len(sig) < 2 or sig[-1] != 1 or not pub.verify(ec.Signature.parse(sig[:-1]), psbt.sighash(ix, sighash=1)):
             raise ValueError("Invalid signed Bitcoin ECDSA signature")
     outputs_total = 0
