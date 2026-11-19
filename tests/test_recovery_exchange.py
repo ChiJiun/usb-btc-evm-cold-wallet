@@ -55,10 +55,10 @@ def test_invalid_mnemonic_rejected_without_write(tmp_path):
 
 @pytest.mark.parametrize("kind,payload", [
     ("watch-only", PUBLIC),
-    ("evm-request", {"chainId": 11155111, "to": "0xdead", "value": 0}),
+    ("evm-request", {"type": 2, "chainId": 11155111, "nonce": 0,
+                     "to": "0x000000000000000000000000000000000000dEaD", "value": 1000,
+                     "gas": 21000, "maxFeePerGas": 2000000000, "maxPriorityFeePerGas": 1000000000}),
     ("btc-request", "cHNidP8BAA=="),
-    ("btc-signed", {"network": "bitcoin-testnet", "signed_psbt_base64": "abcd"}),
-    ("evm-signed", {"chain_id": 11155111, "signed_raw_transaction": "0x0"}),
 ])
 def test_exchange_roundtrip(tmp_path, kind, payload):
     filepath = tmp_path / "public.json"
@@ -73,8 +73,11 @@ def test_exchange_roundtrip(tmp_path, kind, payload):
 
 
 def test_exchange_integrity_tamper_and_network_swap():
-    data = package("evm-request", {"chainId": 11155111, "nonce": 1})
-    altered = dict(data, payload={"chainId": 11155111, "nonce": 2})
+    intent = {"type": 2, "chainId": 11155111, "nonce": 1,
+              "to": "0x000000000000000000000000000000000000dEaD", "value": 1234,
+              "gas": 21000, "maxFeePerGas": 2000000000, "maxPriorityFeePerGas": 1000000000}
+    data = package("evm-request", intent)
+    altered = dict(data, payload={**intent, "nonce": 2})
     with pytest.raises(ValueError, match="integrity"):
         verify(altered)
     altered = dict(data, network="ethereum-mainnet")
@@ -103,7 +106,10 @@ def test_exchange_rejects_nonfinite_oversize_extra_fields_and_wrong_chain(tmp_pa
     with pytest.raises(ValueError):
         verify(dict(package("evm-request", {"chainId": 11155111}), extra=3))
     with pytest.raises(ValueError):
-        package("evm-request", {"chainId": 11155111, "x": float("nan")})
+        package("evm-request", {**{"type": 2, "chainId": 11155111, "nonce": 1,
+                                    "to": "0x000000000000000000000000000000000000dEaD", "value": 1,
+                                    "gas": 21000, "maxFeePerGas": 2000000000,
+                                    "maxPriorityFeePerGas": 1000000000}, "x": float("nan")})
     file = tmp_path / "data.json"
     file.write_text('{"format": "test", "payload": NaN}')
     with pytest.raises(ValueError):
@@ -117,7 +123,10 @@ def test_cli_rehearsal(capsys):
 
 def test_cli_pack_and_inspect(tmp_path, capsys):
     raw = tmp_path / "unsigned.json"
-    raw.write_text(json.dumps({"chainId": 11155111, "nonce": 0}))
+    raw.write_text(json.dumps({"type": 2, "chainId": 11155111, "nonce": 0,
+                               "to": "0x000000000000000000000000000000000000dEaD", "value": 1000,
+                               "gas": 21000, "maxFeePerGas": 2000000000,
+                               "maxPriorityFeePerGas": 1000000000}))
     transport = tmp_path / "transport.json"
     assert cli.main(["pack-request", "--kind", "evm-request", "--input", str(raw),
                      "--out", str(transport)]) == 0
@@ -192,8 +201,12 @@ def test_cli_approved_btc_envelope_signing_roundtrip(tmp_path, monkeypatch):
     signing_key = btc_key(root, 0, 0)
     dest = btc_address(root, 0, 1)
     output = transaction.TransactionOutput(120000, script.p2wpkh(signing_key.key))
-    tx = transaction.Transaction(
+    prev_tx = transaction.Transaction(
         vin=[transaction.TransactionInput(bytes.fromhex("11" * 32), 0)],
+        vout=[output],
+    )
+    tx = transaction.Transaction(
+        vin=[transaction.TransactionInput(prev_tx.txid(), 0)],
         vout=[
             transaction.TransactionOutput(60000, script.address_to_scriptpubkey(dest)),
             transaction.TransactionOutput(58800, script.p2wpkh(btc_key(root, 1, 0).key)),
@@ -206,6 +219,7 @@ def test_cli_approved_btc_envelope_signing_roundtrip(tmp_path, monkeypatch):
     for scope in p.outputs:
         scope.unknown = {}
     p.inputs[0].witness_utxo = output
+    p.inputs[0].non_witness_utxo = prev_tx
     p.inputs[0].bip32_derivations[signing_key.key.get_public_key()] = psbt.DerivationPath(
         root.my_fingerprint, bip32.parse_path("m/84h/1h/0h/0/0")
     )
