@@ -173,6 +173,35 @@ def test_unlocking_denies_sign_and_manual_lock(setup):
     assert machine.state == State.LOCKED
 
 
+def test_non_hex_review_digest_fails_closed(setup):
+    machine, data = setup
+    unlock(machine)
+    with pytest.raises(ValueError, match="digest"):
+        machine.start_review("z" * 64)
+    assert machine.state == State.LOCKED
+    assert data["clears"] >= 1
+
+
+def test_nonfinite_or_broken_monotonic_clock_always_locks(setup):
+    import math
+    machine, data = setup
+    unlock(machine)
+    machine.start_review("a" * 64)
+    machine.approve("a" * 64)
+    data["time"] = float("nan")
+    assert machine.tick()
+    assert machine.state == State.LOCKED
+    with pytest.raises(ValueError, match="clock"):
+        machine.begin_unlock()
+
+    def crashed_clock():
+        raise RuntimeError("clock unavailable")
+    other = SignerSession(audit=lambda: True, on_lock=lambda: None, clock=crashed_clock)
+    with pytest.raises(ValueError, match="clock"):
+        other.begin_unlock()
+    assert other.state == State.LOCKED
+
+
 def test_invalid_configuration_rejected():
     for opts in ({"idle_seconds": 0}, {"idle_seconds": 601},
                  {"max_transactions": 6}, {"max_session_seconds": 901}):

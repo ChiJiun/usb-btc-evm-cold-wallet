@@ -6,6 +6,8 @@ its in-memory BIP32 root; callbacks must discard that reference on lock.
 from __future__ import annotations
 
 from enum import Enum
+import math
+import re
 import time
 from typing import Callable
 
@@ -73,9 +75,19 @@ class SignerSession:
     def failed_attempts(self) -> int:
         return self._failed_attempts
 
+    def _now(self) -> float:
+        try:
+            now = self._clock()
+            if type(now) not in (int, float) or not math.isfinite(now):
+                raise ValueError("Invalid monotonic clock")
+            return float(now)
+        except Exception as exc:
+            self.lock("clock_invalid")
+            raise ValueError("Invalid monotonic clock; wallet locked") from exc
+
     @property
     def remaining_backoff(self) -> float:
-        return max(0.0, self._next_unlock_at - self._clock())
+        return max(0.0, self._next_unlock_at - self._now())
 
     @property
     def unlocked(self) -> bool:
@@ -99,7 +111,7 @@ class SignerSession:
     def _expire(self) -> None:
         if self.state == State.LOCKED:
             return
-        now = self._clock()
+        now = self._now()
         if self.state == State.UNLOCKING:
             if (self._unlock_started_at is None or now < self._unlock_started_at or
                     now - self._unlock_started_at >= UNLOCK_DEADLINE_SECONDS):
@@ -133,7 +145,7 @@ class SignerSession:
         if not self._safe_audit():
             self.lock("audit_failed")
             raise ValueError("Offline runtime safety audit failed")
-        self._unlock_started_at = self._clock()
+        self._unlock_started_at = self._now()
         self.state = State.UNLOCKING
 
     def unlock_failed(self) -> None:
@@ -141,7 +153,7 @@ class SignerSession:
             raise ValueError("Not in unlocking state")
         self._failed_attempts += 1
         seconds = BACKOFF_SECONDS[min(self._failed_attempts - 1, len(BACKOFF_SECONDS) - 1)]
-        self._next_unlock_at = self._clock() + seconds
+        self._next_unlock_at = self._now() + seconds
         self.lock("failed_unlock")
 
     def unlock_succeeded(self) -> None:
@@ -151,7 +163,7 @@ class SignerSession:
         if not self._safe_audit():
             self.lock("audit_failed")
             raise ValueError("Offline runtime safety audit failed")
-        now = self._clock()
+        now = self._now()
         self._unlocked_at = now
         self._unlock_started_at = None
         self._last_activity = now
@@ -163,7 +175,7 @@ class SignerSession:
     def activity(self) -> None:
         if self.state != State.LOCKED:
             self._expire()
-            self._last_activity = self._clock()
+            self._last_activity = self._now()
 
     def start_review(self, digest: str) -> None:
         self._expire()
@@ -172,7 +184,7 @@ class SignerSession:
         if self._transaction_count >= self.max_transactions:
             self.lock("limit")
             raise ValueError("Transaction quota reached; unlock again")
-        if not isinstance(digest, str) or len(digest) != 64:
+        if type(digest) is not str or not re.fullmatch(r"[0-9a-f]{64}", digest):
             self.lock("invalid_review")
             raise ValueError("Review digest is invalid")
         self._review_digest = digest
