@@ -55,6 +55,7 @@ def main(argv=None) -> int:
     evm.add_argument("--wei", required=True, type=int, help="Independently verified value in wei")
     evm.add_argument("--out", type=Path, required=True)
     evm.add_argument("--policy", type=Path, help="Must equal <vault>.policy; signing always requires encrypted policy")
+    evm.add_argument("--expected-policy-sha256", help="Optional independent paper-verified SHA-256 of encrypted policy file")
     btc = sub.add_parser("sign-btc", help="Review and sign Bitcoin testnet BIP84 PSBT")
     btc.add_argument("--psbt", type=Path, required=True, help="Unsigned PSBT base64 file")
     btc.add_argument("--to", required=True, help="Independently verified recipient testnet address")
@@ -63,6 +64,7 @@ def main(argv=None) -> int:
     btc.add_argument("--change-index", type=int, default=None, help="Expected BIP84 internal change index, if any")
     btc.add_argument("--out", type=Path, required=True)
     btc.add_argument("--policy", type=Path, help="Must equal <vault>.policy; signing always requires encrypted policy")
+    btc.add_argument("--expected-policy-sha256", help="Optional independent paper-verified SHA-256 of encrypted policy file")
     policy = sub.add_parser("policy", help="Create/edit encrypted offline policy or verified address book")
     policy.add_argument("--file", type=Path, required=True, help="Local offline policy file, NEVER transfer USB")
     policy.add_argument("--action", choices=["init", "show", "set-limit", "verify-address"], required=True)
@@ -136,7 +138,7 @@ def main(argv=None) -> int:
         elif args.command == "sign-evm":
             raw = json.loads(args.tx.read_text(encoding="utf-8"))
             review = review_evm_transaction(raw, args.to, args.wei)
-            profile = load_profile(policy_path, root, _policy_password)
+            profile = load_profile(policy_path, root, _policy_password, expected_sha256=args.expected_policy_sha256)
             intent = evm_intent(root, review)
             decision = decide(profile, root, intent)
             print(json.dumps({"intent": asdict(intent), "decision": asdict(decision)}, indent=2))
@@ -150,7 +152,7 @@ def main(argv=None) -> int:
         elif args.command == "sign-btc":
             encoded = args.psbt.read_text(encoding="utf-8")
             review = review_btc_psbt(root, encoded, args.to, args.sats, args.max_fee_sats, args.change_index)
-            profile = load_profile(policy_path, root, _policy_password)
+            profile = load_profile(policy_path, root, _policy_password, expected_sha256=args.expected_policy_sha256)
             intent = btc_intent(root, review)
             decision = decide(profile, root, intent)
             print(json.dumps({"intent": asdict(intent), "decision": asdict(decision),

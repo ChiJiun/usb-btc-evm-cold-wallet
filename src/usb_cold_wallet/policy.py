@@ -8,8 +8,13 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 import hashlib
+import hmac
 import json
 import os
+import re
+import math
+import stat
+import unicodedata
 from pathlib import Path
 from typing import Literal
 
@@ -90,8 +95,10 @@ def normalize_address(network: str, address: str) -> str:
             normalized = parsed.address(networks.NETWORKS["test"])
         except Exception as exc:
             raise ValueError("Invalid Bitcoin testnet address") from exc
-        if normalized != address or not address.startswith("tb1q"):
-            raise ValueError("Only canonical Bitcoin testnet bech32 addresses supported")
+        if (normalized != address or not address.startswith("tb1q") or
+                len(address) != 42 or len(parsed.data) != 22 or
+                not parsed.data.startswith(b"\x00\x14")):
+            raise ValueError("Only canonical Bitcoin testnet BIP84 P2WPKH addresses supported")
         return normalized
     raise ValueError("Unsupported address network")
 
@@ -128,8 +135,11 @@ def validate_profile(profile: object, root) -> dict:
         expected_account = evm_account(root).address if network == "sepolia" else wallet_binding(root)
         if account != expected_account or normalize_address(network, address) != address:
             raise ValueError("Address book account binding or address mismatch")
-        if not isinstance(label, str) or not (1 <= len(label) <= 48) or any(ord(c) < 32 for c in label):
-            raise ValueError("Invalid address book label")
+        if (type(label) is not str or not (1 <= len(label) <= 48) or
+                unicodedata.normalize("NFKC", label) != label or
+                any(not c.isprintable() or unicodedata.category(c) in
+                    ("Cf", "Cc", "Cs", "Zl", "Zp") for c in label)):
+            raise ValueError("Invalid address book label (unsafe control/bidi formatting)")
         key = (network, account, address)
         if key in seen:
             raise ValueError("Duplicate verified address")
@@ -196,12 +206,43 @@ def save_profile(path: Path, profile: dict, root, password: str, *, replace: boo
         tmp.unlink(missing_ok=True)
 
 
-def load_profile(path: Path, root, password: str) -> dict:
-    path = Path(path)
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_FILE_BYTES:
-        raise ValueError("Policy file missing, too large or symlink")
+def _strict_json(raw: bytes):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate policy JSON property")
+            result[key] = value
+        return result
+    return json.loads(raw, object_pairs_hook=unique,
+                      parse_constant=lambda x: (_ for _ in ()).throw(ValueError(f"Invalid JSON number {x}")))
+
+
+def _bounded_policy_read(path: Path):
+    """Atomic fd-based read of an untrusted regular policy file; no symlinks/FIFO."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(path, flags)
     try:
-        container = json.loads(path.read_bytes())
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("Policy must be a regular file")
+        raw = os.read(fd, MAX_FILE_BYTES + 1)
+        if len(raw) > MAX_FILE_BYTES:
+            raise ValueError("Policy file unexpectedly large")
+        return raw
+    finally:
+        os.close(fd)
+
+
+def load_profile(path: Path, root, password: str, *, expected_sha256: str | None = None) -> dict:
+    path = Path(path)
+    try:
+        raw_file = _bounded_policy_read(path)
+        if expected_sha256 is not None:
+            if (type(expected_sha256) is not str or
+                    not re.fullmatch(r"[0-9a-f]{64}", expected_sha256) or
+                    not hmac.compare_digest(hashlib.sha256(raw_file).hexdigest(), expected_sha256)):
+                raise ValueError("Policy file hash does not match independently stored anchor")
+        container = _strict_json(raw_file)
         if set(container) != {"format", "version", "salt", "nonce", "ciphertext"}:
             raise ValueError("Unsupported policy container")
         if container["format"] != "usb-cold-wallet-policy" or type(container["version"]) is not int or container["version"] != VERSION:
@@ -212,7 +253,7 @@ def load_profile(path: Path, root, password: str) -> dict:
         if len(salt) != 16 or len(nonce) != 12 or len(ciphertext) > MAX_FILE_BYTES:
             raise ValueError("Malformed policy ciphertext")
         raw = AESGCM(_key(password, salt)).decrypt(nonce, ciphertext, AAD)
-        return validate_profile(json.loads(raw), root)
+        return validate_profile(_strict_json(raw), root)
     except (KeyError, TypeError, UnicodeError, ValueError) as exc:
         raise ValueError("Invalid, corrupted or mismatched policy") from exc
     except Exception as exc:
@@ -254,12 +295,19 @@ def decide(profile: dict, root, intent: TransactionIntent) -> PolicyDecision:
         address = normalize_address(intent.network, intent.recipient)
     except ValueError:
         return PolicyDecision("DENY", ("Invalid network recipient",), None)
-    if type(intent.amount) is not int or intent.amount <= 0 or type(intent.maximum_fee) is not int or intent.maximum_fee < 0:
-        return PolicyDecision("DENY", ("Invalid transaction amount/fee",), None)
+    if (type(intent.amount) is not int or intent.amount <= 0 or
+            type(intent.maximum_fee) is not int or intent.maximum_fee < 0 or
+            type(intent.maximum_total) is not int or intent.maximum_total != intent.amount + intent.maximum_fee):
+        return PolicyDecision("DENY", ("Invalid transaction amount/fee/total",), None)
     limits = profile["limits"]
     if intent.network == "sepolia":
-        if intent.signature_type != "EIP-1559 native transfer" or intent.gas != 21000 or intent.max_fee_per_gas is None:
-            return PolicyDecision("DENY", ("Unsupported EVM signing method",), None)
+        if (intent.signature_type != "EIP-1559 native transfer" or type(intent.gas) is not int or
+                intent.gas != 21000 or type(intent.nonce) is not int or not 0 <= intent.nonce < (1 << 64) or
+                type(intent.max_fee_per_gas) is not int or not 0 < intent.max_fee_per_gas <= 10**12 or
+                type(intent.max_priority_fee_per_gas) is not int or
+                not 0 <= intent.max_priority_fee_per_gas <= intent.max_fee_per_gas or
+                intent.maximum_fee != 21000 * intent.max_fee_per_gas):
+            return PolicyDecision("DENY", ("Unsupported or inconsistent EVM signing method",), None)
         if intent.amount > limits["evm_max_value_wei"] or intent.maximum_fee > limits["evm_max_fee_wei"]:
             return PolicyDecision("DENY", ("Sepolia value/fee exceeds policy cap",), None)
     else:
@@ -267,8 +315,9 @@ def decide(profile: dict, root, intent: TransactionIntent) -> PolicyDecision:
             return PolicyDecision("DENY", ("Unsupported Bitcoin signing method",), None)
         if intent.maximum_fee > limits["btc_max_fee_sats"]:
             return PolicyDecision("DENY", ("Bitcoin fee exceeds policy cap",), None)
-        if intent.fee_rate is None or intent.fee_rate < 0 or intent.fee_rate > limits["btc_max_fee_rate_sat_vb"]:
-            return PolicyDecision("DENY", ("Bitcoin fee rate exceeds policy cap",), None)
+        if (type(intent.fee_rate) not in (int, float) or not math.isfinite(intent.fee_rate) or
+                intent.fee_rate < 0 or intent.fee_rate > limits["btc_max_fee_rate_sat_vb"]):
+            return PolicyDecision("DENY", ("Bitcoin fee rate exceeds policy cap or is non-finite",), None)
     label = next((entry["label"] for entry in profile["verified_addresses"]
                   if (entry["network"], entry["account"], entry["address"]) ==
                   (intent.network, intent.account, address)), None)

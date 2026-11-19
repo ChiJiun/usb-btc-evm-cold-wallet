@@ -38,6 +38,36 @@ Versioned `TransactionIntent` is built from **already validated** Bitcoin/EVM un
 
 ## Storage, restoration, and limitations
 
-The profile is encrypted with AES-256-GCM, its own random salt/nonce and scrypt KDF, and fixed domain-separating AAD. It is bound to the public wallet identity, rejecting accidental restore into another wallet. Never put this file or its passphrase on USB-B. Back up the encrypted policy alongside the encrypted wallet file on trusted offline storage. Losing the policy locks the CLI signer until the user deliberately initializes a new profile; **a new profile does not restore old trusted labels or caps**. The wallet's BIP39 recovery is separate and does not automatically recover this address book. The policy format is version 1; unknown versions fail closed.
+The profile is encrypted with AES-256-GCM, its own random salt/nonce and scrypt KDF, and fixed domain-separating AAD. It is bound to the public wallet identity, rejecting accidental restore into another wallet. Reading now uses a single size-bounded, no-symlink regular-file descriptor with strict JSON duplicate-key and NaN rejection. Only canonical BIP84 testnet recipients and display-safe normalized address labels are accepted. Never put this file or its passphrase on USB-B. Back up the encrypted policy alongside the encrypted wallet file on trusted offline storage. Losing the policy locks the CLI signer until the user deliberately initializes a new profile; **a new profile does not restore old trusted labels or caps**. The wallet's BIP39 recovery is separate and does not automatically recover this address book. The policy format is version 1; unknown versions fail closed.
 
-**Remaining Issue #21 follow-up:** GUI integration (#19); additional independently reviewed token/typed-data decoder and display (#3); robust wallet-level persistence/rollback protection, including a counter or signed profile binding anchored outside the replaceable policy file; rate/fee calculation tied to the hardened #2 BTC implementation; physical two-device workflow testing and backup/restore UX. Encrypting the profile detects modification but **does not prevent replay of an older valid encrypted profile**. The current implementation must not be described as rollback-safe or audited.
+### Optional offline rollback anchor (manual)
+
+An encrypted profile can be replaced with an older, still-valid ciphertext. To
+**detect replacement relative to a separately retained known-good copy**, after
+creating or changing the policy, calculate its SHA-256 **on the trusted offline
+machine** and record the entire 64-character lowercase value on separate
+paper/metal or other independently protected medium:
+
+```sh
+sha256sum /mnt/cold-vault/wallet.vault.policy
+```
+
+At the next signing, pass the independently obtained hash using
+`--expected-policy-sha256 64_HEX_CHARACTERS` to `sign-evm` or `sign-btc`.
+The signer compares the bytes read **once** from the policy file against the
+expected digest **before decrypting** or approving/signing. An old copy, an
+unauthorized policy change, or a typo fails closed. Refresh the independently
+stored digest **after each authorized policy update**.
+
+This check is **optional**, requires independent trusted storage of the newest
+digest, and **does not provide automatic anti-rollback**. Reading the expected
+hash from the same potentially replaced USB drive defeats the protection.
+A compromised offline host, co-replaced paper record or a forged operator
+prompt can still undermine this process.
+
+**Remaining Issue #21 follow-up:** GUI integration (#19); independently
+reviewed token/typed-data decoder and display (#3); hardware-backed or
+externally trusted monotonic profile revision anchoring, fee calculation
+integration with hardened BTC #2, real two-device workflow testing and
+backup/restore UX. **Do not describe AES-GCM encryption alone as rollback-safe
+or claim the wallet is audited.**
