@@ -35,6 +35,15 @@ def test_kernel_removes_network_and_internal_storage():
         assert forbidden not in text
 
 
+def test_image_verifier_audits_the_kernel_used_for_shipped_bzimage():
+    verifier = (ROOT / "scripts/verify_image.sh").read_text()
+    assert 'set -- "$OUT"/build/linux-*/.config' in verifier
+    assert '"$#" -ne 1' in verifier
+    assert 'cmp -s "$BUILT_KERNEL" "$OUT/images/bzImage"' in verifier
+    assert "grep -q '^# CONFIG_NET is not set$'" in verifier
+    assert "Auditing built kernel config:" in verifier
+
+
 def test_image_has_separate_boot_and_cold_vault_partitions():
     text = (ROOT / "buildroot-external/board/usb-wallet/genimage.cfg").read_text()
     assert 'label = "USBCOLD_EFI"' in text
