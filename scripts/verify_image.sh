@@ -14,7 +14,11 @@ test -s "$IMAGE"
 )
 
 grep -q '^# CONFIG_NET is not set$' "$KCONFIG" || {
-	echo "ERROR: kernel networking subsystem is not disabled" >&2
+	echo "ERROR: kernel networking subsystem is not disabled: $KCONFIG" >&2
+	echo "Configured network-related kernel symbols:" >&2
+	grep -E '^(CONFIG_(NET|INET|UNIX|PACKET|NETDEVICES|SCSI_NETLINK)=|# CONFIG_(NET|INET|UNIX|PACKET|NETDEVICES|SCSI_NETLINK) is not set$)' "$KCONFIG" >&2 || true
+	echo "Original network policy:" >&2
+	grep -E '^(CONFIG_NET=|# CONFIG_NET is not set$)' "$ROOT/buildroot-external/board/usb-wallet/linux.config" >&2 || true
 	exit 1
 }
 grep -q '^CONFIG_USB_STORAGE=y$' "$KCONFIG"
