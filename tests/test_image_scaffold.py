@@ -39,6 +39,9 @@ def test_image_has_separate_boot_and_cold_vault_partitions():
     text = (ROOT / "buildroot-external/board/usb-wallet/genimage.cfg").read_text()
     assert 'label = "USBCOLD_EFI"' in text
     assert 'label = "COLD_VAULT"' in text
+    # The blank vault filesystem must not make genimage copy from root/*.
+    vault_config = text.split("image cold-vault.vfat {", 1)[1].split("vfat {", 1)[0]
+    assert "empty = true" in vault_config
     assert "partition boot" in text
     assert "partition vault" in text
     assert "read-only = true" in text
