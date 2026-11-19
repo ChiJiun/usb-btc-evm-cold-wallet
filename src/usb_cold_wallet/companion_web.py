@@ -114,7 +114,8 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                 raw = self.rfile.read(length)
                 if len(raw) != length:
                     raise ValueError("Incomplete request")
-                data = json.loads(raw.decode("utf-8"), object_pairs_hook=self._unique)
+                data = json.loads(raw.decode("utf-8"), object_pairs_hook=self._unique,
+                                  parse_constant=lambda v: (_ for _ in ()).throw(ValueError("Non-finite HTTP JSON number")))
                 if not isinstance(data, dict):
                     raise ValueError("Expected JSON object")
                 if self.path == "/api/import":

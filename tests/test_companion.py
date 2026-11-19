@@ -338,6 +338,53 @@ def test_json_rpc_strict_id_response_size_and_explicit_errors(monkeypatch):
         client.assert_sepolia()
 
 
+def test_rpc_and_local_http_reject_nonfinite_json_numbers(monkeypatch):
+    from io import BytesIO
+    import usb_cold_wallet.companion_core as core
+
+    class Reply:
+        def __init__(self, payload):
+            self.reader = BytesIO(payload)
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return None
+        def read(self, length):
+            return self.reader.read(length)
+
+    def poisoned_rpc(request, timeout):
+        request_id = json.loads(request.data)["id"]
+        return Reply(('{"jsonrpc":"2.0","id":' + str(request_id) +
+                      ',"result":{"balance":NaN}}').encode("ascii"))
+
+    monkeypatch.setattr(core, "urlopen", poisoned_rpc)
+    with pytest.raises(ValueError, match="Non-finite"):
+        JsonRpc("https://example.org").call("eth_getBalance", [])
+
+    server, app, token = create_server(FakeRpc(), 0)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        port = server.server_port
+        for literal in (b'{"raw":NaN}', b'{"raw":Infinity}', b'{"raw":-Infinity}'):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=4)
+            conn.request("POST", "/api/import", body=literal, headers={
+                "Host": f"127.0.0.1:{port}",
+                "Origin": f"http://127.0.0.1:{port}",
+                "X-Companion-Token": token,
+                "Content-Type": "application/json",
+            })
+            result = conn.getresponse()
+            assert result.status == 400
+            assert b"Non-finite" in result.read()
+            conn.close()
+        assert app.wallet is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(5)
+
+
 def test_loopback_http_rejects_cross_origin_and_serves_ui_without_remote_resources():
     rpc=FakeRpc()
     server, app, token = create_server(rpc, 0)

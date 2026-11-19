@@ -211,7 +211,8 @@ class JsonRpc:
         if len(raw) > MAX_RPC_BYTES:
             raise ValueError("RPC response exceeds size limit")
         try:
-            data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_pairs)
+            data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_pairs,
+                              parse_constant=lambda v: (_ for _ in ()).throw(ValueError("Non-finite RPC JSON number")))
         except (UnicodeError, json.JSONDecodeError) as exc:
             raise ValueError("RPC returned invalid JSON") from exc
         if not isinstance(data, dict) or data.get("jsonrpc") != "2.0" or data.get("id") != request_id:
