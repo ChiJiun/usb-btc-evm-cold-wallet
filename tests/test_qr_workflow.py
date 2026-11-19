@@ -58,8 +58,12 @@ def test_sepolia_qr_tampered_response_rejected(root):
 def test_btc_testnet_qr_psbt_signed_and_correlated(root):
     key = btc_key(root, 0, 0)
     target = btc_address(root, 0, 1)
-    tx = transaction.Transaction(
+    prev_tx = transaction.Transaction(
         vin=[transaction.TransactionInput(bytes.fromhex("11"*32), 0)],
+        vout=[transaction.TransactionOutput(120000, script.p2wpkh(key.key))],
+    )
+    tx = transaction.Transaction(
+        vin=[transaction.TransactionInput(prev_tx.txid(), 0)],
         vout=[
             transaction.TransactionOutput(60000, script.address_to_scriptpubkey(target)),
             transaction.TransactionOutput(58800, script.p2wpkh(btc_key(root, 1, 0).key)),
@@ -70,7 +74,8 @@ def test_btc_testnet_qr_psbt_signed_and_correlated(root):
     p.inputs[0].unknown = {}
     for out in p.outputs:
         out.unknown = {}
-    p.inputs[0].witness_utxo = transaction.TransactionOutput(120000, script.p2wpkh(key.key))
+    p.inputs[0].witness_utxo = prev_tx.vout[0]
+    p.inputs[0].non_witness_utxo = prev_tx
     p.inputs[0].bip32_derivations[key.key.get_public_key()] = psbt.DerivationPath(
         root.my_fingerprint, bip32.parse_path("m/84h/1h/0h/0/0")
     )
