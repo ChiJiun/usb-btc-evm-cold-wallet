@@ -5,7 +5,7 @@
 > [!WARNING]
 > **實驗性專案 · 僅限測試網 · 未經獨立安全審計 · 請勿存放真實資產。**
 >
-> **本專案目前不是可直接燒錄開機的 USB 映像檔。** 現階段提供的是預計在**可信任、實體斷網的 Linux Live 環境**中執行的離線簽章核心與命令列工具（CLI）。一般 USB 隨身碟不是 Ledger、Trezor、YubiKey，也不具備 Secure Element（安全元件）或獨立的硬體金鑰保護能力。
+> **本 PR 已加入可建置的 Buildroot x86_64 UEFI USB 映像流程，但目前尚未取得完整的雙次建置／開機及實機安全驗證結果，不能視為已驗證的可部署冷錢包。** 一般 USB 隨身碟不是 Ledger、Trezor、YubiKey，也不具備 Secure Element（安全元件）或獨立的硬體金鑰保護能力。
 
 ## 專案簡介
 
@@ -29,7 +29,7 @@
 
 **收款**只需要公開收款地址，平常不必啟動冷錢包；**轉出資產**才需要將交易送到離線端，進行獨立核對與簽章。
 
-## 目前支援的功能（`main` 分支，v0.1.0）
+## 此 PR 分支已實作的功能（尚未正式合併）
 
 | 項目 | 已實作範圍 |
 | --- | --- |
@@ -39,12 +39,14 @@
 | EVM | **僅 Sepolia 測試網**；EIP-1559 Type 2 **原生 ETH 轉帳**、chainId／收款地址／金額／Gas 檢查、已簽署原始交易重新解碼與發送者地址還原 |
 | 公開帳戶資訊 | Bitcoin 測試網收款地址與帳戶 `tpub`；Sepolia EVM 地址 |
 | 安全限制 | 離線簽章程式**沒有 RPC 或廣播功能**；禁止主網簽章、任意合約呼叫、盲簽及私鑰匯出 |
-| 自動化檢查 | GitHub Actions：Python 3.12／3.13 測試、雜湊鎖定相依套件、pip-audit、Gitleaks、dependency review 檢查及可重現 wheel 建置 |
+| 自動化檢查 | GitHub Actions：Python 3.12／3.13 測試、雜湊鎖定相依套件、pip-audit、Gitleaks、dependency review、可重現 wheel，以及 Live USB 雙次 Buildroot 建置與 QEMU/OVMF 開機煙霧測試（**執行結果待確認**） |
+| Live USB 建置 | Buildroot x86_64 UEFI／RAM-only rootfs、停用 Kernel Networking、固定 GPT PARTUUID、簽章來源驗證與空白 COLD_VAULT；**僅表示流程已實作，不表示映像已成功驗證** |
+| USB 離線交換 | 僅允許獨立的 `TX_TRANSFER` VFAT 裝置，檢查掛載來源及 `noexec,nodev,nosuid,sync` 選項 |
 
-**目前 `main` 尚未支援：** 主網、ERC-20、EIP-712、WalletConnect、Taproot、多簽、PSBT v2、QR 傳輸、可信任的硬體螢幕／按鍵、可直接燒錄的開機 ISO、完整 Bitcoin 地址探索，以及獨立安全審計。
+**本 PR 尚未支援或完成驗證：** 主網、ERC-20、EIP-712、WalletConnect、Taproot、多簽、PSBT v2、QR 傳輸、可信任的硬體螢幕／按鍵、實體 USB 開機驗收、完整 Bitcoin 地址探索，以及獨立安全審計。
 
 > [!NOTE]
-> 部分新功能正在獨立 Pull Request 開發。例如 [PR #26 的 Online Companion](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/26) 在尚未合併前，**不屬於目前 `main` 已提供的功能**。本 README 以 `main` 為準，不將開發中功能當作正式支援。
+> 本 README 描述的是 **PR #9 的提案分支**，並非目前 `main` 的已發布功能。其他尚未合併的 PR（例如 [#26 Online Companion](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/26)）也不包含在此分支內。
 
 ## 開發環境與自動化測試
 
@@ -62,7 +64,20 @@ pytest
 
 自動化測試通過**不代表**離線硬體、USB 開機環境或實際資產的安全性已經通過驗證。
 
-## 離線環境安裝與準備
+## Buildroot Live USB 映像（待完整驗證）
+
+在相容的 Linux x86_64 建置主機上使用專案的 Buildroot 流程；**不得在連網 CI 或建置主機產生真實助記詞**：
+
+```bash
+make prepare-sources
+make image
+make verify
+make reproducibility-check
+```
+
+預期產物為 `build/output/images/usb-cold-wallet.img`。必須先確認兩次 clean build 完全一致、QEMU/OVMF UEFI 開機通過，並在實體 USB 上驗證無網路、無 swap、僅允許指定分割區持久化寫入，才能考慮用於後續研究。詳細流程見 [BUILD.md](docs/BUILD.md)。
+
+## 離線環境安裝與準備（手動研究流程）
 
 開始前請先閱讀 [USB 製作與使用指南](docs/USB_SETUP.md)。以下是**手動研究／測試流程**，不是一鍵安裝程式，更不是安全開機的保證。
 

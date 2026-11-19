@@ -5,7 +5,7 @@
 > [!WARNING]
 > **Experimental · Testnets only · Not independently audited · Do not use with real funds.**
 >
-> This repository is **not a bootable USB image** and is not equivalent to Ledger, Trezor, YubiKey, or a Secure Element. It provides an offline signing core and CLI intended to run inside a **trusted, physically disconnected Linux Live environment**. A regular USB flash drive cannot protect keys independently of the host computer.
+> This PR introduces a Buildroot x86_64 UEFI bootable-image **build pipeline**, but the two-clean-build reproducibility, emulated UEFI boot and physical USB security validations are **not yet complete**. It is not a verified deployable hardware wallet. A regular USB drive is not a Ledger, Trezor, YubiKey, or Secure Element and cannot independently protect keys.
 
 ## What is this project?
 
@@ -29,7 +29,7 @@ The trust boundary matters more than the drive itself:
 
 **Receiving funds** only requires public receiving addresses. **Sending funds** requires the offline signer to approve and sign each transaction.
 
-## Current functionality (`main`, v0.1.0)
+## Implemented on this PR branch (not merged or released)
 
 | Component | Implemented scope |
 | --- | --- |
@@ -39,12 +39,14 @@ The trust boundary matters more than the drive itself:
 | EVM | **Sepolia only**; EIP-1559 type-2 **native ETH transfers**; chain ID, recipient, value and gas checks; signed raw transaction re-decoding and sender recovery |
 | Public watch-only output | Bitcoin testnet addresses and account `tpub`; Sepolia account address |
 | Safety boundaries | Signer has **no RPC or broadcast code**, no mainnet signing, no arbitrary contract calls or blind signing, and no private-key export |
-| CI | Python 3.12/3.13 tests; hash-locked dependencies; pip-audit; Gitleaks; dependency review checks; reproducible wheel verification |
+| CI | Python 3.12/3.13 tests, hash-locked dependencies, pip-audit, Gitleaks, dependency review, reproducible wheel verification, and a Live USB dual-build/OVMF boot workflow (**results pending**) |
+| Buildroot image pipeline | x86_64 UEFI, RAM-only rootfs, kernel networking disabled, pinned source verification, fixed GPT PARTUUIDs and blank COLD_VAULT; **implementation is not evidence of a verified image** |
+| USB transfer | One independent `TX_TRANSFER` VFAT USB with mount-source and `noexec,nodev,nosuid,sync` verification |
 
-**Not included in the current `main` release:** mainnet, ERC-20, EIP-712, WalletConnect, Taproot, multisig, PSBT v2, QR transport, trusted hardware screen/buttons, a ready-to-flash bootable ISO, full Bitcoin address discovery, and an independent security audit.
+**Not included or not verified on this PR branch:** mainnet, ERC-20, EIP-712, WalletConnect, Taproot, multisig, PSBT v2, QR transport, trusted hardware screen/buttons, physical USB boot acceptance, full Bitcoin address discovery, and an independent security audit.
 
 > [!NOTE]
-> New features are being developed in separate pull requests. In particular, the Online Companion in [PR #26](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/26) is **not part of `main` while that PR remains unmerged**. This README describes `main`, not unmerged features.
+> This README describes the proposed **PR #9 branch**, not the current released `main`. Unmerged work from other PRs, including [#26 Online Companion](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/26), is not included.
 
 ## Development and tests (connected computers)
 
@@ -63,7 +65,20 @@ usb-cold-wallet --help
 
 These automated tests do **not** prove the security of a real offline host or USB installation.
 
-## Offline setup (trusted, physically disconnected computer only)
+## Buildroot Live USB image (pending full validation)
+
+On a compatible Linux x86_64 build host, use the pinned Buildroot pipeline. **Never generate or import real wallet seeds on a networked build machine or CI runner.**
+
+```bash
+make prepare-sources
+make image
+make verify
+make reproducibility-check
+```
+
+Expected output: `build/output/images/usb-cold-wallet.img`. Two clean bit-for-bit identical builds, QEMU/OVMF UEFI boot, and physical USB offline/swap/persistence controls must all be verified before further security evaluation. See [BUILD.md](docs/BUILD.md).
+
+## Offline setup (manual research workflow)
 
 Read [the USB setup guide](docs/USB_SETUP.md) before proceeding. The following is a **manual research workflow**, not an installer or a secure boot guarantee.
 
