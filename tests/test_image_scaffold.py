@@ -35,6 +35,19 @@ def test_kernel_removes_network_and_internal_storage():
         assert forbidden not in text
 
 
+def test_rootfs_device_management_does_not_force_kernel_networking():
+    config = (ROOT / "buildroot-external/configs/usb_wallet_x86_64_defconfig").read_text()
+    assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y" in config
+    assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV=y" not in config
+    assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y" not in config
+    validator = (ROOT / "scripts/validate_buildroot_config.py").read_text()
+    assert '"BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS"' in validator
+    assert '"BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV"' in validator
+    verifier = (ROOT / "scripts/verify_image.sh").read_text()
+    assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y$" in verifier
+    assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_(MDEV|EUDEV)=y$" in verifier
+
+
 def test_image_verifier_audits_the_kernel_used_for_shipped_bzimage():
     verifier = (ROOT / "scripts/verify_image.sh").read_text()
     assert 'set -- "$OUT"/build/linux-*/.config' in verifier
