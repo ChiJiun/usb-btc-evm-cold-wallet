@@ -11,7 +11,7 @@ from pathlib import Path
 from .btc import review_btc_psbt, sign_btc_psbt
 from .evm import review_evm_transaction, sign_evm
 from .exchange import (read as read_exchange, read_envelope, read_bounded,
-                       _unique_object, write as write_exchange)
+                       _unique_object, write as write_exchange, MAX_BYTES)
 from .keys import root_from_mnemonic, watch_only
 from .recovery import rehearsal, restore_paper_wallet
 from .vault import encrypt_mnemonic, load_vault, new_mnemonic, save_vault
@@ -38,6 +38,24 @@ def _display(review):
     safe = {key: value for key, value in review.items() if key not in ("psbt", "transaction")}
     print(json.dumps(safe, indent=2))
     return safe
+
+
+def _read_legacy_evm(path):
+    """One bounded regular-file read; reject duplicate keys, invalid UTF-8 and NaN."""
+    try:
+        return json.loads(read_bounded(path, limit=MAX_BYTES).decode("utf-8"),
+                          object_pairs_hook=_unique_object,
+                          parse_constant=lambda x: (_ for _ in ()).throw(ValueError(f"Invalid JSON number {x}")))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid legacy EVM transaction JSON") from exc
+
+
+def _read_legacy_btc(path):
+    """Read only bounded textual PSBT from an untrusted transfer USB."""
+    try:
+        return read_bounded(path, limit=MAX_BYTES).decode("ascii").strip()
+    except UnicodeError as exc:
+        raise ValueError("Invalid legacy PSBT encoding") from exc
 
 
 def _assert_offline_flags(args):
@@ -159,8 +177,8 @@ def main(argv=None):
             return 0
 
         print("WARNING: testnet prototype. SHA-256 is NOT a trusted authorization.", file=sys.stderr)
-        root = _wallet_root(args)
         if args.command in ("addresses", "export-watch-only"):
+            root = _wallet_root(args)
             info = watch_only(root, count=args.count)
             print("NETWORKS: BITCOIN TESTNET + ETHEREUM SEPOLIA (chainId 11155111)")
             print(json.dumps(info, indent=2))
@@ -169,9 +187,10 @@ def main(argv=None):
                 write_exchange(args.out, "watch-only", info)
                 print(f"PUBLIC watch-only envelope written to {args.out}")
         elif args.command == "sign-evm":
-            raw = read_exchange(args.request, "evm-request") if args.request else json.loads(
-                args.tx.read_text(encoding="utf-8"))
+            # Parse and bound the untrusted USB payload BEFORE unlocking the vault.
+            raw = read_exchange(args.request, "evm-request") if args.request else _read_legacy_evm(args.tx)
             reviewed = review_evm_transaction(raw, args.to, args.wei)
+            root = _wallet_root(args)
             print("NETWORK: ETHEREUM SEPOLIA (chainId 11155111) — NOT MAINNET")
             _display(reviewed)
             _approve(f"SEPOLIA {reviewed['recipient'][-8:]} {reviewed['value_wei']}")
@@ -182,7 +201,12 @@ def main(argv=None):
                 save_vault(args.out, result)
             print(f"Signed transfer saved: {args.out}")
         elif args.command == "sign-btc":
-            encoded = read_exchange(args.request, "btc-request") if args.request else args.psbt.read_text(encoding="utf-8")
+            encoded = read_exchange(args.request, "btc-request") if args.request else _read_legacy_btc(args.psbt)
+            # A BTC full review needs the wallet derivation; simple parse/size
+            # checks do not. Reject invalid PSBT framing before vault unlock.
+            from .btc import _read_psbt
+            _read_psbt(encoded)
+            root = _wallet_root(args)
             reviewed = review_btc_psbt(root, encoded, args.to, args.sats,
                                        args.max_fee_sats, args.change_index)
             print("NETWORK: BITCOIN TESTNET — NOT MAINNET")
