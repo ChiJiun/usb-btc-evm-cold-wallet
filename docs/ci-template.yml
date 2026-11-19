@@ -1,22 +1,6 @@
-# Copy to .github/workflows/ci.yml when GitHub token has workflow scope.
-name: Python tests
-on:
-  push:
-  pull_request:
-permissions:
-  contents: read
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.12", "3.13"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[dev]"
-      - run: python -m pytest
-      - run: usb-cold-wallet --help
+# Historical bootstrap placeholder.
+# CI is now enabled. The authoritative workflow is:
+#   .github/workflows/ci.yml
+#
+# Do not copy this file back into .github/workflows; it is intentionally kept
+# only so links from the initial repository bootstrap do not become misleading.
