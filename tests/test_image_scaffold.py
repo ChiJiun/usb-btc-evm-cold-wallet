@@ -121,8 +121,13 @@ def test_wheelhouse_manifest_is_unique_and_includes_embit():
 
 def test_busybox_network_clients_are_explicitly_disabled():
     text = (ROOT / "buildroot-external/board/usb-wallet/busybox.fragment").read_text()
-    for symbol in ("PING", "WGET", "NC", "IP", "IFCONFIG", "UDHCPC"):
+    for symbol in ("PING", "PING6", "WGET", "NC", "NETCAT", "IP", "IFCONFIG",
+                   "ROUTE", "UDHCPC", "UDHCPD", "TELNET", "TELNETD", "FTPGET", "FTPPUT"):
         assert f"# CONFIG_{symbol} is not set" in text
+    postbuild = (ROOT / "buildroot-external/board/usb-wallet/post-build.sh").read_text()
+    assert "networking tool survived image construction" in postbuild
+    for applet in ("telnet", "ftpget", "ftpput"):
+        assert applet in postbuild
 
 
 def test_target_installer_keeps_only_x86_64_embit_binary(tmp_path):

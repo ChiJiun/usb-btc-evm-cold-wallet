@@ -21,3 +21,7 @@ CONFIG_REBOOT=y
 # CONFIG_ROUTE is not set
 # CONFIG_UDHCPC is not set
 # CONFIG_UDHCPD is not set
+# CONFIG_TELNET is not set
+# CONFIG_TELNETD is not set
+# CONFIG_FTPGET is not set
+# CONFIG_FTPPUT is not set
