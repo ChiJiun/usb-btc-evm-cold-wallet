@@ -48,6 +48,9 @@ _BTC_SIGNED_FIELDS = {
     "network", "recipient", "amount_sats", "fee_sats", "signature_count",
     "signed_psbt_base64", "finalized_tx_hex",
 }
+# Offline GUI #19 attaches these fixed-size integrity linkage fields. They
+# are not secrets, authorizations or authentication signatures.
+_REVIEW_DIGEST_FIELDS = {"request_sha256", "review_sha256"}
 
 
 def _canonical(value):
@@ -171,8 +174,18 @@ def _validate_watch_only(payload):
     _address(evm["address"])
 
 
+def _review_digests(payload):
+    present = _REVIEW_DIGEST_FIELDS & payload.keys()
+    if present not in (set(), _REVIEW_DIGEST_FIELDS):
+        raise ValueError("Both request and review digests must be included together")
+    for name in present:
+        if type(payload[name]) is not str or not _HEX64.fullmatch(payload[name]):
+            raise ValueError("Invalid request/review digest format")
+
+
 def _validate_evm_signed(payload):
-    _fields(payload, _EVM_SIGNED_FIELDS, label="signed EVM")
+    _fields(payload, _EVM_SIGNED_FIELDS, _REVIEW_DIGEST_FIELDS, "signed EVM")
+    _review_digests(payload)
     if _int(payload["chain_id"], "signed chain", 11155111, 11155111) != 11155111:
         raise ValueError("Signed chain mismatch")
     _address(payload["from"])
@@ -198,7 +211,8 @@ def _validate_evm_signed(payload):
 
 
 def _validate_btc_signed(payload):
-    _fields(payload, _BTC_SIGNED_FIELDS, label="signed BTC")
+    _fields(payload, _BTC_SIGNED_FIELDS, _REVIEW_DIGEST_FIELDS, "signed BTC")
+    _review_digests(payload)
     if payload["network"] != "bitcoin-testnet":
         raise ValueError("Signed Bitcoin network mismatch")
     _btc_address(payload["recipient"])

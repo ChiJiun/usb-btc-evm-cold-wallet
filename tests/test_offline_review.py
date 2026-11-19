@@ -245,6 +245,26 @@ def test_btc_signed_output_matches_review_and_exports_create_only(tmp_path, root
         session.export_signed(out)
 
 
+def test_review_digest_fields_are_strict_and_never_arbitrary_metadata(root):
+    plan = build_review_plan(package("evm-request", _evm_tx()), root)
+    session = ReviewSession(plan)
+    _fully_confirm(session)
+    signed = session.sign(root)
+    payload = signed["payload"]
+    assert package("evm-signed", payload)["payload"] == payload
+
+    from copy import deepcopy
+    attacks = [
+        {key: value for key, value in payload.items() if key != "review_sha256"},
+        {**payload, "request_sha256": "not-a-digest"},
+        {**payload, "review_sha256": "a" * 65},
+        {**payload, "extra": {"recovery_words": "abandon " * 11 + "about"}},
+    ]
+    for bad in attacks:
+        with pytest.raises(ValueError):
+            package("evm-signed", bad)
+
+
 def test_signing_with_different_wallet_is_rejected(root):
     plan = build_review_plan(package("evm-request", _evm_tx()), root)
     session = ReviewSession(plan)
