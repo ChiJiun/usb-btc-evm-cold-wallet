@@ -69,10 +69,20 @@ Supported kinds: `btc-request`/`btc-signed` (`bitcoin-testnet`),
 (`testnet-sepolia`). The parser bounds input size, rejects duplicate
 JSON keys, extra envelope fields, nonfinite JSON values, wrong network,
 mismatched kind and sensitive key names (mnemonic, seed, private_key,
-passphrase, vault, etc.). Exchange reads are limited to regular files,
-refuse symbolic links, and validate a **single read** to avoid inspecting
-metadata from a different file than the payload just checked. The online
-request packer also enforces bounded input size and duplicate-key rejection.
+passphrase, vault, etc.). **All payload kinds are also strictly allowlisted**:
+EVM requests require explicit native Sepolia type-2 transfer fields; EVM signed
+outputs require exact metadata reproduced from independently decoded/recovered
+signed raw bytes; signed Bitcoin outputs must be genuine PSBT v0 P2WPKH with
+matching signatures, final witnesses, recipient/fee; and watch-only fields have
+bounded, type-checked nested schema, canonical Bitcoin addresses derived from
+the account tpub, checksum EVM address and optional eight-hex-digit master
+fingerprint. Arbitrary comments, strings, nested extras, or disguised secret
+values under innocent keys are **not permitted**. Valid public key materials
+and addresses are still privacy-sensitive even though they are not signing
+secrets. Exchange reads are limited to regular files, refuse symbolic links,
+and validate a **single bounded read** to avoid inspecting metadata from a
+different file than the payload just checked. The online request packer also
+enforces bounded input size and duplicate-key rejection.
 
 Prepare an unsigned request on online PC:
 
@@ -96,8 +106,12 @@ For Bitcoin testnet use `pack-request --kind btc-request --input unsigned.psbt`
 followed by `sign-btc --request ... --to tb1... --sats ... --max-fee-sats
 ... --change-index 0 --out ...`. All recipient/amount/fee policies still
 run *after* envelope validation. Signing via legacy `--psbt` or `--tx`
-remains available but emits plain JSON; `--request` emits integrity-checked
-signed envelopes.
+remains available but emits plain JSON; **both legacy inputs are now single-read,
+size-bounded, non-symlink regular files**, EVM JSON checks duplicate properties
+and NaN, and invalid USB inputs are rejected **before unlocking the vault**.
+`--request` emits integrity-checked signed envelopes. The bootable Live USB
+appliance (#9) must be separately updated to prefer envelopes over the legacy
+entrypoints; that integration is **not** proven by this CLI change.
 
 Export public watch-only data on the offline host:
 
