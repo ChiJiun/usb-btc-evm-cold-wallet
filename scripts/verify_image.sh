@@ -4,9 +4,25 @@ set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 OUT="$ROOT/build/output"
 IMAGE="$OUT/images/usb-cold-wallet.img"
-KCONFIG="$(find "$OUT/build" -maxdepth 2 -path '*/linux-*/.config' -print -quit)"
+# Audit the exact kernel configuration that produced the shipped bzImage.
+# Reject missing or ambiguous Linux build directories instead of accepting
+# whichever .config `find` happened to return first.
+set -- "$OUT"/build/linux-*/.config
+if [ "$#" -ne 1 ] || [ ! -s "$1" ]; then
+	echo "ERROR: expected exactly one built Linux kernel .config" >&2
+	exit 1
+fi
+KCONFIG="$1"
+BUILT_KERNEL="${KCONFIG%/.config}/arch/x86/boot/bzImage"
+if [ ! -s "$BUILT_KERNEL" ] || ! cmp -s "$BUILT_KERNEL" "$OUT/images/bzImage"; then
+	echo "ERROR: audited kernel .config does not match the shipped bzImage" >&2
+	exit 1
+fi
+printf 'Auditing built kernel config: %s\n' "$KCONFIG"
+# The resolved .config is authoritative: the input fragment may be overridden
+# by dependency resolution. Print only relevant public build configuration.
+grep -E '^(CONFIG_NET=|# CONFIG_NET is not set|CONFIG_USB_STORAGE=|# CONFIG_USB_STORAGE is not set|CONFIG_VFAT_FS=|# CONFIG_VFAT_FS is not set)' "$KCONFIG" || true
 
-test -n "$KCONFIG"
 test -s "$IMAGE"
 (
 	cd "$OUT/images"
