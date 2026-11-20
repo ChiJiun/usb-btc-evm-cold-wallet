@@ -159,3 +159,15 @@ def test_target_installer_keeps_only_x86_64_embit_binary(tmp_path):
     _keep_target_embit_prebuilt(tmp_path)
 
     assert [path.name for path in prebuilt.iterdir()] == [TARGET_EMBIT_PREBUILT]
+
+
+def test_buildroot_device_manager_preserves_offline_kernel_policy():
+    config = (ROOT / "buildroot-external/configs/usb_wallet_x86_64_defconfig").read_text()
+    validator = (ROOT / "scripts/validate_buildroot_config.py").read_text()
+    verifier = (ROOT / "scripts/verify_image.sh").read_text()
+    assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y" in config
+    assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV=y" not in config
+    assert '"BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS"' in validator
+    assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV" in validator
+    assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y" in verifier
+    assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_(MDEV|EUDEV)=y" in verifier
