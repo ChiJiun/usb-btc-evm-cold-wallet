@@ -23,6 +23,51 @@ printf 'Auditing built kernel config: %s\n' "$KCONFIG"
 # by dependency resolution. Print only relevant public build configuration.
 grep -E '^(CONFIG_NET=|# CONFIG_NET is not set|CONFIG_USB_STORAGE=|# CONFIG_USB_STORAGE is not set|CONFIG_VFAT_FS=|# CONFIG_VFAT_FS is not set)' "$KCONFIG" || true
 
+# Fail closed if the resolved Buildroot config uses mdev/eudev.
+BR_CONFIG="$OUT/.config"
+test -s "$BR_CONFIG" || { echo "ERROR: missing resolved Buildroot config" >&2; exit 1; }
+grep -qx 'BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y' "$BR_CONFIG" || {
+	echo "ERROR: Buildroot must use devtmpfs-only device management" >&2
+	exit 1
+}
+if grep -Eq '^BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_(MDEV|EUDEV)=y(
+	cd "$OUT/images"
+	sha256sum -c usb-cold-wallet.img.sha256
+)
+
+grep -q '^# CONFIG_NET is not set$' "$KCONFIG" || {
+	echo "ERROR: kernel networking subsystem is not disabled: $KCONFIG" >&2
+	echo "Configured network-related kernel symbols:" >&2
+	grep -E '^(CONFIG_(NET|INET|UNIX|PACKET|NETDEVICES|SCSI_NETLINK)=|# CONFIG_(NET|INET|UNIX|PACKET|NETDEVICES|SCSI_NETLINK) is not set$)' "$KCONFIG" >&2 || true
+	echo "Original network policy:" >&2
+	grep -E '^(CONFIG_NET=|# CONFIG_NET is not set$)' "$ROOT/buildroot-external/board/usb-wallet/linux.config" >&2 || true
+	exit 1
+}
+grep -q '^CONFIG_USB_STORAGE=y$' "$KCONFIG"
+grep -q '^CONFIG_VFAT_FS=y$' "$KCONFIG"
+if grep -Eq '^CONFIG_(ATA|BLK_DEV_NVME|NVME_CORE|MMC|VIRTIO_BLK)=y$' "$KCONFIG"; then
+	echo "ERROR: internal/non-USB block storage driver unexpectedly enabled" >&2
+	exit 1
+fi
+
+test -x "$OUT/target/usr/bin/usb-wallet-console"
+test -x "$OUT/target/usr/bin/usb-cold-wallet"
+for tool in ip ifconfig route ping wget nc netcat udhcpc telnet; do
+	for dir in bin sbin usr/bin usr/sbin; do
+		test ! -e "$OUT/target/$dir/$tool" || {
+			echo "ERROR: networking tool exists in target: $dir/$tool" >&2
+			exit 1
+		}
+	done
+done
+
+python3 "$ROOT/scripts/verify_image.py" "$IMAGE"
+echo "Static image verification passed."
+ "$BR_CONFIG"; then
+	echo "ERROR: mdev/eudev device management is forbidden" >&2
+	exit 1
+fi
+
 test -s "$IMAGE"
 (
 	cd "$OUT/images"
