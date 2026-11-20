@@ -79,7 +79,7 @@ def main() -> int:
             "BR2_TOOLCHAIN_BUILDROOT_GLIBC",
             "BR2_KERNEL_HEADERS_AS_KERNEL",
             "BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_12",
-            "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV",
+            "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS",
             "BR2_TARGET_ROOTFS_INITRAMFS",
             "BR2_PACKAGE_PYTHON3",
             "BR2_PACKAGE_USB_WALLET_APP",
@@ -92,6 +92,10 @@ def main() -> int:
             print(f"{name}={value}")
             if value != "y":
                 failed.append(name)
+        for name in ("BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV", "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV"):
+            symbol = kconf.syms.get(name)
+            if symbol is not None and symbol.str_value == "y":
+                failed.append(name + " must be disabled")
         if failed:
             raise SystemExit("Kconfig selections did not resolve: " + ", ".join(failed))
 
