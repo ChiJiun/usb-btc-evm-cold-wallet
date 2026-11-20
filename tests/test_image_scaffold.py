@@ -112,9 +112,15 @@ def test_boot_audit_binds_vault_to_unique_partuuid_and_boot_device():
         ROOT
         / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d/S01airgap"
     ).read_text()
-    assert "BOOT_PARTUUID=e2bd6d1b-8de5-502d-a897-c53a8e60f46b" in init
-    assert "VAULT_PARTUUID=18f1c36f-d5c0-5052-9cd2-03e9c2a48f00" in init
-    assert 'blkid -t "PARTUUID=$partuuid" -o device' in init
+    helper = (ROOT / "buildroot-external/board/usb-wallet/identify_media.py").read_text()
+    postbuild = (ROOT / "buildroot-external/board/usb-wallet/post-build.sh").read_text()
+    assert 'BOOT_UUID = uuid.UUID("e2bd6d1b-8de5-502d-a897-c53a8e60f46b")' in helper
+    assert 'VAULT_UUID = uuid.UUID("18f1c36f-d5c0-5052-9cd2-03e9c2a48f00")' in helper
+    assert "zlib.crc32" in helper
+    assert "missing, duplicated, or inconsistent" in helper
+    assert "usb-wallet-identify-media" in postbuild
+    assert "/usr/libexec/usb-wallet-identify-media" in init
+    assert "blkid -t" not in init and "blkid -s" not in init
     assert "boot and vault partitions share verified block parent" in init
     assert '"$VAULT_DEVICE" /mnt/cold-vault' in init
     assert "COLD_VAULT mount source matches verified PARTUUID device" in init
