@@ -6,8 +6,6 @@ LOCKDOWN=/run/usb-wallet/lockdown
 BOOT_DEVICE_FILE=/run/usb-wallet/boot-device
 BOOT_PARENT_FILE=/run/usb-wallet/boot-parent
 VAULT_DEVICE_FILE=/run/usb-wallet/vault-device
-BOOT_PARTUUID=e2bd6d1b-8de5-502d-a897-c53a8e60f46b
-VAULT_PARTUUID=18f1c36f-d5c0-5052-9cd2-03e9c2a48f00
 FAILED=0
 
 mkdir -p /run/usb-wallet /mnt/cold-vault /mnt/transfer
@@ -22,14 +20,6 @@ pass() {
 fail() {
 	printf 'FAIL: %s\n' "$1" >> "$CHECKS"
 	FAILED=1
-}
-
-unique_partuuid_device() {
-	partuuid="$1"
-	# Word splitting is intentional: block-device paths cannot contain spaces.
-	set -- $(blkid -t "PARTUUID=$partuuid" -o device 2>/dev/null || true)
-	[ "$#" -eq 1 ] || return 1
-	printf '%s\n' "$1"
 }
 
 block_parent_name() {
@@ -54,30 +44,30 @@ VAULT_DEVICE=""
 BOOT_PARENT=""
 VAULT_PARENT=""
 
-if BOOT_DEVICE="$(unique_partuuid_device "$BOOT_PARTUUID")"; then
-	if [ "$(blkid -s LABEL -o value "$BOOT_DEVICE" 2>/dev/null || true)" = "USBCOLD_EFI" ]; then
-		pass "unique boot partition identified by PARTUUID ($BOOT_DEVICE)"
-	else
-		fail "boot PARTUUID resolved to a partition with unexpected label"
-	fi
+# BusyBox blkid only lists labels/UUIDs and rejects util-linux -t/-o/-s.
+# The independent Python helper verifies primary GPT CRC, both partition
+# GUIDs, FAT labels and uniqueness across USB disks before returning paths.
+MEDIA_PARENT=""
+if MEDIA_IDENTITY="$(/usr/bin/python3 /usr/libexec/usb-wallet-identify-media 2>/dev/null)"; then
+    # Intentional word splitting: the helper only emits fixed-format /dev/sdXn
+    # names and a kernel block basename, never shell snippets or user strings.
+    set -- $MEDIA_IDENTITY
+    if [ "$#" -eq 3 ]; then
+        BOOT_DEVICE="$1"
+        VAULT_DEVICE="$2"
+        MEDIA_PARENT="$3"
+        pass "unique boot and vault partitions verified by GPT CRC, GUID and FAT label"
+    else
+        fail "boot media identifier returned malformed output"
+    fi
 else
-	fail "boot PARTUUID is missing or duplicated"
-fi
-
-if VAULT_DEVICE="$(unique_partuuid_device "$VAULT_PARTUUID")"; then
-	if [ "$(blkid -s LABEL -o value "$VAULT_DEVICE" 2>/dev/null || true)" = "COLD_VAULT" ]; then
-		pass "unique COLD_VAULT partition identified by PARTUUID ($VAULT_DEVICE)"
-	else
-		fail "vault PARTUUID resolved to a partition with unexpected label"
-	fi
-else
-	fail "vault PARTUUID is missing or duplicated"
+    fail "boot/vault media is missing, duplicated or failed GPT/FAT verification"
 fi
 
 if [ -n "$BOOT_DEVICE" ] && [ -n "$VAULT_DEVICE" ]; then
 	BOOT_PARENT="$(block_parent_name "$BOOT_DEVICE" 2>/dev/null || true)"
 	VAULT_PARENT="$(block_parent_name "$VAULT_DEVICE" 2>/dev/null || true)"
-	if [ -n "$BOOT_PARENT" ] && [ "$BOOT_PARENT" = "$VAULT_PARENT" ]; then
+	if [ -n "$BOOT_PARENT" ] && [ "$BOOT_PARENT" = "$VAULT_PARENT" ] && [ "$BOOT_PARENT" = "$MEDIA_PARENT" ]; then
 		pass "boot and vault partitions share verified block parent ($BOOT_PARENT)"
 		printf '%s\n' "$BOOT_DEVICE" > "$BOOT_DEVICE_FILE"
 		printf '%s\n' "$BOOT_PARENT" > "$BOOT_PARENT_FILE"
