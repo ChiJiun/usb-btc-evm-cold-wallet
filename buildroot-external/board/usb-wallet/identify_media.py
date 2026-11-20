@@ -96,8 +96,10 @@ def identify(sys_block: Path = Path("/sys/class/block"),
             continue
         boot, vault = dev_root / (name + "1"), dev_root / (name + "2")
         if (disk_id != DISK_UUID or len(parts) != 2 or
-                parts[0] != (EFI_TYPE, BOOT_UUID, READ_ONLY) or
-                parts[1] != (DATA_TYPE, VAULT_UUID, 0) or
+                parts[0][:2] != (EFI_TYPE, BOOT_UUID) or
+                not (parts[0][2] & READ_ONLY) or
+                parts[1][:2] != (DATA_TYPE, VAULT_UUID) or
+                (parts[1][2] & READ_ONLY) or
                 not (sys_block / (name + "1") / "partition").is_file() or
                 not (sys_block / (name + "2") / "partition").is_file()):
             unsafe_duplicate = True
