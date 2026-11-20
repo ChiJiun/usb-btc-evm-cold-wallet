@@ -81,7 +81,9 @@ def test_uefi_smoke_uses_matched_flash_firmware_and_serial_audit():
     assert "-drive if=pflash,unit=0,format=raw,readonly=on" in script
     assert "-drive if=pflash,unit=1,format=raw" in script
     assert '\n    -bios ' not in script
-    assert "console=ttyS0,115200 console=tty1" in grub
+    assert "console=tty1 console=ttyS0,115200" in grub
+    assert "earlyprintk=serial,ttyS0,115200" in grub
+    assert "loglevel=7" in grub
     assert 'grep \'^FAIL:\' "$CHECKS" > /dev/ttyS0' in boot_audit
     assert "USB_WALLET_UEFI_AUDIT_LOCKDOWN" in boot_audit
     assert "-net none" in script
