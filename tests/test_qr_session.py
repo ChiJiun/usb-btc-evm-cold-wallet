@@ -25,6 +25,15 @@ def test_request_response_roundtrip_and_single_use():
         session.check_response(response, now=1002, verify_signature=verify_expected)
 
 
+def test_pending_request_is_immutable_against_caller_mutation():
+    request = fixture()
+    response = make_response(request, {"signed": "public-test-only"})
+    session = QRSession(request, now=100)
+    request["payload"]["transaction"]["nonce"] = 999
+    request["request_id"] = "f" * 32
+    assert session.check_response(response, now=101, verify_signature=verify_expected) == {"signed": "public-test-only"}
+
+
 def test_independent_signature_verifier_is_required():
     request = fixture()
     response = make_response(request, {"signed": "public-test-only"})

@@ -104,7 +104,9 @@ class QRSession:
         _check(request, REQUEST_KEYS, "unsigned")
         if type(ttl) is not int or not 0 < ttl <= MAX_AGE_SEC:
             raise ValueError("Invalid session lifetime")
-        self.request = request
+        # Freeze the canonical request to prevent caller-side mutations from
+        # changing what a pending signing session is bound to.
+        self._request_bytes = _canonical(request)
         self.started = time.monotonic() if now is None else now
         self.ttl = ttl
         self.state = "pending"
@@ -120,7 +122,7 @@ class QRSession:
             self.state = "expired"
             raise ValueError("QR session expired")
         _check(response, RESPONSE_KEYS, "signed")
-        original = self.request
+        original = json.loads(self._request_bytes)
         if (response["request_id"] != original["request_id"] or
                 response["network"] != original["network"] or
                 response["account"] != original["account"] or
