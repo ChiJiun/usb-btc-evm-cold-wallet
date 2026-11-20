@@ -31,12 +31,26 @@ fi
 
 TMP="$(mktemp -d)"
 PID=""
+# Preserve bounded, public test-image diagnostics before deleting temp logs.
+# GitHub's complete multi-hour build job log is too large to download reliably.
+DIAGNOSTICS="$ROOT/build/reproducibility/uefi-smoke.log"
 cleanup() {
+    status=$?
+    if [ "$status" -ne 0 ]; then
+        mkdir -p "$(dirname "$DIAGNOSTICS")" || true
+        {
+            printf '%s\n' 'UEFI smoke test failed; bounded guest serial and QEMU tail:'
+            tail -c 32768 "$TMP/serial.log" 2>/dev/null || true
+            printf '\n--- QEMU ---\n'
+            tail -c 8192 "$TMP/qemu.log" 2>/dev/null || true
+        } > "$DIAGNOSTICS" || true
+    fi
     if [ -n "$PID" ]; then
         kill "$PID" 2>/dev/null || true
         wait "$PID" 2>/dev/null || true
     fi
     rm -rf "$TMP"
+    exit "$status"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -52,21 +66,21 @@ qemu-system-x86_64 \
     -display none -monitor none -serial "file:$TMP/serial.log" \
     -net none -no-reboot \
     -device qemu-xhci,id=xhci \
-    -drive if=none,id=walletdisk,format=raw,file="$IMAGE" \
+    -drive if=none,id=walletdisk,format=raw,snapshot=on,file="$IMAGE" \
     -device usb-storage,bus=xhci.0,drive=walletdisk,bootindex=1 \
     > "$TMP/qemu.log" 2>&1 &
 PID=$!
 
 count=0
 while [ "$count" -lt 120 ]; do
-    if grep -q 'USB_WALLET_UEFI_AUDIT_OK' "$TMP/serial.log" 2>/dev/null; then
-        echo "PASS: OVMF booted generated USB GPT image and guest startup audit succeeded"
-        exit 0
-    fi
     if grep -q 'USB_WALLET_UEFI_AUDIT_LOCKDOWN' "$TMP/serial.log" 2>/dev/null; then
         echo "ERROR: guest booted but startup audit entered LOCKDOWN" >&2
         tail -70 "$TMP/serial.log" >&2 || true
         exit 1
+    fi
+    if grep -q 'USB_WALLET_UEFI_AUDIT_OK' "$TMP/serial.log" 2>/dev/null; then
+        echo "PASS: OVMF booted generated USB GPT image and guest startup audit succeeded"
+        exit 0
     fi
     if ! kill -0 "$PID" 2>/dev/null; then
         echo "ERROR: QEMU exited before guest startup audit marker" >&2
