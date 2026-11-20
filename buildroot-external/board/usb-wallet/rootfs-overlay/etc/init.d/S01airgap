@@ -173,6 +173,9 @@ if [ -c /dev/ttyS0 ]; then
 	if [ "$FAILED" -eq 0 ]; then
 		printf 'USB_WALLET_UEFI_AUDIT_OK\n' > /dev/ttyS0
 	else
+		# Failure reasons contain only public mount/configuration facts.
+		# Include them in the emulated serial log to diagnose a locked boot.
+		grep '^FAIL:' "$CHECKS" > /dev/ttyS0 || true
 		printf 'USB_WALLET_UEFI_AUDIT_LOCKDOWN\n' > /dev/ttyS0
 	fi
 fi

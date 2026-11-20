@@ -7,12 +7,25 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 IMAGE="$ROOT/build/output/images/usb-cold-wallet.img"
 test -s "$IMAGE"
 command -v qemu-system-x86_64 >/dev/null
-OVMF=""
-for candidate in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd /usr/share/ovmf/OVMF.fd; do
-    if [ -f "$candidate" ]; then OVMF="$candidate"; break; fi
+# OVMF_CODE is a firmware code image, not a complete -bios ROM. Supply its
+# matching variable-store template as a separate, disposable writable pflash.
+# Mixing the 4M and legacy templates can silently fail before GRUB starts.
+OVMF_CODE=""
+OVMF_VARS=""
+for candidate in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd; do
+    [ -f "$candidate" ] || continue
+    case "$candidate" in
+        */OVMF_CODE_4M.fd) vars="${candidate%CODE_4M.fd}VARS_4M.fd" ;;
+        */OVMF_CODE.fd) vars="${candidate%CODE.fd}VARS.fd" ;;
+    esac
+    if [ -f "$vars" ]; then
+        OVMF_CODE="$candidate"
+        OVMF_VARS="$vars"
+        break
+    fi
 done
-if [ -z "$OVMF" ]; then
-    echo "ERROR: OVMF firmware not found" >&2
+if [ -z "$OVMF_CODE" ]; then
+    echo "ERROR: matching OVMF_CODE/OVMF_VARS firmware pair not found" >&2
     exit 1
 fi
 
@@ -27,11 +40,15 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+cp "$OVMF_VARS" "$TMP/ovmf-vars.fd"
+chmod 0600 "$TMP/ovmf-vars.fd"
+
 # USB storage is the ONLY mass-storage device; no NIC, persistent host disks,
 # host directory mounts, or wallet keys enter the VM.
 qemu-system-x86_64 \
     -machine q35,accel=tcg -cpu max -smp 2 -m 1536 \
-    -bios "$OVMF" \
+    -drive if=pflash,unit=0,format=raw,readonly=on,file="$OVMF_CODE" \
+    -drive if=pflash,unit=1,format=raw,file="$TMP/ovmf-vars.fd" \
     -display none -monitor none -serial "file:$TMP/serial.log" \
     -net none -no-reboot \
     -device qemu-xhci,id=xhci \

@@ -69,6 +69,24 @@ def test_image_has_separate_boot_and_cold_vault_partitions():
     assert "read-only = true" in text
 
 
+def test_uefi_smoke_uses_matched_flash_firmware_and_serial_audit():
+    script = (ROOT / "scripts/verify_uefi_boot.sh").read_text()
+    grub = (ROOT / "buildroot-external/board/usb-wallet/grub.cfg").read_text()
+    boot_audit = (
+        ROOT
+        / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d/S01airgap"
+    ).read_text()
+    assert "OVMF_CODE_4M.fd" in script and "VARS_4M.fd" in script
+    assert 'cp "$OVMF_VARS" "$TMP/ovmf-vars.fd"' in script
+    assert "-drive if=pflash,unit=0,format=raw,readonly=on" in script
+    assert "-drive if=pflash,unit=1,format=raw" in script
+    assert '\n    -bios ' not in script
+    assert "console=ttyS0,115200 console=tty1" in grub
+    assert 'grep \'^FAIL:\' "$CHECKS" > /dev/ttyS0' in boot_audit
+    assert "USB_WALLET_UEFI_AUDIT_LOCKDOWN" in boot_audit
+    assert "-net none" in script
+
+
 def test_image_generation_is_deterministic():
     defconfig = (ROOT / "buildroot-external/configs/usb_wallet_x86_64_defconfig").read_text()
     image = (ROOT / "buildroot-external/board/usb-wallet/genimage.cfg").read_text()
