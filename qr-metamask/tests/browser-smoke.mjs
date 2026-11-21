@@ -130,11 +130,8 @@ test('built browser bundle passes CSP and native QR pairing/request/signed respo
     assert.ok(literal, field+' must be a JSON number token, not a quoted string');
     assert.equal(BigInt(literal[1]), expected, field+' must retain exact Wei');
   }
-  assert.equal(
-    downloaded.value === Number(transfer.value.toString()),
-    true,
-    'Browser download must be valid JSON for the offline CLI',
-  );
+  assert.equal(Number.isSafeInteger(downloaded.value), false,
+    'Large Wei amounts must be checked from the original JSON numeric token');
   assert.match(await page.locator('#status').textContent(), /已產生精確 Wei/);
 
   const raw = await address.signTransaction(transfer);
