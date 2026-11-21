@@ -1,91 +1,101 @@
 # Single-USB Windows ↔ Offline cross-boot UX
 
-This integration completes the software-side single-USB flow for Issues #17, #19, #20 and #37 without changing Buildroot partition layout, mount policy, the release workflow, or the canonical transaction protocol.
+This integration consumes the formal Issue #37 v2 request/response contract and state ownership model. It does not change Buildroot partition layout, mount policy, or release workflows.
 
-## Protocol boundary
+## On-wire contract
 
-The request and response bytes remain the existing versioned `usb-cold-wallet-exchange` envelopes from `exchange.py` / `companion_envelope.py`. No second signer protocol is introduced.
+Every cross-boot transaction uses the canonical v2 fields implemented by `cross_boot.py`:
 
-The current v1 envelope does not contain a request ID. Until the coordinated Issue #37 protocol upgrade lands, the Windows Companion binds its random 128-bit local Request ID to:
+- 128-bit lowercase `requestId`
+- `network`, `account`, `transactionDigest`
+- independently derived `intent` (recipient, amount, fee, nonce/UTXOs)
+- explicit expiry mode
+- signed response binding through `requestEnvelopeDigest` and `signedResultDigest`
 
-- the immutable canonical request and its digest;
-- the persisted watch-only account/network;
-- the exact `request-<RequestID>.json` / `response-<RequestID>.json` filenames;
-- and, most importantly, a full re-parse and cryptographic verification of the signed EVM transaction or BTC PSBT against the original request.
+The single-USB flow uses the formal restricted `no-trusted-clock` mode because FAT32 timestamps and the offline RTC are not trusted. The UI/state therefore reports `expiryAssurance=unverified`; durable cold replay protection plus the full human review remain mandatory.
 
-The filename/request ID is correlation metadata, not authentication. A signed response is never accepted because its filename matches.
+The Windows Portable EXE intentionally does not bundle `cross_boot.py`, `btc.py`, `evm.py`, `keys.py`, `vault.py`, or other offline signer modules. `companion_crossboot.py` is a public-only adapter for the exact same v2 wire schema, and integration tests require requests emitted by it to pass the formal `verify_v2_request` API and responses produced by the formal `package_v2_response` / `verify_v2_response` APIs.
 
-## Normal operation
+## Durable state
 
-1. Start the zero-install Windows Companion from the USB.
-2. Import/display the public watch-only BTC testnet / Sepolia account.
-3. Create a transaction and inspect recipient, amount and maximum fee.
-4. Press **儲存待簽交易至單 USB**.
-5. Close the Companion completely.
-6. Reboot and select this USB from the machine's UEFI boot menu.
-7. In the Offline GUI press **單 USB：自動載入唯一待簽 Request**.
-8. Unlock the Vault and encrypted offline policy.
-9. Review every canonical page. BTC shows inputs, recipient/change outputs and fee. Sepolia shows chain/account, full recipient, value, nonce, gas and fee.
-10. Acknowledge each page, type the SignerSession challenge and press the explicit sign button.
-11. The GUI writes `response-<RequestID>.json` into the exchange directory.
-12. Shut down the offline system and boot Windows again.
-13. Launch Companion. It restores the public Pending Request and re-verifies the signed bytes. It never broadcasts during restore.
-14. Inspect the verified transaction and press **Broadcast** manually.
-15. Use the status button for pending/confirmed/failed or ambiguous broadcast recovery.
+Windows uses the formal `PendingRequestStore` transitions:
 
-No normal step requires Python, Node, CLI, MetaMask or manual JSON editing.
+```text
+DRAFT -> EXPORTED -> IMPORTED_VERIFIED -> BROADCASTED
+              \-> FAILED
+```
 
-## Persistent public state
+The cold side uses the formal `ReplayLedger`:
 
-The Windows side stores public state in:
+```text
+COLD_REVIEWED -> SIGNED
+           \-> FAILED
+```
+
+Both are append-only hash-chained journals. They detect visible corruption/reordering but do not claim whole-store rollback resistance without an external monotonic anchor.
+
+Public files live under:
 
 ```text
 TX_TRANSFER/
 └─ .usb-cold-wallet/
-   ├─ pending-state.json
+   ├─ watch-only.json
+   ├─ state/
+   │  ├─ online/
+   │  └─ cold/
    └─ exchange/
-      ├─ request-<32-lowercase-hex-RequestID>.json
-      └─ response-<same-RequestID>.json
+      ├─ request-<requestId>.json
+      └─ response-<requestId>.json
 ```
 
-`pending-state.json` is bounded, checksummed and replaced after an fsync of the completed file. It contains no seed, mnemonic, private key, Vault plaintext or signing capability.
+No seed, mnemonic, private key, Vault plaintext, or signing capability is persisted by the Windows Companion.
 
-On restart, the Companion validates the state schema/checksum, validates the watch-only export, reconstructs the canonical request and re-runs the existing signed-response verifier before restoring a verified/broadcast state.
+## Operator flow
 
-## Fail-closed recovery
+1. Start the Windows Portable Companion.
+2. Display/import the public BTC testnet and Sepolia watch-only account.
+3. Create a transaction and inspect recipient, amount and maximum fee.
+4. Press **儲存待簽交易至單 USB**.
+5. Close Companion completely.
+6. Reboot and choose the same USB from the UEFI boot menu.
+7. In Offline GUI press **單 USB：自動載入唯一待簽 Request**.
+8. Unlock the Vault. The GUI verifies the formal v2 request against the actual signing account.
+9. Review the existing canonical pages. BTC displays UTXOs, full recipient/change and fee. Sepolia displays chain/account, full address, value, nonce, gas and maximum fee.
+10. Acknowledge every page, enter the SignerSession challenge, then explicitly sign.
+11. Immediately before signing, the cold `ReplayLedger` rejects reused `requestId` or a transaction digest already reviewed under another ID.
+12. Export writes `response-<requestId>.json` create-only and then records `SIGNED`. If power is lost after the completed response is published but before the ledger update, re-export verifies the existing response and safely completes the ledger transition.
+13. Shut down the offline system and boot Windows.
+14. Companion restores `EXPORTED`, discovers the response, verifies v2 binding, re-runs the existing EVM raw transaction / BTC PSBT verifier, and advances to `IMPORTED_VERIFIED`.
+15. Broadcast remains an explicit button. Successful send advances to `BROADCASTED`; there is no background or automatic broadcast.
 
-The software refuses:
+Normal operation requires no Python, Node, CLI, MetaMask, or manual JSON editing.
 
-- zero or multiple usable `TX_TRANSFER` Windows volumes;
-- multiple pending request files;
-- response filenames that do not exactly match the active Request ID;
-- multiple response candidates;
-- malformed, oversized or checksum-modified persisted state;
-- malformed or modified canonical request envelopes;
-- signed EVM transactions with changed account, chainId, nonce, recipient, value, gas, fee or data;
-- signed BTC PSBTs that change UTXOs, outputs, change, fee or signatures;
-- duplicate broadcast after a restored `broadcasted` state.
+## Failure recovery
 
-A network timeout leaves the state as `broadcast_unknown`; recovery is status lookup only. There is no automatic resend, re-sign, fee bump or background broadcast.
+- Missing or multiple `TX_TRANSFER` Windows volumes fail closed.
+- Multiple active requests, filename/requestId mismatch, malformed or modified v2 envelopes, account/network mismatch, changed recipient/amount/fee/nonce/UTXO, replay, and stale signatures fail closed.
+- Explicit cancel records `FAILED` and removes only that request's exchange files.
+- A broadcast timeout records terminal `FAILED` with `broadcast outcome unknown`. The signed response remains available so restart reconstructs a `broadcast_unknown` session for **status lookup only**; the Broadcast button/API cannot resend it.
+- Completed response + interrupted cold ledger update is recoverable without signing again.
+- SignerSession still provides auto-lock, idle timeout, per-transaction challenge, cancellation, exception locking and attended-session signature quota.
+- Full addresses and values use scrollable character-wrapped read-only fields rather than truncated labels.
 
-The Offline GUI keeps the existing SignerSession timeout, auto-lock, challenge, cancellation and exception-lock behavior. USB removal or request-file replacement during an active review invalidates the transport and blocks signing.
+## Automated evidence
 
-## Evidence delivered by this PR
+The integration suite uses only the public BIP39 `abandon ... about` test vector and mock network/filesystem data. It covers:
 
-Automated tests use the public BIP39 `abandon ... about` test vector only. The cross-boot suite simulates:
+- adapter request accepted by the formal v2 verifier;
+- formal Sepolia response across simulated Windows restart;
+- malicious changed-recipient signed result rejection even after attacker recomputes public envelope hashes;
+- BTC PSBT v2 round-trip across simulated restart;
+- formal online journal transition and explicit cancel cleanup;
+- restart auto-import of a valid response with zero automatic broadcasts;
+- successful explicit broadcast followed by restart with duplicate broadcast blocked;
+- ambiguous broadcast restart recovery as status-only;
+- browser UI export controls with no broadcast side effect;
+- SignerSession lock clearing the active single-USB binding;
+- formal Agent #37 state/replay/corruption tests.
 
-- request persistence across a process/Windows restart;
-- response discovery and re-verification after restart;
-- malicious changed-recipient response rejection;
-- ambiguous/stale request and response rejection;
-- persisted-state tamper rejection;
-- duplicate-broadcast prevention after restart;
-- SignerSession lock clearing the single-USB request binding.
+## Physical acceptance still pending
 
-The UI itself still uses the canonical `review.py` / `policy.py` review model. Long addresses and values are rendered in scrollable, character-wrapped read-only text controls rather than truncated labels.
-
-## Still requires physical acceptance
-
-This PR intentionally does not modify Buildroot disk layout or mount policy. The current cold runtime still rejects `TX_TRANSFER` when it shares the same physical parent disk as the boot/Vault device. Therefore physical one-stick Windows → UEFI Offline GUI → Windows acceptance remains blocked until the dedicated Issue #37 partition/runtime integration lands.
-
-The remaining real-device gate must verify Windows 10/11 volume discovery, actual GPT/FAT behavior, UEFI boot, Offline GUI startup, unplug/power-loss handling, two real reboots, and BTC testnet/Sepolia test transactions. No real seed is required or permitted for that validation.
+This PR does not change Buildroot disk layout or single-USB mount policy. The physical one-stick Windows → UEFI Offline GUI → Windows gate remains dependent on the separate Issue #37 partition/runtime integration. Real-device acceptance must still cover Windows 10/11 volume discovery, actual GPT/FAT behavior, UEFI boot, GUI startup, unplug/power-loss behavior, two real reboots, and BTC testnet/Sepolia test transactions. No real seed is required or permitted.
