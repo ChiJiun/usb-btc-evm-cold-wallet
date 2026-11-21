@@ -110,6 +110,7 @@ def verify(data, kind):
             data["kind"] != kind or data["network"] != NETWORKS[kind]):
         raise ValueError("Exchange format, kind, or network mismatch")
     _public(data["payload"])
+    _validate_payload(kind, data["payload"])
     content = {field: data[field] for field in ("format", "version", "kind", "network", "payload")}
     encoded = _canonical(content)
     if len(encoded) > MAX_BYTES:
