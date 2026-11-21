@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
+import {spawnSync} from "node:child_process";
 import {UR} from "@blockchaincommons/uniform-resources";
 import {encodeCbor,cbor} from "@blockchaincommons/dcbor";
 import {makeTypedUR,parseTypedUR,encodeTypedFrames,TypedURScanner,bindTypedToPending} from "../src/typed_registry.mjs";
@@ -79,4 +80,32 @@ test("bounded multipart rejects wrong type, mixed messages, malformed CBOR, scan
  assert.throws(()=>timer.add(frames[1]),/timed out/);
  const poisoned=UR.from("eth-sign-request",cbor(new Map([[1,"fake uuid"]])));
  assert.throws(()=>parseTypedUR(poisoned),/CBOR map field mismatch|Missing CBOR/);
+});
+
+test("independent Python CBOR oracle validates exact standardized typed wire layout",()=>{
+ const source=ur=>{
+   const py=spawnSync("python3",["tests/python_typed_oracle.py"],{
+     cwd:process.cwd(),input:Buffer.from(encodeCbor(ur.cbor)).toString("hex"),
+     encoding:"utf8",timeout:5000
+   });
+   assert.equal(py.status,0,py.stderr);
+   return JSON.parse(py.stdout);
+ };
+ const bitcoin=source(makeTypedUR("crypto-psbt",{psbtHex}));
+ assert.deepEqual(bitcoin,{hex:psbtHex}); // direct byte string; no app-specific wrapping
+ const request=source(makeTypedUR("eth-sign-request",tx));
+ assert.deepEqual(Object.keys(request),["1","2","3","4","5","6"]);
+ assert.deepEqual(request["1"],{tag:37,value:{hex:rid}});
+ assert.equal(request["2"].hex,tx.unsignedTxHex);
+ assert.equal(request["3"],4);
+ assert.equal(request["4"],11155111);
+ assert.deepEqual(request["5"],{tag:304,value:{
+   "1":[44,true,60,true,0,true,0,false,0,false],
+   "2":0xaabbccdd,"3":5,
+ }});
+ assert.equal(request["6"].hex,address.slice(2));
+ const sig=source(makeTypedUR("eth-signature",{requestId:rid,signatureHex:"11".repeat(64)+"1b"}));
+ assert.deepEqual(Object.keys(sig),["1","2"]);
+ assert.deepEqual(sig["1"],{tag:37,value:{hex:rid}});
+ assert.equal(sig["2"].hex.length,130);
 });
