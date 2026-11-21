@@ -8,6 +8,46 @@
 
 > 以下介紹完整產品的目標使用方式；目前版本與開發進度見[專案進度](#專案進度)。
 
+## 從空白 USB 開始：首次製作與設定
+
+準備 **一支可清空的 USB（建議 16 GB 以上）**、一台支援 **x86_64 UEFI USB 開機**的電腦，以及紙本助記詞備份。製作時可以在 Windows 連網下載映像與刷寫工具；建立或復原私鑰時則使用 USB 啟動的離線系統。
+
+### A. 完整產品的製作流程（目標使用體驗）
+
+1. **取得映像**：從本專案的 [GitHub Releases](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/releases) 下載適用的 USB 映像（格式為 `.img`）及發布的 SHA-256 驗證資料。正式完整映像尚未發布時，改用下方 **B. 開發版測試流程**。
+2. **檢查下載檔案**：在 Windows PowerShell 計算映像雜湊，與專案正式發布的值比對：
+   ~~~powershell
+   Get-FileHash -Algorithm SHA256 .\usb-cold-wallet.img
+   ~~~
+3. **將空白 USB 製作成冷錢包**：使用 balenaEtcher、Raspberry Pi Imager 等圖形刷寫工具，選取 `usb-cold-wallet.img`、核對 USB 的容量及裝置名稱，再刷寫並完成驗證。**刷寫會清除選取裝置的全部資料；重新刷寫已有錢包的 USB 也可能刪除 Vault。**
+4. **第一次從 USB 開機**：安全退出 USB，重新啟動電腦，從 UEFI 開機選單選擇這支 USB。進入 Offline Signer 後完成開機檢查；選擇「建立錢包」或「從助記詞復原」。
+5. **設定錢包**：設定 Vault 密碼，離線抄寫並複核 24 個 BIP39 助記詞；將備份保存在 USB 之外。這支 USB 的加密儲存區保存錢包資料。
+6. **啟用 Windows Companion**：匯出 BTC/EVM 公開帳戶資訊、關機回到 Windows，直接從 USB 的 Windows 可見分割區開啟 Portable Companion，匯入公開帳戶資料，即可查看餘額與建立交易。
+7. **完成首次測試**：先以 Bitcoin testnet 或 Sepolia 進行一筆小額測試網交易，演練「建立請求 → USB 開機簽署 → 回 Windows 驗證並廣播」。
+
+完成後，平常只需在 Windows 開啟 Companion；要轉帳時才重新啟動 USB 簽章系統。完整版本預計將 **Live OS、加密 Vault、交易交換區和 Windows Portable App** 封裝在同一支 USB 上，無須自行安裝 Python/Node。
+
+### B. 現階段開發版：從原始碼建置並刷入空白 USB
+
+目前 `main` 尚未提供上述單 USB 完整映像。Live USB 的 Buildroot 建置流程位於 [PR #9](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/9) 的開發分支。要實際測試 USB 開機，可在 **Linux x86_64 建置電腦**準備依賴與建置映像（主機所需套件見[Buildroot 建置說明](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/blob/feat/issue-1-reproducible-live-usb/docs/BUILD.md)）：
+
+~~~bash
+git clone https://github.com/ChiJiun/usb-btc-evm-cold-wallet.git
+cd usb-btc-evm-cold-wallet
+git switch feat/issue-1-reproducible-live-usb
+
+make prepare-sources
+make image
+make verify
+make reproducibility-check
+cd build/output/images
+sha256sum -c usb-cold-wallet.img.sha256
+~~~
+
+通過檢查後，將 `build/output/images/usb-cold-wallet.img` 用上述圖形工具刷入空白 USB，從 UEFI 開機，依據[該分支的 USB 操作指南](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/blob/feat/issue-1-reproducible-live-usb/docs/USB_SETUP.md)建立測試錢包與操作簽署選單。
+
+**這個開發版目前是雙 USB 架構**：系統 USB 包含 `USBCOLD_EFI` 和 `COLD_VAULT` 兩個分割區；交易交換使用另一支 FAT32、標籤為 `TX_TRANSFER` 的 USB。它**尚未包含 Windows Portable Companion 或單 USB 跨開機交易交換區**。完整的一支 USB 版本依 [Issue #37](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/37) 整合後才可照 A 流程使用。
+
 ## 一支 USB 如何運作？
 
 同一支 USB 提供兩個不同的使用環境：
@@ -25,7 +65,7 @@ USB 內另外分出**加密錢包儲存區**及**交易交換區**，讓兩個�
 
 ### 1. 首次建立錢包
 
-1. 將製作好的冷錢包 USB 插入電腦，透過 UEFI/開機選單從 USB 開機。
+1. 先依[空白 USB 製作流程](#從空白-usb-開始首次製作與設定)完成刷寫，再透過 UEFI 開機選單從 USB 啟動離線系統。
 2. 進入離線錢包介面，建立新錢包，或使用紙本 BIP39 助記詞復原。
 3. 設定加密錢包密碼，離線抄寫並確認助記詞備份。
 4. 將 Bitcoin、EVM 的**公開帳戶資料**提供給 Windows Companion，完成只讀帳戶設定。
@@ -121,6 +161,8 @@ Windows：開啟 USB 上的 Companion
 本 README 描述**規劃完成後的產品流程**，並非宣稱所有功能已在目前版本交付。
 
 目前 `main` 為 **v0.1.0 研究原型**，已有 Bitcoin testnet PSBT v0 與 Ethereum Sepolia EIP-1559 原生轉帳的**離線 CLI 簽章核心**、加密 Vault、公開帳戶輸出及 CI 安全檢查。可開機 Live USB、Windows Portable Companion、交易 GUI、QR、MetaMask 整合及單 USB 跨開機流程，正在各功能分支整合與驗證；實體硬體 E2E 驗收尚未完成。
+
+現有 [PR #9 的 Live USB 開發映像](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/9)仍為**系統 USB + 獨立交易交換 USB**；首次空白 USB 建置方式與未來單 USB 目標的差異，請見上方製作說明。
 
 目前以 **Bitcoin testnet / Ethereum Sepolia** 進行開發驗證。主網及真實資產使用須待獨立安全審查與完整發行驗收。
 
