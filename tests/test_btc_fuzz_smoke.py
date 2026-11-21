@@ -47,6 +47,22 @@ def test_campaign_executes_unmodified_seed_and_counts_distinct_denials(monkeypat
     assert report["coverage_lines"] >= 25
 
 
+def test_short_fuzz_campaign_runs_mutations_after_policy_baselines(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", [
+        "fuzz_btc_psbt.py", "--seconds", "10", "--seed", "20261121",
+        "--max-cases", "40",
+    ])
+    assert main() == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["cases"] == 40
+    assert report["baseline_policy_accepted"]
+    assert report["parser_accepted"] >= 3
+    assert report["policy_accepted"] >= 1
+    assert report["policy_rejected"] >= 2
+    assert report["parser_rejected"] >= 3
+    assert report["crashes"] == 0
+
+
 def test_fuzzer_rejects_raw_mutations_without_uncaught_errors():
     rng = random.Random(20261121)
     parents = initial_corpus()
