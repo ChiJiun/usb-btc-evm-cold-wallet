@@ -27,7 +27,7 @@
 
 ## 3. Offline wallet / policy
 
-- [ ] Menu **1**: initialize a dedicated testnet-only encrypted wallet with publicly disclosed test seed material (or a dedicated disposable seed intended only for this experiment). Do not enter any production seed.
+- [ ] Menu **1**: initialize a dedicated disposable **testnet-only** encrypted wallet (the current menu generates a fresh random mnemonic). Do not enter any production seed. If a *public* test-vector seed is required, provision it through a separately reviewed restore path and document only its public test-vector ID; do not publish a newly generated seed while any vault or test funds remain in use.
 - [ ] Menu **2**: show and record **public** Bitcoin testnet BIP84 and Sepolia addresses, their network and derivation/account identity. Confirm they match the online watch-only account.
 - [ ] Menu **7**: initialize encrypted offline policy. Write the displayed 64-character **POLICY SHA256** on independent paper; verify against an independently held reference. Record in evidence only whether anchor verification succeeded, not the vault password, seed or secret.
 - [ ] Power off and cold boot again to ensure COLD_VAULT persists, only the intended wallet can be opened, and the boot/runtime checks still pass.
