@@ -110,7 +110,7 @@ def test_lookup_fails_closed_on_untrusted_rpc_and_timeout():
 
 def test_lookup_http_requires_loopback_token_origin_and_rejects_broadcast_overrides():
     rpc, explorer = Rpc(), Esplora()
-    server, session, token = create_server(rpc, 0, esplora)
+    server, session, token = create_server(rpc, 0, explorer)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     port = server.server_port
