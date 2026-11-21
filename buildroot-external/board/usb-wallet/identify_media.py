@@ -55,10 +55,16 @@ def read_gpt(
         if len(entries) != count * width or zlib.crc32(entries) != entries_crc:
             raise ValueError("invalid GPT entries CRC")
     partitions = []
+    seen_empty = False
     for index in range(count):
         entry = entries[index * width:(index + 1) * width]
         if entry[:16] == bytes(16):
+            seen_empty = True
             continue
+        # Linux names GPT entry N as sdXN; gaps can bind an unexpected
+        # partition to an expected device path even with valid GPT CRCs.
+        if seen_empty:
+            raise ValueError("non-contiguous GPT partition entries")
         kind = uuid.UUID(bytes_le=entry[:16])
         part_id = uuid.UUID(bytes_le=entry[16:32])
         first_lba, last_lba, attrs = struct.unpack_from("<QQQ", entry, 32)
@@ -101,13 +107,25 @@ def _usb_mass_storage(entry: Path) -> bool:
     return False
 
 
-def _partition_is_child(sys_block: Path, disk_entry: Path, name: str) -> bool:
+def _partition_matches_kernel(
+    sys_block: Path,
+    disk_entry: Path,
+    name: str,
+    number: int,
+    part: tuple[uuid.UUID, uuid.UUID, int, int, int],
+) -> bool:
+    """Require the kernel's actual device mapping to match the CRC-checked GPT."""
     try:
-        part = (sys_block / name).resolve(strict=True)
+        node = (sys_block / name).resolve(strict=True)
         disk = disk_entry.resolve(strict=True)
-    except (OSError, RuntimeError):
+        return (
+            node.parent == disk
+            and (node / "partition").read_text().strip() == str(number)
+            and int((node / "start").read_text().strip()) == part[3]
+            and int((node / "size").read_text().strip()) == _size(part)
+        )
+    except (OSError, ValueError, RuntimeError):
         return False
-    return (part / "partition").is_file() and part.parent == disk
 
 
 def _size(part: tuple[uuid.UUID, uuid.UUID, int, int, int]) -> int:
@@ -124,7 +142,9 @@ def _layout_valid(
         boot[:2] != (EFI_TYPE, BOOT_UUID)
         or not (boot[2] & READ_ONLY)
         or _size(boot) != BOOT_SECTORS
-        or vault[:2] != (LINUX_FS_TYPE, VAULT_UUID)
+        or vault[:2] != (
+            LINUX_FS_TYPE if len(parts) == 3 else DATA_TYPE, VAULT_UUID
+        )
         or (vault[2] & READ_ONLY)
         or _size(vault) != VAULT_SECTORS
         or boot[4] >= vault[3]
@@ -177,7 +197,10 @@ def identify(
         vault = dev_root / f"{name}2"
         transfer = dev_root / f"{name}3" if len(parts) == 3 else None
         names = [f"{name}1", f"{name}2"] + ([f"{name}3"] if transfer else [])
-        if not all(_partition_is_child(sys_block, entry, part_name) for part_name in names):
+        if not all(
+            _partition_matches_kernel(sys_block, entry, part_name, index, parts[index - 1])
+            for index, part_name in enumerate(names, 1)
+        ):
             unsafe_duplicate = True
             continue
         try:
