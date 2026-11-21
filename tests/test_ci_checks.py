@@ -182,7 +182,7 @@ def test_pr_close_jq_filter_requires_positive_pr_identity():
         / ".github/workflows/live-usb-pr-close.yml"
     ).read_text(encoding="utf-8")
     match = re.search(
-        r"(?ms)^          filter='\\n(.*?)^          '$", workflow
+        r"(?ms)^          filter='\n(.*?)^          '$", workflow
     )
     assert match, "The workflow's actual jq program was not found"
     expression = match.group(1)
