@@ -19,7 +19,9 @@ import sys
 import time
 from typing import Callable
 
-from .exchange import read_bounded, verify, _unique_object, MAX_BYTES
+from .exchange import read_bounded, verify, package, _unique_object, MAX_BYTES
+from .cross_boot import package_v2_response, verify_v2_request, verify_v2_response
+from .transaction_state import ReplayLedger
 from .keys import btc_address, evm_account, root_from_mnemonic
 from .review import (ReviewPlan, ReviewSession, build_review_plan,
                      review_policy_decision)
@@ -440,6 +442,7 @@ class OfflineReviewApp:
         self._active_usb_identity = None
         self._active_usb_digest = None
         self._active_request_id = None
+        self._active_v2_request = None
         self._active_qr_request = None
         self._signed_qr_text = None
         self.policy_profile = None
@@ -510,6 +513,7 @@ class OfflineReviewApp:
         self._active_usb_identity = None
         self._active_usb_digest = None
         self._active_request_id = None
+        self._active_v2_request = None
         self._active_qr_request = None
         if self.session and not self.session.signed:
             self._signed_qr_text = None
@@ -778,9 +782,34 @@ class OfflineReviewApp:
             raise ValueError("Signed USB export requires a visible .json filename")
         if self.session is None or not self.session.signed:
             raise ValueError("No signed response to export")
-        text = self.session.signed_envelope_text()
-        verify(json.loads(text), self.session.plan.signed_kind)
-        data = text.encode("ascii")
+        signed_v1 = json.loads(self.session.signed_envelope_text(),
+                               object_pairs_hook=_unique_object)
+        payload = verify(signed_v1, self.session.plan.signed_kind)
+        response = None
+        if self._active_v2_request is not None:
+            expected_account = (
+                evm_account(self.wallet_root).address
+                if self._active_v2_request["kind"] == "evm-request"
+                else self.wallet_root.my_fingerprint.hex()
+            )
+            response = package_v2_response(
+                self._active_v2_request,
+                payload,
+                expected_account=expected_account,
+                allow_no_trusted_clock=True,
+            )
+            verify_v2_response(
+                self._active_v2_request,
+                response,
+                expected_account=expected_account,
+                allow_no_trusted_clock=True,
+            )
+            data = json.dumps(
+                response, sort_keys=True, ensure_ascii=True,
+                separators=(",", ":"), allow_nan=False,
+            ).encode("ascii")
+        else:
+            data = self.session.signed_envelope_text().encode("ascii")
         if self.development_mode:
             if not self._path_allowed(path):
                 raise ValueError("Path must be beneath TX_TRANSFER")
@@ -793,9 +822,16 @@ class OfflineReviewApp:
             atomic_create_at(parent, name, data)
         finally:
             os.close(parent)
+        if response is not None:
+            ledger = ReplayLedger(self.transfer_dir / ".usb-cold-wallet" / "state" / "cold")
+            ledger.mark_signed(
+                self._active_v2_request,
+                response,
+                allow_no_trusted_clock=True,
+            )
 
     def _import_single_usb(self):
-        """Load exactly one Companion request-<id>.json without a file picker."""
+        """Load the one active formal v2 request without a file picker."""
         base = self.transfer_dir / ".usb-cold-wallet" / "exchange"
         try:
             candidates = sorted(base.glob("request-*.json"))
@@ -806,10 +842,20 @@ class OfflineReviewApp:
             if match is None:
                 raise ValueError("單 USB Request 檔名不合法")
             raw, identity = self._read_transfer_snapshot(path)
-            envelope = _decode_envelope_text(raw.decode("utf-8"), None)
-            kind = envelope.get("kind")
-            if kind not in ("btc-request", "evm-request"):
-                raise ValueError("單 USB 交換區不是可簽署 BTC/Sepolia Request")
+            envelope = json.loads(
+                raw.decode("utf-8"),
+                object_pairs_hook=_unique_object,
+                parse_constant=lambda _: (_ for _ in ()).throw(
+                    ValueError("Non-finite JSON number in v2 request")
+                ),
+            )
+            checked = verify_v2_request(
+                envelope,
+                allow_no_trusted_clock=True,
+            )
+            if checked["requestId"] != match.group(1):
+                raise ValueError("Request 檔名與 v2 requestId 不一致")
+            kind = checked["kind"]
             digest = hashlib.sha256(raw).digest()
         except (ValueError, OSError, UnicodeError, KeyError, TypeError) as exc:
             self._lock_wallet(self.t("locked"))
@@ -821,11 +867,23 @@ class OfflineReviewApp:
             self._render_home()
             return
         try:
-            plan = build_review_plan(envelope, self.wallet_root, kind)
+            expected_account = (
+                evm_account(self.wallet_root).address
+                if kind == "evm-request"
+                else self.wallet_root.my_fingerprint.hex()
+            )
+            checked = verify_v2_request(
+                envelope,
+                expected_account=expected_account,
+                allow_no_trusted_clock=True,
+            )
+            review_envelope = package(kind, checked["payload"])
+            plan = build_review_plan(review_envelope, self.wallet_root, kind)
             self._active_usb_file = path
             self._active_usb_identity = identity
             self._active_usb_digest = digest
-            self._active_request_id = match.group(1)
+            self._active_request_id = checked["requestId"]
+            self._active_v2_request = checked
             self._active_qr_request = None
             self._signed_qr_text = None
             if not self._transport_available():
@@ -876,6 +934,7 @@ class OfflineReviewApp:
             self._active_usb_identity = identity
             self._active_usb_digest = digest
             self._active_request_id = None
+            self._active_v2_request = None
             self._active_qr_request = None
             self._signed_qr_text = None
             if not self._transport_available():
@@ -1095,6 +1154,21 @@ class OfflineReviewApp:
                 if answer != "UNVERIFIED RECIPIENT":
                     raise ValueError("Unknown recipient requires separate confirmation")
                 extra_confirmation = answer
+            replay_ledger = None
+            if self._active_v2_request is not None:
+                expected_account = (
+                    evm_account(self.wallet_root).address
+                    if self._active_v2_request["kind"] == "evm-request"
+                    else self.wallet_root.my_fingerprint.hex()
+                )
+                replay_ledger = ReplayLedger(
+                    self.transfer_dir / ".usb-cold-wallet" / "state" / "cold"
+                )
+                replay_ledger.review_once(
+                    self._active_v2_request,
+                    expected_account=expected_account,
+                    allow_no_trusted_clock=True,
+                )
             self.security.approve(digest)
             self.security.signing(digest)
             signed = self.session.sign(self.wallet_root, self.policy_profile,
