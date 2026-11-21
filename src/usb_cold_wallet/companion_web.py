@@ -50,6 +50,24 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
             self.wfile.write(raw)
 
         def _json(self, data, status=200):
+            # UI-only integer representation: JavaScript Numbers cannot preserve
+            # EVM 256-bit Wei. Keep exchange envelopes as original JSON integers.
+            if self.path in ("/api/wallet", "/api/prepare", "/api/accept",
+                             "/api/broadcast", "/api/status") and isinstance(data, dict):
+                data = dict(data)
+                if isinstance(data.get("pending"), dict):
+                    pending = dict(data["pending"])
+                    if isinstance(pending.get("tx"), dict):
+                        pending["tx"] = {
+                            key: str(val) if type(val) is int and abs(val) > (2 ** 53 - 1) else val
+                            for key, val in pending["tx"].items()
+                        }
+                    data["pending"] = pending
+                if isinstance(data.get("tx"), dict):
+                    data["tx"] = {
+                        key: str(val) if type(val) is int and abs(val) > (2 ** 53 - 1) else val
+                        for key, val in data["tx"].items()
+                    }
             self._send(json.dumps(data, ensure_ascii=False, allow_nan=False).encode("utf-8"), status=status)
 
         def _allowed_host(self):
@@ -78,6 +96,12 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                 self._send((STATIC / self.path.lstrip("/")).read_bytes(), mime)
             elif self.path == "/api/wallet" and self._authorized():
                 self._json(session.public_view())
+            elif self.path in ("/api/request-raw", "/api/request-legacy") and self._authorized():
+                try:
+                    raw = session.request_raw_json(legacy=self.path == "/api/request-legacy")
+                    self._send(raw, "application/json; charset=utf-8")
+                except ValueError as exc:
+                    self._json({"error": str(exc)}, 400)
             elif self.path in ("/api/overview", "/api/request", "/api/btc/wallet",
                                "/api/btc/overview", "/api/btc/request",
                                "/api/btc/request-plain") and self._authorized():
