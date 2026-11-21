@@ -50,6 +50,7 @@ def ui_fixture():
     app.messagebox = StubMessagebox()
     app.root = object()
     app.transfer_dir = Path("/tmp")
+    app.development_mode = False
     app.filedialog = SimpleNamespace(askopenfilename=lambda **kwargs: "")
     app.qr_reader = None
     app.rendered = []
