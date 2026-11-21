@@ -219,6 +219,8 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                             raise ValueError("Cancel pending BTC transaction before replacing wallet")
                         result = session.import_wallet(data["raw"].encode("utf-8"))
                         btc_session.import_wallet(session.wallet)
+                        if crossboot is not None and crossboot.available:
+                            crossboot.remember_wallet(session, btc_session)
                 elif self.path == "/api/prepare":
                     if set(data) != {"recipient", "amount_eth", "max_fee_gwei"}:
                         raise ValueError("Invalid transfer form fields")
@@ -230,7 +232,15 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                 elif self.path == "/api/broadcast":
                     if data:
                         raise ValueError("Broadcast does not accept transaction overrides")
-                    result = session.broadcast()
+                    try:
+                        result = session.broadcast()
+                    except ValueError:
+                        if (crossboot is not None and crossboot.available and session.pending is not None
+                                and session.pending.get("stage") == "broadcast_unknown"):
+                            crossboot.mark_failed(session, btc_session, "broadcast outcome unknown")
+                        raise
+                    if crossboot is not None and crossboot.available and result.get("stage") == "broadcasted":
+                        crossboot.mark_broadcasted(session, btc_session, result["tx_hash"])
                 elif self.path == "/api/status":
                     if data:
                         raise ValueError("Status query does not accept overrides")
@@ -241,7 +251,7 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                     request_id = session.pending.get("request_id") if session.pending else None
                     result = session.cancel()
                     if crossboot is not None and crossboot.available and request_id:
-                        crossboot.remove_exchange(request_id)
+                        crossboot.cancel(session, btc_session, request_id)
                 elif self.path == "/api/crossboot/export":
                     if data or crossboot is None:
                         raise ValueError("Cross-boot export requires TX_TRANSFER and accepts no overrides")
@@ -270,23 +280,22 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                         request_id = btc_session.pending.get("request_id") if btc_session.pending else None
                         result = btc_session.cancel()
                         if crossboot is not None and crossboot.available and request_id:
-                            crossboot.remove_exchange(request_id)
+                            crossboot.cancel(session, btc_session, request_id)
+                    elif self.path == "/api/btc/broadcast":
+                        try:
+                            result = btc_session.broadcast()
+                        except ValueError:
+                            if (crossboot is not None and crossboot.available and btc_session.pending is not None
+                                    and btc_session.pending.get("stage") == "broadcast_unknown"):
+                                crossboot.mark_failed(session, btc_session, "BTC broadcast outcome unknown")
+                            raise
+                        if crossboot is not None and crossboot.available and result.get("stage") == "broadcasted":
+                            crossboot.mark_broadcasted(session, btc_session, result["txid"])
                     else:
-                        commands = {
-                            "/api/btc/broadcast": btc_session.broadcast,
-                            "/api/btc/status": btc_session.check_status,
-                        }
-                        result = commands[self.path]()
+                        result = btc_session.check_status()
                 else:
                     self._json({"error": "Unknown endpoint"}, 404)
                     return
-                if (crossboot is not None and crossboot.available
-                        and self.path not in ("/api/crossboot/export", "/api/crossboot/resume")
-                        and self.path in {
-                            "/api/import", "/api/prepare", "/api/accept", "/api/broadcast", "/api/status", "/api/cancel",
-                            "/api/btc/prepare", "/api/btc/accept", "/api/btc/broadcast", "/api/btc/status", "/api/btc/cancel",
-                        }):
-                    crossboot.save(session, btc_session)
                 self._json(result)
             except (UnicodeError, ValueError, TypeError, json.JSONDecodeError, OSError) as exc:
                 self._json({"error": str(exc)}, 400)
@@ -311,13 +320,17 @@ def create_server(rpc: JsonRpc, port: int = 8765, esplora: TestnetEsplora | None
     btc_session = BitcoinCompanion(esplora if esplora is not None else TestnetEsplora())
     token = secrets.token_urlsafe(32)
     if crossboot is not None and crossboot.available:
-        crossboot.restore(session, btc_session)
         try:
-            crossboot.resume_response(session, btc_session)
-        except ValueError:
-            # Missing/ambiguous/tampered response remains a user-visible recovery state.
-            # Never auto-broadcast or synthesize a replacement request.
-            pass
+            crossboot.restore(session, btc_session)
+            status = crossboot.status(session, btc_session)
+            if status.get("can_resume"):
+                crossboot.resume_response(session, btc_session)
+        except ValueError as exc:
+            # Start the public UI for recovery, but never authorize a malformed
+            # state/request/response or synthesize a replacement transaction.
+            crossboot.error = str(exc)
+            session.pending = None
+            btc_session.pending = None
     server = ThreadingHTTPServer(("127.0.0.1", port), handler_for(session, btc_session, token, crossboot))
     server.daemon_threads = True
     return server, session, token
