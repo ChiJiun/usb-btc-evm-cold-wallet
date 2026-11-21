@@ -98,6 +98,45 @@ test('built browser bundle passes CSP and native QR pairing/request/signed respo
   assert.match(await page.locator('#intent').textContent(), /123456789012345678/);
   assert.equal(await page.locator('#qr').isHidden(), true, 'old pairing QR must be cleared');
 
+  // Real browser download, not just the adapter's in-memory JSON formatter.
+  // Playwright JS uses waitForEvent('download') (expectDownload is not a JS API).
+  const [unsignedDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    page.locator('#download').click(),
+  ]);
+  assert.equal(
+    unsignedDownload.suggestedFilename(),
+    'sepolia-unsigned-00000000000040008000000000000001.json',
+  );
+  assert.equal(await unsignedDownload.failure(), null);
+  const unsignedDownloaded = await readFile(await unsignedDownload.path(), 'utf8');
+  const downloaded = JSON.parse(unsignedDownloaded);
+  assert.deepEqual(Object.keys(downloaded).sort(),
+    ['type','chainId','nonce','to','value','gas','maxFeePerGas',
+      'maxPriorityFeePerGas','data','accessList'].sort());
+  assert.equal(downloaded.type, 2);
+  assert.equal(downloaded.chainId, 11155111);
+  assert.equal(downloaded.nonce, transfer.nonce);
+  assert.equal(downloaded.to, recipient);
+  assert.equal(downloaded.gas, 21000);
+  assert.equal(downloaded.data, '0x');
+  assert.deepEqual(downloaded.accessList, []);
+  for (const [field, expected] of [
+    ['value', transfer.value],
+    ['maxFeePerGas', transfer.maxFeePerGas],
+    ['maxPriorityFeePerGas', transfer.maxPriorityFeePerGas],
+  ]) {
+    const literal = unsignedDownloaded.match(new RegExp('"'+field+'":([0-9]+)(?=[,}])'));
+    assert.ok(literal, field+' must be a JSON number token, not a quoted string');
+    assert.equal(BigInt(literal[1]), expected, field+' must retain exact Wei');
+  }
+  assert.equal(
+    downloaded.value === Number(transfer.value.toString()),
+    true,
+    'Browser download must be valid JSON for the offline CLI',
+  );
+  assert.match(await page.locator('#status').textContent(), /已產生精確 Wei/);
+
   const raw = await address.signTransaction(transfer);
   await page.locator('#signed-file').setInputFiles({
     name: 'signed.json', mimeType: 'application/json',
@@ -115,8 +154,12 @@ test('built browser bundle passes CSP and native QR pairing/request/signed respo
     'Browser signing status: ' + replyStatus + '; errors: ' + errors.join('; '));
   assert.match(await page.locator('#qr-type').textContent(), /eth-signature/);
   assert.match(await page.locator('#qr').getAttribute('src'), /^data:image\/png;base64,/);
+  assert.equal(await page.locator('#download').isDisabled(), true,
+    'Signed requests must not allow a second unsigned download');
 
   await page.locator('#cancel').click();
+  assert.equal(await page.locator('#download').isDisabled(), true,
+    'Cancelled sessions must not expose unsigned downloads');
   assert.equal(await page.locator('#qr').isHidden(), true);
   assert.equal(await page.locator('#qr').getAttribute('src'), null);
 

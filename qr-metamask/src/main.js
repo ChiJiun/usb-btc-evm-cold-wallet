@@ -48,8 +48,17 @@ async function displayUr(ur) {
 function download(name,body) {
   const url = URL.createObjectURL(new Blob([body],{type:'application/json'}));
   const a = document.createElement('a');
-  a.href = url; a.download = name; a.click();
-  URL.revokeObjectURL(url);
+  a.href = url;
+  a.download = name;
+  // Attach the element and leave the blob alive while the browser starts its
+  // download; immediate revocation can race asynchronous download handling.
+  document.body.appendChild(a);
+  try {
+    a.click();
+  } finally {
+    a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  }
 }
 function displayIntent(session) {
   const t=session.tx;
