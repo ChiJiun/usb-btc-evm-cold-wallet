@@ -195,3 +195,11 @@ GUI 尚未併入，此獨立整合是原生 MetaMask 協定 POC。未來可把
 `eth-sign-request`／`eth-signature` 的瀏覽器掃描器整合進
 #19 GUI，消除下載 JSON 與手動 CLI 的中間步驟，但不能移除
 離線使用者的明確確認。
+
+## USB 開機與相機驗收狀態
+
+目前 `qr-metamask/` 是在**外部離線 Linux 電腦**用本機瀏覽器操作的選用介面；
+現有 Buildroot Live USB 尚未整合離線瀏覽器、相機 UVC 驅動與此頁面，
+因此不可將其視為 USB 開機後即可掃描的功能。
+Playwright 只驗證 Chromium 在 localhost 與 CSP 下的配對／簽章 QR 流程；
+MetaMask 擴充功能、實體鏡頭、雙機隔離及 Sepolia 鏈上廣播仍需實機驗收。

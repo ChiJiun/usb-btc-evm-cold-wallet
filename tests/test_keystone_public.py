@@ -47,3 +47,40 @@ def test_public_export_requires_explicit_confirmation_and_never_writes_on_cancel
     target = tmp_path / "not-created.json"
     assert cli.main(["export-keystone-public", "--out", str(target)]) == 1
     assert not target.exists()
+
+def test_native_qr_required_ci_guard_fails_if_manifest_or_lockfile_missing(tmp_path):
+    """Exercise the actual GitHub Actions preflight for missing files."""
+    import re
+    import subprocess
+    import textwrap
+    from pathlib import Path
+
+    workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text()
+    assert "      - metamask_native_qr\n" in workflow
+    assert '          test "$NATIVE_QR" = "success"' in workflow
+    assert "steps.native-qr.outputs.present" not in workflow
+    match = re.search(
+        r"      - name: Require native MetaMask QR app files \(fail closed\)\n"
+        r"        run: \|\n((?:          [^\n]*\n)+)", workflow
+    )
+    assert match, "Required MetaMask QR preflight must be present"
+    script = textwrap.dedent(match.group(1))
+    folder = tmp_path / "qr-metamask"
+    folder.mkdir()
+    for manifest in (False, True):
+        for lock in (False, True):
+            for name, present in (("package.json", manifest), ("package-lock.json", lock)):
+                path = folder / name
+                if present:
+                    path.write_text("{}", encoding="utf-8")
+                else:
+                    path.unlink(missing_ok=True)
+            result = subprocess.run(["bash", "-c", script], cwd=tmp_path,
+                                    capture_output=True, text=True)
+            assert (result.returncode == 0) == (manifest and lock)
+
+
+def test_keystone_and_qr_offline_modules_are_all_shipped():
+    from scripts.build_offline_wheel import ALLOWED_OFFLINE_MODULES
+    assert {"keystone_public.py", "qr_session.py", "qr_workflow.py",
+            "qr_cli.py"} <= ALLOWED_OFFLINE_MODULES

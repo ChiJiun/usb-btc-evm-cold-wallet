@@ -155,7 +155,6 @@ def main(argv=None):
     watch = sub.add_parser("export-watch-only", help="Create integrity-checked PUBLIC export")
     watch.add_argument("--count", type=int, default=3)
     watch.add_argument("--out", type=Path, required=True)
-
     keystone = sub.add_parser("export-keystone-public", help="Export public EVM BIP32 data for MetaMask QR pairing")
     keystone.add_argument("--out", type=Path, required=True, help="Create-only public account export; not a vault")
 
