@@ -8,20 +8,24 @@ from pathlib import Path
 import pytest
 from eth_account import Account
 from eth_utils import keccak
+from embit import script, transaction
 
+from usb_cold_wallet.btc import sign_btc_psbt
 from usb_cold_wallet.companion_btc import BitcoinCompanion
 from usb_cold_wallet.companion_core import (
     CHAIN_ID, CompanionSession, canonical, pack_envelope,
 )
 from usb_cold_wallet.companion_crossboot import CrossBootManager
 from usb_cold_wallet.evm import decode_signed_eip1559
-from usb_cold_wallet.keys import evm_account, root_from_mnemonic, watch_only
+from usb_cold_wallet.keys import btc_address, evm_account, root_from_mnemonic, watch_only
 
 MNEMONIC = "abandon " * 11 + "about"
 ROOT = root_from_mnemonic(MNEMONIC)
 WATCH = watch_only(ROOT, count=2)
 ADDRESS = WATCH["evm"]["address"]
 RECIPIENT = "0x000000000000000000000000000000000000dEaD"
+BTC_RECEIVE = WATCH["bitcoin"]["receive_addresses"][0]
+BTC_TARGET = btc_address(ROOT, 0, 1)
 
 
 class FakeRpc:
@@ -53,6 +57,46 @@ class FakeRpc:
         if method == "eth_getTransactionByHash":
             return {"hash": params[0]}
         raise AssertionError(method)
+
+
+class FakeBtcEsplora:
+    display_endpoint = "https://mock-bitcoin-testnet.invalid"
+
+    def __init__(self, sats=150_000):
+        previous = transaction.Transaction(
+            version=2,
+            vin=[transaction.TransactionInput(bytes.fromhex("ab" * 32), 0, sequence=0xFFFFFFFF)],
+            vout=[transaction.TransactionOutput(sats, script.address_to_scriptpubkey(BTC_RECEIVE))],
+            locktime=0,
+        )
+        self.previous_transaction = previous
+        self.txid = previous.txid().hex()
+        self.sats = sats
+        self.sent = []
+
+    def utxos(self, address):
+        if address != BTC_RECEIVE:
+            return []
+        return [{"txid": self.txid, "vout": 0, "value": self.sats,
+                 "status": {"confirmed": True}}]
+
+    def activity(self, address):
+        return {"chain_stats": {"funded_txo_count": 0},
+                "mempool_stats": {"funded_txo_count": 0}}
+
+    def previous(self, txid):
+        assert txid == self.txid
+        return self.previous_transaction
+
+    def fee_rate(self):
+        return 2
+
+    def send(self, raw_hex):
+        self.sent.append(raw_hex)
+        return transaction.Transaction.parse(bytes.fromhex(raw_hex)).txid().hex()
+
+    def status(self, txid):
+        return {"confirmed": False}
 
 
 class NoNetworkEsplora:
@@ -193,3 +237,35 @@ def test_broadcasted_state_cannot_broadcast_twice_after_restart(tmp_path):
     with pytest.raises(ValueError, match="cannot repeat"):
         restored.broadcast()
     assert len(rpc.sent) == 1
+
+
+def test_btc_psbt_survives_restart_and_reverifies_without_broadcast(tmp_path):
+    manager = CrossBootManager(tmp_path)
+    evm, _unused_btc, _ = fresh_sessions()
+    btc_rpc = FakeBtcEsplora()
+    btc = BitcoinCompanion(btc_rpc)
+    btc.import_wallet(WATCH)
+    prepared = btc.prepare(BTC_TARGET, "0.0005")
+    request_id = prepared["pending"]["request_id"]
+    encoded = prepared["envelope"]["payload"]
+
+    manager.export_current(evm, btc)
+    signed = sign_btc_psbt(ROOT, encoded, BTC_TARGET, 50_000, 50_000, 0)
+    response = pack_envelope("btc-signed", signed)
+    manager.exchange.joinpath(f"response-{request_id}.json").write_text(
+        json.dumps(response), encoding="ascii"
+    )
+
+    restored_evm, _discard, _ = fresh_sessions()
+    restored_btc = BitcoinCompanion(FakeBtcEsplora())
+    restored_btc.import_wallet(WATCH)
+    restored_evm.pending = None
+    restored_btc.pending = None
+    assert manager.restore(restored_evm, restored_btc)
+    status = manager.resume_response(restored_evm, restored_btc)
+    assert status["asset"] == "bitcoin-testnet"
+    assert status["stage"] == "verified"
+    assert restored_btc.pending["request_id"] == request_id
+    assert restored_btc.pending["recipient"] == BTC_TARGET
+    assert restored_btc.pending["amount_sats"] == 50_000
+    assert btc_rpc.sent == []
