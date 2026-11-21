@@ -435,7 +435,10 @@ jobs:
 
   required:
     name: CI / Required
-    if: always()
+    # A newer main push can supersede this run. Do not record a spurious
+    # failure from cancelled dependencies after GitHub cancels the whole run.
+    # Non-cancelled runs still fail closed on failed/skipped/cancelled jobs.
+    if: ${{ always() && !cancelled() }}
     needs:
       - changes
       - tests
