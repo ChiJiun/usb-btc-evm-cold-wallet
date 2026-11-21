@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import pytest
+from embit import psbt, script, transaction
 
 from usb_cold_wallet import cli
 from usb_cold_wallet.exchange import package, read, read_bounded, read_envelope, verify, write
@@ -58,9 +59,24 @@ def test_invalid_mnemonic_rejected_without_write(tmp_path):
     ("evm-request", {"type": 2, "chainId": 11155111, "nonce": 0,
                      "to": "0x000000000000000000000000000000000000dEaD", "value": 1000,
                      "gas": 21000, "maxFeePerGas": 2000000000, "maxPriorityFeePerGas": 1000000000}),
-    ("btc-request", "cHNidP8BAA=="),
+    ("btc-request", None),
 ])
 def test_exchange_roundtrip(tmp_path, kind, payload):
+    if kind == "btc-request":
+        root = root_from_mnemonic(PUBLIC_TEST_MNEMONIC)
+        prev = transaction.Transaction(
+            vin=[transaction.TransactionInput(b"\x21" * 32, 0)],
+            vout=[transaction.TransactionOutput(100_000,
+                        script.p2wpkh(root.derive("m/84h/1h/0h/0/0").key))],
+        )
+        unsigned = transaction.Transaction(
+            version=2, vin=[transaction.TransactionInput(prev.txid(), 0)],
+            vout=[transaction.TransactionOutput(99_000, script.address_to_scriptpubkey(BTC))],
+        )
+        data = psbt.PSBT(unsigned)
+        data.inputs[0].witness_utxo = prev.vout[0]
+        data.inputs[0].non_witness_utxo = prev
+        payload = data.to_base64()
     filepath = tmp_path / "public.json"
     write(filepath, kind, payload)
     assert read(filepath, kind) == payload
