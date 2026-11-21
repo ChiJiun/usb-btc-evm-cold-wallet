@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from usb_cold_wallet import appliance
 
 
-SAFE = {"rw", "nodev", "noexec", "nosuid", "sync"}
+SAFE = {"rw", "nodev", "noexec", "nosuid", "sync", "fmask=0177", "dmask=0077"}
 
 
 def _identity(monkeypatch, device="/dev/sdb1"):
@@ -133,6 +133,14 @@ def test_transfer_mount_rejects_nonfat_existing_mount(monkeypatch, tmp_path):
     device = _identity(monkeypatch)
     monkeypatch.setattr(appliance, "_mount_info", lambda path: (device, "ext4", SAFE))
     assert appliance.mount_transfer() is False
+
+
+def test_transfer_mount_rejects_insecure_fat_access_masks(monkeypatch, tmp_path):
+    monkeypatch.setattr(appliance, "TRANSFER", tmp_path)
+    device = _identity(monkeypatch)
+    for missing in ("fmask=0177", "dmask=0077"):
+        monkeypatch.setattr(appliance, "_mount_info", lambda _path, missing=missing: (device, "vfat", SAFE - {missing}))
+        assert appliance.mount_transfer() is False
 
 
 def test_transfer_mount_accepts_expected_source_and_flags(monkeypatch, tmp_path):
