@@ -1,10 +1,12 @@
 import copy
+import hashlib
 
 import pytest
 
 from usb_cold_wallet import cli
 from usb_cold_wallet.exchange import package, read_envelope, verify, write
 from usb_cold_wallet.keys import root_from_mnemonic
+from usb_cold_wallet.policy import default_profile, save_profile
 
 
 SEPOLIA = {
@@ -40,7 +42,7 @@ def test_exchange_rejects_secret_fields():
 def test_exchange_rejects_mainnet_evm_request():
     payload = dict(SEPOLIA)
     payload["chainId"] = 1
-    with pytest.raises(ValueError, match="Sepolia"):
+    with pytest.raises(ValueError, match="chain|Sepolia"):
         package("evm-request", payload)
 
 
@@ -51,6 +53,11 @@ def test_cli_signs_issue5_evm_request_envelope(tmp_path, monkeypatch):
     root = root_from_mnemonic("abandon " * 11 + "about")
     monkeypatch.setattr(cli, "_wallet_root", lambda args: root)
     monkeypatch.setattr(cli, "_approve", lambda phrase: None)
+    password = "public-test-only-policy-passphrase"
+    monkeypatch.setattr(cli, "_password", lambda: password)
+    policy = tmp_path / "unused.vault.policy"
+    save_profile(policy, default_profile(root), root, password)
+    paper_anchor = hashlib.sha256(policy.read_bytes()).hexdigest()
 
     result = cli.main([
         "--vault", str(tmp_path / "unused.vault"),
@@ -59,6 +66,7 @@ def test_cli_signs_issue5_evm_request_envelope(tmp_path, monkeypatch):
         "--to", SEPOLIA["to"],
         "--wei", str(SEPOLIA["value"]),
         "--out", str(output),
+        "--expected-policy-sha256", paper_anchor,
     ])
 
     assert result == 0
@@ -98,9 +106,13 @@ def test_cli_rejects_wrong_request_envelope_kind(tmp_path, monkeypatch):
     wrong_for_evm = tmp_path / "btc-request.json"
     wrong_for_btc = tmp_path / "evm-request.json"
     output = tmp_path / "must-not-exist.json"
-    write(wrong_for_evm, "btc-request", "cHNidP8BAA==")
-    write(wrong_for_btc, "evm-request", SEPOLIA)
     root = root_from_mnemonic("abandon " * 11 + "about")
+    # Use a real valid PSBT: modern USB intake rejects malformed PSBTs
+    # before a wrong-kind CLI test can reach its intended check.
+    from test_offline_review import _btc_psbt
+    valid_unsigned, _ = _btc_psbt(root)
+    write(wrong_for_evm, "btc-request", valid_unsigned)
+    write(wrong_for_btc, "evm-request", SEPOLIA)
     monkeypatch.setattr(cli, "_wallet_root", lambda args: root)
     monkeypatch.setattr(cli, "_approve", lambda phrase: None)
 

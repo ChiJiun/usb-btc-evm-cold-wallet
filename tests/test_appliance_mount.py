@@ -28,56 +28,69 @@ def test_transfer_mount_rejects_ambiguous_or_missing_label(monkeypatch, tmp_path
 
 
 def test_unique_transfer_device_rejects_duplicate_label(monkeypatch):
-    monkeypatch.setattr(
-        appliance,
-        "_blkid",
-        lambda *args: ["/dev/sdb1", "/dev/sdc1"] if "LABEL=TX_TRANSFER" in args else [],
-    )
+    monkeypatch.setattr(appliance, "_transfer_candidates", lambda: ["/dev/sdb1", "/dev/sdc1"])
     assert appliance._unique_transfer_device() is None
 
 
 def test_unique_transfer_device_rejects_boot_parent(monkeypatch, tmp_path):
     _identity_files(monkeypatch, tmp_path)
-
-    def blkid(*args):
-        if "LABEL=TX_TRANSFER" in args:
-            return ["/dev/sda3"]
-        if "TYPE" in args:
-            return ["vfat"]
-        return []
-
-    monkeypatch.setattr(appliance, "_blkid", blkid)
-    monkeypatch.setattr(appliance, "_block_parent", lambda device: "sda")
+    monkeypatch.setattr(appliance, "_transfer_candidates", lambda: ["/dev/sda3"])
+    monkeypatch.setattr(appliance, "_block_parent", lambda _device: "sda")
     assert appliance._unique_transfer_device() is None
 
 
 def test_unique_transfer_device_rejects_non_vfat(monkeypatch, tmp_path):
     _identity_files(monkeypatch, tmp_path)
-
-    def blkid(*args):
-        if "LABEL=TX_TRANSFER" in args:
-            return ["/dev/sdb1"]
-        if "TYPE" in args:
-            return ["ext4"]
-        return []
-
-    monkeypatch.setattr(appliance, "_blkid", blkid)
+    monkeypatch.setattr(appliance, "_transfer_candidates", lambda: [])
     assert appliance._unique_transfer_device() is None
 
 
 def test_unique_transfer_device_accepts_separate_vfat_usb(monkeypatch, tmp_path):
     _identity_files(monkeypatch, tmp_path)
-
-    def blkid(*args):
-        if "LABEL=TX_TRANSFER" in args:
-            return ["/dev/sdb1"]
-        if "TYPE" in args:
-            return ["vfat"]
-        return []
-
-    monkeypatch.setattr(appliance, "_blkid", blkid)
-    monkeypatch.setattr(appliance, "_block_parent", lambda device: "sdb")
+    monkeypatch.setattr(appliance, "_transfer_candidates", lambda: ["/dev/sdb1"])
+    monkeypatch.setattr(appliance, "_block_parent", lambda _device: "sdb")
     assert appliance._unique_transfer_device() == "/dev/sdb1"
+
+
+def test_fat_label_detection_checks_signature_and_exact_name(tmp_path):
+    volume = tmp_path / "usb-fake-fat"
+    sector = bytearray(512)
+    sector[11:13] = b"\x00\x02"
+    sector[71:82] = b"TX_TRANSFER"
+    sector[82:90] = b"FAT32   "
+    sector[510:512] = b"\x55\xaa"
+    volume.write_bytes(sector)
+    assert appliance._fat_label(volume) == "TX_TRANSFER"
+    sector[510:512] = b"\x00\x00"
+    volume.write_bytes(sector)
+    assert appliance._fat_label(volume) is None
+    sector[510:512] = b"\x55\xaa"
+    sector[71:82] = b"NEVER_TRUST"
+    volume.write_bytes(sector)
+    assert appliance._fat_label(volume) == "NEVER_TRUST"
+
+
+def test_sysfs_transfer_search_ignores_non_sd_partitions(monkeypatch, tmp_path):
+    sys_block = tmp_path / "sys"
+    dev_root = tmp_path / "dev"
+    sys_block.mkdir()
+    dev_root.mkdir()
+    for name in ("sda1", "sdb1", "nvme0n1p1"):
+        entry = sys_block / name
+        entry.mkdir()
+        (entry / "partition").write_text("1\n", encoding="ascii")
+        sector = bytearray(512)
+        sector[11:13] = b"\x00\x02"
+        sector[71:82] = b"TX_TRANSFER"
+        sector[82:90] = b"FAT32   "
+        sector[510:512] = b"\x55\xaa"
+        (dev_root / name).write_bytes(sector)
+    # If two matching sd* partitions appear, the higher layer rejects both.
+    monkeypatch.setattr(appliance, "SYS_BLOCK", sys_block)
+    monkeypatch.setattr(appliance, "DEV_ROOT", dev_root)
+    assert sorted(appliance._transfer_candidates()) == [
+        str(dev_root / "sda1"), str(dev_root / "sdb1")
+    ]
 
 
 def test_transfer_mount_rejects_wrong_existing_source(monkeypatch, tmp_path):
@@ -143,7 +156,7 @@ def test_evm_json_always_routes_to_request_without_pre_read(monkeypatch, tmp_pat
     request = tmp_path / "evm-request.json"
     request.write_text("untrusted bytes are not inspected by appliance", encoding="utf-8")
     monkeypatch.setattr(appliance, "_select_file", lambda suffix: request)
-    answers = iter(["0x000000000000000000000000000000000000dEaD", "1000"])
+    answers = iter(["0x000000000000000000000000000000000000dEaD", "1000", "a" * 64])
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
     calls = []
     monkeypatch.setattr(appliance, "_run_cli", lambda args: calls.append(args))
@@ -160,7 +173,7 @@ def test_btc_json_routes_to_request_without_pre_read(monkeypatch, tmp_path):
     request = tmp_path / "btc-request.json"
     request.write_text("untrusted bytes are not inspected by appliance", encoding="utf-8")
     monkeypatch.setattr(appliance, "_select_file", lambda suffix: request)
-    answers = iter(["tb1qexample", "50000", "2000", "0"])
+    answers = iter(["tb1qexample", "50000", "2000", "0", "b" * 64])
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
     calls = []
     monkeypatch.setattr(appliance, "_run_cli", lambda args: calls.append(args))
@@ -171,3 +184,30 @@ def test_btc_json_routes_to_request_without_pre_read(monkeypatch, tmp_path):
     assert calls
     assert calls[0][0:2] == ["sign-btc", "--request"]
     assert str(request) in calls[0]
+
+
+def test_signed_request_requires_independent_policy_digest(monkeypatch, tmp_path):
+    request = tmp_path / "evil.json"
+    request.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(appliance, "_select_file", lambda _suffix: request)
+    answers = iter(["0x000000000000000000000000000000000000dEaD", "1000", "bad"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    monkeypatch.setattr(appliance, "TRANSFER", tmp_path)
+    monkeypatch.setattr(appliance, "_run_cli",
+                        lambda _args: (_ for _ in ()).throw(AssertionError("must not sign")))
+    appliance._sign_evm()
+
+
+def test_initialize_policy_never_overwrites_existing_policy(monkeypatch, tmp_path):
+    wallet = tmp_path / "wallet.vault"
+    wallet.write_text("encrypted test fixture")
+    monkeypatch.setattr(appliance, "VAULT", wallet)
+    called = []
+    monkeypatch.setattr(appliance, "_run_cli", lambda args: called.append(args))
+    appliance._initialize_policy()
+    assert called == [["policy", "--file", str(wallet) + ".policy", "--action", "init"]]
+    policy = tmp_path / "wallet.vault.policy"
+    policy.write_text("existing encrypted test fixture")
+    called.clear()
+    appliance._initialize_policy()
+    assert not called

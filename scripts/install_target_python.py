@@ -13,6 +13,8 @@ import shutil
 import tarfile
 from zipfile import ZipFile
 
+from build_offline_wheel import ALLOWED_OFFLINE_MODULES, ONLINE_MODULES
+
 PYTHON = "3.14"
 TARGET_EMBIT_PREBUILT = "libsecp256k1_linux_x86_64.so"
 
@@ -45,6 +47,22 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _install_verified_offline_package(source: Path, destination: Path) -> None:
+    """Install only reviewed offline modules; never copy Companion/RPC code into Live USB."""
+    if not source.is_dir() or source.is_symlink():
+        raise SystemExit("Offline package source is missing or not a real directory")
+    available = {entry.name for entry in source.iterdir() if entry.suffix == ".py"}
+    required = ALLOWED_OFFLINE_MODULES | ONLINE_MODULES
+    if available != required:
+        raise SystemExit(f"Unreviewed or missing Python modules: {sorted(available ^ required)}")
+    destination.mkdir(parents=True, exist_ok=True)
+    for name in sorted(ALLOWED_OFFLINE_MODULES):
+        entry = source / name
+        if not entry.is_file() or entry.is_symlink():
+            raise SystemExit(f"Untrusted offline module path: {name}")
+        shutil.copy2(entry, destination / name)
 
 
 def main() -> int:
@@ -81,7 +99,7 @@ def main() -> int:
     shutil.copytree(extracted, site / "embit", dirs_exist_ok=True)
     shutil.rmtree(args.target / "tmp/embit-extract")
 
-    shutil.copytree(args.source / "src/usb_cold_wallet", site / "usb_cold_wallet", dirs_exist_ok=True)
+    _install_verified_offline_package(args.source / "src/usb_cold_wallet", site / "usb_cold_wallet")
 
     bindir = args.target / "usr/bin"
     bindir.mkdir(parents=True, exist_ok=True)
