@@ -321,6 +321,20 @@ class CrossBootManager:
             raise ValueError("Exactly one pending BTC or Sepolia transaction is required")
         return candidates[0]
 
+    def remove_exchange(self, request_id: str) -> None:
+        """Remove only public exchange files for an explicitly cancelled request."""
+        self._require()
+        if not ID_RE.fullmatch(request_id):
+            raise ValueError("Cancelled Request ID invalid")
+        if self.exchange is None:
+            return
+        for prefix in ("request", "response"):
+            path = self.exchange / f"{prefix}-{request_id}.json"
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
     def export_current(self, session, btc_session) -> dict:
         self._require()
         _asset, owner, pending = self._active(session, btc_session)
@@ -328,6 +342,9 @@ class CrossBootManager:
             raise ValueError("Only prepared requests can be exported")
         request_id = self._request_id(pending)
         self.exchange.mkdir(parents=True, exist_ok=True)
+        response = self.exchange / f"response-{request_id}.json"
+        if response.is_file():
+            raise ValueError("A signed response already exists for this Request ID; resume it instead")
         others = [p for p in self.exchange.glob("request-*.json")
                   if p.name != f"request-{request_id}.json"]
         if others:
@@ -387,4 +404,6 @@ class CrossBootManager:
             result["can_resume"] = (
                 self.exchange / f"response-{request_id}.json"
             ).is_file()
+            if result["can_resume"]:
+                result["can_export"] = False
         return result
