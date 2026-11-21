@@ -47,7 +47,8 @@ def regtest_address(branch, index):
 
 
 def sats_to_btc(sats):
-    return str(Decimal(sats) / COIN)
+    # Core RPC requires a JSON number; these test amounts round-trip to 8 decimals.
+    return float(Decimal(sats) / COIN)
 
 
 def generate():
