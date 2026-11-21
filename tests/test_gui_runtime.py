@@ -39,15 +39,27 @@ def _live_mounts(tmp_path: Path):
     sys_root.mkdir()
     devices = tmp_path / "devices" / "block"
     for disk, parts in {"sdb": ("sdb2", "sdb3"), "sdc": ("sdc2",)}.items():
+        disk_dir = devices / disk
+        disk_dir.mkdir(parents=True, exist_ok=True)
+        (disk_dir / "diskseq").write_text("101" if disk == "sdb" else "202", encoding="ascii")
         for part in parts:
-            partition_dir = devices / disk / part
+            partition_dir = disk_dir / part
             partition_dir.mkdir(parents=True)
             (partition_dir / "partition").write_text("2", encoding="ascii")
     for devno, part in (("8:18", "sdb2"), ("8:19", "sdb3"), ("8:34", "sdc2")):
         disk = part[:3]
         (sys_root / devno).symlink_to(devices / disk / part)
-    return {"proc_mountinfo": mountinfo, "vault_device": vault_device,
-            "sys_dev_block": sys_root}
+    boot_sysfs_path = tmp_path / "boot-sysfs-path"
+    boot_sysfs_path.write_text(str((devices / "sdb").resolve()) + "\n", encoding="utf-8")
+    boot_diskseq = tmp_path / "boot-diskseq"
+    boot_diskseq.write_text("101\n", encoding="ascii")
+    return {
+        "proc_mountinfo": mountinfo,
+        "vault_device": vault_device,
+        "boot_sysfs_path": boot_sysfs_path,
+        "boot_diskseq": boot_diskseq,
+        "sys_dev_block": sys_root,
+    }
 
 
 def test_runtime_audit_requires_complete_boot_evidence(tmp_path):
@@ -193,3 +205,25 @@ def test_live_mount_allows_only_boot_verified_same_device_transfer(tmp_path):
         encoding="utf-8",
     )
     assert not runtime_audit(**kwargs)[0]
+
+
+def test_runtime_audit_rejects_usb_replacement_even_if_device_name_is_reused(tmp_path):
+    checks = tmp_path / "boot-checks.txt"
+    _boot_checks(checks)
+    swaps = tmp_path / "swaps"
+    swaps.write_text("Filename Type Size Used Priority\n", encoding="utf-8")
+    live = _live_mounts(tmp_path)
+    kwargs = dict(
+        boot_checks=checks,
+        lockdown=tmp_path / "no-lockdown",
+        proc_net=tmp_path / "no-net",
+        proc_swaps=swaps,
+        **live,
+    )
+    assert runtime_audit(**kwargs)[0]
+
+    disk = tmp_path / "devices" / "block" / "sdb"
+    (disk / "diskseq").write_text("102", encoding="ascii")
+    ok, findings = runtime_audit(**kwargs)
+    assert not ok
+    assert any("device instance changed" in line for line in findings)
