@@ -1,7 +1,8 @@
 # Windows Portable Companion（Issue #37）
 
 本 Windows x64 測試網版本可在沒有預先安裝 Python、Node
-或管理員權限的環境直接執行單檔 USBColdCompanion.exe。
+的環境執行單檔 USBColdCompanion.exe；標準使用者與 SmartScreen/AV
+實機相容性仍待 #43 驗收。
 啟動時只綁定 127.0.0.1，開啟本機瀏覽器；按確認才廣播交易。
 Windows 僅處理 watch-only 公開帳戶，嚴禁匯入 Vault、助記詞或私鑰。
 
@@ -26,7 +27,11 @@ https://blockstream.info/testnet/api。公開 RPC 服務商可看到
 ## 測試覆蓋與限制
 
 Windows CI 會真正執行完成封裝的 EXE，檢查本機 HTTP、CSP、
-靜態頁面、未授權 API 拒絕，並產生 SHA-256 供驗證。
+靜態頁面、未授權 API 拒絕；另以本機模擬 Sepolia RPC 驗證
+EXE 公開帳戶匯入、交易建構、超過 JavaScript 安全整數上限的 Wei 原樣下載、
+離線簽署結果匯入及手動單次廣播（不連接真實鏈），並產生 SHA-256。
+這是 HTTP/API 交易流程測試，尚未涵蓋真實瀏覽器點擊、Windows 標準使用者、
+SmartScreen/AV 或完整 BTC 交易流程。
 完整單 USB 自動偵測交換分割區、Windows/UEFI 跨開機、
 雙重開機的交易收送與真實 BTC testnet/Sepolia 廣播尚未驗收；
 目前使用者仍需下載及匯入 JSON 檔。此包不得直接用於真實資產。
@@ -43,7 +48,7 @@ Windows 封裝明確排除 `usb_cold_wallet.vault`、`keys`、`btc`、
 `evm`、`recovery`、`cli`、`gui`、`review`、
 `signer_session`、QR 離線簽章流程等冷端模組；CI 進一步使用
 PyInstaller 官方 archive viewer **遞迴檢查實際 EXE archive**，確認
-只有 Companion 公開資料模組，拒絕打包私鑰衍生或簽署程式。
+只有 Companion 公開資料與獨立交換格式驗證模組，拒絕打包私鑰衍生或簽署程式。
 注意第三方 `eth-account` 等密碼學相依套件仍含一般簽章函式，
 並不意味著這個 EXE 有可用的私鑰或 HTTP 遠端簽章 API。
 
