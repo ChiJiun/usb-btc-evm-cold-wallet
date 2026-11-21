@@ -331,6 +331,14 @@ class CompanionSession:
                 raise ValueError("No pending unsigned request")
             return self.pending["envelope"]
 
+    def request_raw_json(self, *, legacy=False) -> bytes:
+        """Download exact Python integers, never via JavaScript Number."""
+        with self.lock:
+            if self.pending is None or self.pending["stage"] != "prepared":
+                raise ValueError("No pending unsigned request")
+            source = self.pending["tx"] if legacy else self.pending["envelope"]
+            return canonical(source) + b"\\n"
+
     def accept_signed(self, raw: bytes):
         with self.lock:
             if self.pending is None or self.pending["stage"] != "prepared":
@@ -338,7 +346,9 @@ class CompanionSession:
             data = decode_json(raw)
             payload = unpack_envelope(data, "evm-signed") if isinstance(data, dict) and data.get("format") == FORMAT else data
             if not isinstance(payload, dict) or set(payload) != {
-                "chain_id", "from", "to", "value_wei", "transaction_hash", "signed_raw_transaction"
+                "chain_id", "from", "to", "value_wei", "max_fee_wei",
+                "max_total_wei", "decoded_transaction", "transaction_hash",
+                "signed_raw_transaction",
             }:
                 raise ValueError("Invalid signed EVM payload")
             signed_hex = payload["signed_raw_transaction"]
@@ -371,6 +381,25 @@ class CompanionSession:
                     or not HASH_RE.fullmatch(payload["transaction_hash"])
                     or payload["transaction_hash"].removeprefix("0x").lower() != tx_hash[2:]):
                 raise ValueError("Signed metadata / transaction hash mismatch")
+            expected_meta = {
+                "type": 2, "chain_id": decoded["chainId"], "nonce": decoded["nonce"],
+                "max_priority_fee_per_gas": decoded["maxPriorityFeePerGas"],
+                "max_fee_per_gas": decoded["maxFeePerGas"], "gas": decoded["gas"],
+                "to": wanted["to"], "value_wei": decoded["value"],
+                "data": "0x", "access_list": [],
+                "signature": {
+                    "y_parity": decoded["v"], "r": hex(decoded["r"]),
+                    "s": hex(decoded["s"]),
+                },
+                "transaction_hash": tx_hash,
+            }
+            maximum_fee = decoded["gas"] * decoded["maxFeePerGas"]
+            if (type(payload["max_fee_wei"]) is not int
+                    or payload["max_fee_wei"] != maximum_fee
+                    or type(payload["max_total_wei"]) is not int
+                    or payload["max_total_wei"] != decoded["value"] + maximum_fee
+                    or payload["decoded_transaction"] != expected_meta):
+                raise ValueError("Signed fee or decoded transaction metadata mismatch")
             # Do not echo signed bytes to logs/UI; never accept a second response.
             self.pending.update({"stage": "verified", "signed": signed_hex, "tx_hash": tx_hash})
             return self.pending_view()
