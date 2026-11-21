@@ -138,3 +138,42 @@ def test_cli_rejects_wrong_policy_anchor_before_signing(tmp_path, monkeypatch):
     ]
     assert cli.main(args) == 1
     assert not out.exists()
+
+
+@pytest.mark.parametrize("case", ["oversize", "symlink", "duplicate", "nan", "directory", "fifo"])
+def test_unsigned_evm_usb_rejected_before_vault_unlock(tmp_path, monkeypatch, case):
+    import os
+    inbound = tmp_path / "untrusted.json"
+    if case == "oversize":
+        inbound.write_bytes(b"x" * 200_001)
+    elif case == "duplicate":
+        inbound.write_text('{"type":2,"type":2}', encoding="ascii")
+    elif case == "nan":
+        inbound.write_text('{"value":NaN}', encoding="ascii")
+    elif case == "symlink":
+        original = tmp_path / "original"
+        original.write_text(json.dumps(TX), encoding="ascii")
+        inbound.symlink_to(original)
+    elif case == "directory":
+        inbound.mkdir()
+    else:
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("POSIX-only FIFO")
+        os.mkfifo(inbound)
+    monkeypatch.setattr(cli, "_wallet_root", lambda _args: pytest.fail("USB must be rejected before vault unlock"))
+    argv = ["--vault", str(tmp_path / "wallet.vault"), "sign-evm",
+            "--tx", str(inbound), "--to", RECIPIENT, "--wei", str(TX["value"]),
+            "--out", str(tmp_path / "signed.json"), "--expected-policy-sha256", "0" * 64]
+    assert cli.main(argv) == 1
+    assert not (tmp_path / "signed.json").exists()
+
+
+def test_btc_bad_usb_rejected_before_unlock(tmp_path, monkeypatch):
+    inbound = tmp_path / "psbt.txt"
+    inbound.write_text("not a psbt", encoding="ascii")
+    monkeypatch.setattr(cli, "_wallet_root", lambda _args: pytest.fail("Bad PSBT must fail before unlock"))
+    argv = ["--vault", str(tmp_path / "wallet.vault"), "sign-btc", "--psbt", str(inbound),
+            "--to", btc_address(ROOT, 0, 1), "--sats", "1000",
+            "--max-fee-sats", "1000", "--out", str(tmp_path / "signed.json"),
+            "--expected-policy-sha256", "0" * 64]
+    assert cli.main(argv) == 1
