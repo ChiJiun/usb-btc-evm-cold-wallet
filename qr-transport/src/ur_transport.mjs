@@ -1,0 +1,260 @@
+/**
+ * Bounded Blockchain Commons UR:BYTES framing for QR exchange envelopes.
+ *
+ * Uses the maintained @blockchaincommons/uniform-resources encoder/decoder;
+ * never creates an ad-hoc UR fountain scheme.  UR:BYTES is a temporary
+ * internal binding-envelope carrier: it is NOT ERC-4527 eth-sign-request nor
+ * interoperable crypto-psbt until the dedicated registry mapping is added.
+ */
+import { sha256 as hash256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { UR, MultipartEncoder, MultipartDecoder } from "@blockchaincommons/uniform-resources";
+import { asBytes, cbor } from "@blockchaincommons/dcbor";
+
+export const MAX_PAYLOAD = 150_000;
+export const MAX_FRAGMENT_LENGTH = 480;
+export const MAX_FRAGMENTS = 512;
+export const MAX_FRAME_CHARS = 3_000;
+export const MAX_SCAN_MS = 120_000;
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder("utf-8", { fatal: true });
+const exactKeys = (obj, keys) =>
+  obj !== null && typeof obj === "object" && !Array.isArray(obj) &&
+  Object.keys(obj).sort().join("|") === [...keys].sort().join("|");
+
+const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+const MIN_SAFE = -MAX_SAFE;
+
+// Keep all JSON integers exact, including Ethereum amounts > 2^53 wei.
+// JSON.parse's standardized reviver source preserves the original integer
+// token, before the JS Number conversion could round it. Fail closed on
+// engines without this feature, rather than risk silently changing a payment.
+function serializeJson(value, sorted = false) {
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value)) throw new Error("Unsafe JSON number");
+    return JSON.stringify(value);
+  }
+  if (value === null || typeof value === "boolean" || typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return "[" + value.map(item => serializeJson(item, sorted)).join(",") + "]";
+  if (value && typeof value === "object") {
+    const keys = Object.keys(value);
+    if (sorted) keys.sort();
+    return "{" + keys.map(key => JSON.stringify(key) + ":" + serializeJson(value[key], sorted)).join(",") + "}";
+  }
+  throw new Error("Unsupported QR JSON value");
+}
+
+function compactWhitespace(text) {
+  let inString = false;
+  let escaped = false;
+  let compact = "";
+  for (const ch of text) {
+    if (inString) {
+      compact += ch;
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') {
+      inString = true;
+      compact += ch;
+    } else if (ch !== " " && ch !== "\t" && ch !== "\r" && ch !== "\n") {
+      compact += ch;
+    }
+  }
+  return compact;
+}
+
+function losslessJson(text, { compact = false } = {}) {
+  if (typeof text !== "string" || encoder.encode(text).length > MAX_PAYLOAD) {
+    throw new Error("QR payload too large");
+  }
+  const parsed = JSON.parse(text, (_, value, context) => {
+    if (typeof value !== "number") return value;
+    const source = context?.source;
+    if (typeof source !== "string") {
+      throw new Error("Browser lacks lossless JSON number parsing");
+    }
+    if (!/^-?(0|[1-9][0-9]*)$/.test(source) || source.replace(/^-/, "").length > 80) {
+      throw new Error("QR JSON requires bounded decimal integers");
+    }
+    const exact = BigInt(source);
+    return exact < MIN_SAFE || exact > MAX_SAFE ? exact : Number(source);
+  });
+  // Compare token-preserving serialized bytes to reject duplicate keys,
+  // rounded/noncanonical numbers and ambiguous JSON representations.
+  const normalized = serializeJson(parsed);
+  if (normalized !== compactWhitespace(text) || (compact && normalized !== text)) {
+    throw new Error("Noncanonical or duplicate JSON fields");
+  }
+  return parsed;
+}
+
+// Save and frame envelopes without silently changing large numeric tokens.
+export function serializeEnvelope(envelope) {
+  return serializeJson(envelope);
+}
+
+function noSecrets(value, depth = 0) {
+  // Match the offline Python decoder's per-container and ASCII limits.
+  if (depth > 16) throw new Error("Excessive QR nesting");
+  if (Array.isArray(value)) {
+    if (value.length > 1024) throw new Error("QR array too large");
+    for (const item of value) noSecrets(item, depth + 1);
+  } else if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value);
+    if (entries.length > 256) throw new Error("QR object too large");
+    for (const [key, item] of entries) {
+      if (key.length > 128 || [...key].some(ch => ch.codePointAt(0) > 127)) {
+        throw new Error("Invalid QR object key");
+      }
+      if (/(mnemonic|passphrase|private|seed|secret|xprv|password|vault)/i.test(key)) {
+        throw new Error("QR must not contain secret fields");
+      }
+      noSecrets(item, depth + 1);
+    }
+  } else if (typeof value === "string") {
+    if (value.length > MAX_PAYLOAD) throw new Error("QR string too large");
+    if ([...value].some(ch => ch.codePointAt(0) > 127)) {
+      throw new Error("QR protocol payload only accepts ASCII text");
+    }
+  }
+}
+
+// Python qr_session.py computes SHA256 over sorted compact ensure_ascii JSON.
+// Restrict payload to ASCII; this serialization is byte-identical in both runtimes.
+function canonical(value) {
+  return serializeJson(value, true);
+}
+function sha256(payload) {
+  return bytesToHex(hash256(encoder.encode(canonical(payload))));
+}
+function equalDigest(a, b) {
+  if (!/^[0-9a-f]{64}$/.test(b)) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function parseEnvelope(payload) {
+  const text = decoder.decode(payload);
+  const parsed = losslessJson(text, { compact: true });
+  if (!exactKeys(parsed, ["version", "direction", "network", "account", "request_id", "payload_digest", "payload"]) &&
+      !exactKeys(parsed, ["version", "direction", "network", "account", "request_id", "request_digest", "payload_digest", "payload"])) {
+    throw new Error("QR envelope schema mismatch");
+  }
+  if (parsed.version !== 1 || !["bitcoin-testnet", "sepolia"].includes(parsed.network) ||
+      !["unsigned", "signed"].includes(parsed.direction) ||
+      typeof parsed.account !== "string" || !/^[A-Za-z0-9:_-]{8,150}$/.test(parsed.account) ||
+      typeof parsed.request_id !== "string" || !/^[0-9a-f]{32}$/.test(parsed.request_id) ||
+      typeof parsed.payload_digest !== "string" || !/^[0-9a-f]{64}$/.test(parsed.payload_digest) ||
+      (parsed.direction === "signed" && !/^[0-9a-f]{64}$/.test(parsed.request_digest ?? "")) ||
+      (parsed.direction === "unsigned" && Object.hasOwn(parsed, "request_digest"))) {
+    throw new Error("QR envelope binding fields are invalid");
+  }
+  noSecrets(parsed.payload);
+  if (!equalDigest(sha256(parsed.payload), parsed.payload_digest))
+    throw new Error("QR payload digest mismatch");
+  // Final signed transaction verification is separately mandatory in Python
+  // QRSession.check_response; QR framing and checksums are never authorization.
+  return parsed;
+}
+
+export function encodeFrames(envelope, { fragmentBytes = 220, maxFrames = MAX_FRAGMENTS } = {}) {
+  if (!Number.isSafeInteger(fragmentBytes) || fragmentBytes < 32 ||
+      fragmentBytes > MAX_FRAGMENT_LENGTH || !Number.isSafeInteger(maxFrames) ||
+      maxFrames < 1 || maxFrames > MAX_FRAGMENTS) {
+    throw new Error("Invalid frame parameters");
+  }
+  const input = typeof envelope === "string" ? losslessJson(envelope) : envelope;
+  const checked = parseEnvelope(encoder.encode(serializeEnvelope(input)));
+  const raw = encoder.encode(serializeEnvelope(checked));
+  if (raw.length === 0 || raw.length > MAX_PAYLOAD) throw new Error("QR payload too large");
+  const ur = UR.from("bytes", cbor(raw));
+  if (ur.toQRString().length <= 1200) {
+    return [ur.toQRString().toLowerCase()];
+  }
+  const multi = new MultipartEncoder(ur, fragmentBytes);
+  if (multi.partCount > maxFrames) throw new Error("QR exceeds fragment count cap");
+  const frames = Array.from({ length: multi.partCount }, () => multi.nextPart());
+  if (frames.some(frame => frame.length > MAX_FRAME_CHARS)) throw new Error("QR frame too long");
+  return frames;
+}
+
+export class BoundedURScanner {
+  #decoder = new MultipartDecoder();
+  #seen = new Set();
+  #type = null;
+  #start;
+  #now;
+  #frames = 0;
+  #finished = null;
+  constructor({ now = () => Date.now(), maxDurationMs = MAX_SCAN_MS } = {}) {
+    if (!Number.isSafeInteger(maxDurationMs) || maxDurationMs < 1 || maxDurationMs > MAX_SCAN_MS)
+      throw new Error("Invalid scan lifetime");
+    this.#now = now;
+    // The scan window starts at first received frame, not on page load.
+    this.#start = null;
+    this.duration = maxDurationMs;
+  }
+  // Explicit UI scan start; a page may be open indefinitely beforehand.
+  start() {
+    if (this.#start === null) this.#start = this.#now();
+  }
+  get progress() { return this.#finished ? 1 : this.#decoder.progress; }
+  get count() { return this.#frames; }
+  get done() { return this.#finished !== null; }
+  get payload() { return this.#finished; }
+  reset() {
+    this.#decoder = new MultipartDecoder();
+    this.#seen.clear();
+    this.#type = null;
+    this.#start = null;
+    this.#frames = 0;
+    this.#finished = null;
+  }
+  add(frame) {
+    if (this.done) throw new Error("QR session already completed; reset before rescanning");
+    this.start();
+    const time = this.#now() - this.#start;
+    if (time < 0 || time > this.duration) throw new Error("QR scan timed out");
+    if (typeof frame !== "string" || frame.length > MAX_FRAME_CHARS ||
+        !/^ur:[a-z0-9-]+\//i.test(frame)) throw new Error("Invalid QR fragment");
+    const normalized = frame.toLowerCase();
+    if (!normalized.startsWith("ur:bytes/")) throw new Error("Unsupported UR type");
+    const parts = normalized.split("/");
+    if (parts.length !== 2 && parts.length !== 3) throw new Error("Malformed UR fragment");
+    if (this.#type !== null && this.#type !== parts.length) throw new Error("Mixed single and multipart QR");
+    this.#type = parts.length;
+    if (parts.length === 3) {
+      const header = /^([1-9]\d*)-([1-9]\d*)$/.exec(parts[1]);
+      if (!header || Number(header[1]) > MAX_FRAGMENTS * 32 ||
+          Number(header[2]) > MAX_FRAGMENTS) throw new Error("Invalid fragment index or excessive count");
+    }
+    if (this.#seen.has(normalized)) return { progress: this.progress, duplicate: true, done: false };
+    if (this.#frames >= MAX_FRAGMENTS) throw new Error("Too many scanned QR frames");
+    this.#seen.add(normalized);
+    this.#frames++;
+    let ur;
+    try {
+      if (parts.length === 2) {
+        ur = UR.parse(normalized);
+      } else {
+        this.#decoder.add(normalized);
+        if (!this.#decoder.done) return { progress: this.progress, duplicate: false, done: false };
+        ur = this.#decoder.result;
+      }
+      if (!ur.isType("bytes")) throw new Error("Unexpected UR data type");
+      const bytes = asBytes(ur.cbor);
+      if (!(bytes instanceof Uint8Array) || bytes.length > MAX_PAYLOAD) throw new Error("QR message exceeds size cap");
+      this.#finished = parseEnvelope(bytes);
+      return { progress: 1, duplicate: false, done: true };
+    } catch (error) {
+      this.#finished = null;
+      throw new Error("QR decoding rejected: " + (error?.message ?? String(error)));
+    }
+  }
+}

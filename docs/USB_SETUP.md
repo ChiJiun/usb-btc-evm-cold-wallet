@@ -1,6 +1,6 @@
 # USB 製作與使用指南
 
-> **測試網研究用途。未經安全審計，不要存放真實資產。**
+> **開發中的實際冷錢包產品；目前僅以測試網進行驗證。尚未通過實體 USB 安全驗收，請勿存放真實資產。**
 
 ## 需要什麼
 
@@ -127,6 +127,12 @@ Console 會顯示啟動安全稽核：
 
 **紙本 backup 必須獨立存在。USB-A 壞掉或重新刷 image 時，COLD_VAULT 可能遺失。**
 
+### 5-1. 首次建立離線簽署政策（必要）
+
+在 Console 選「7) Initialize encrypted offline signing policy」，輸入錢包密碼並核對離線確認提示。系統建立 COLD_VAULT/wallet.vault.policy 加密政策後會印出目前檔案的 SHA-256。
+
+**將完整 64 字元 SHA-256 抄在獨立紙本上。** 每次 BTC／EVM 離線簽署，都需要從這份紙本抄錄目前雜湊；絕不能直接讀取 USB 中的政策檔來取得可信錨點。更新政策後應重新獨立記錄新雜湊，缺少政策或雜湊時必須拒簽。
+
 ## 6. 匯出公開資訊
 
 Console 選：
@@ -159,6 +165,7 @@ unsigned.psbt
 
 需要**獨立輸入**：
 
+- 紙本記錄的目前離線政策 SHA-256
 - 預期 recipient testnet address
 - 預期 satoshi amount
 - 最大可接受 fee
@@ -174,7 +181,7 @@ unsigned.psbt
 3) Sign Sepolia native ETH transaction
 ```
 
-需要獨立輸入 recipient 與 value in wei。
+需要獨立輸入 recipient、value in wei，以及紙本記錄的目前離線政策 SHA-256。
 
 目前會拒絕：
 
@@ -199,7 +206,7 @@ unsigned.psbt
 
 - 普通 USB 沒有 Secure Element，解鎖後 private key 會存在 offline PC RAM。
 - 現階段沒有 Secure Boot。
-- Image build 已加入 deterministic metadata 與 `make reproducibility-check` 兩次 clean build 比對；仍需在具完整 Buildroot 工具鏈的相容 host 實際跑完，才能宣稱該 commit 已完成 bit-for-bit runtime 驗證。
+- Image build 已加入 deterministic metadata、兩次 clean build 與 QEMU/OVMF 開機檢查。各交付版本必須以其自身 CI 成果判斷；實體 USB 驗收另由 Issue #43 追蹤。
 - USB-B 是不可信輸入，parser 仍需 fuzzing。
 - 本分支已相容 Issue #5 / PR #11 的 bounded integrity request envelope。Appliance 的 EVM `.json` 一律交給 `--request` 嚴格 envelope parser；BTC `.json` 走 `--request`、`.psbt` 才走 legacy PSBT。Appliance 不會先讀一次 USB 內容再交給 CLI 重讀，以避免惡意 USB 在兩次讀取間換內容。legacy Sepolia raw JSON 仍可由 CLI 明確使用 `--tx`，但不再由 appliance 自動判斷。SHA-256 envelope 只提供完整性檢查，不是來源認證。
 - 主網與 token/contract signing 都尚未開放。
