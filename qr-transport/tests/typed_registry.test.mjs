@@ -61,8 +61,8 @@ test("immutable pending context binds chain/account/request/digest and refuses s
  assert.deepEqual(bindTypedToPending(sig,pending,{now:2000,verifySignature:()=>true}),sig);
  assert.equal(pending.consumed,true);
  assert.throws(()=>bindTypedToPending(sig,pending,{now:2000,verifySignature:()=>true}),/closed/);
- assert.throws(()=>bindTypedToPending(sig,{...pending,unsignedDigest:undefined},{now:2000,verifySignature:()=>true}),/Independent EIP-1559/);
- assert.throws(()=>bindTypedToPending(sig,pending,{now:2000,verifySignature:()=>false}),/Independent EIP-1559/);
+ assert.throws(()=>bindTypedToPending(sig,{...pending,consumed:false,unsignedDigest:undefined},{now:2000,verifySignature:()=>true}),/trusted/);
+ assert.throws(()=>bindTypedToPending(sig,{...pending,consumed:false},{now:2000,verifySignature:()=>false}),/Independent EIP-1559/);
 });
 test("binding rejects missing mandatory fields even when called without the UR parser",()=>{
  const parsed=parseTypedUR(makeTypedUR("eth-sign-request",tx));
@@ -162,7 +162,7 @@ test("signed crypto-psbt cannot be confused with unsigned request without indepe
  assert.deepEqual(bindTypedToPending(signed,pending,{now:2000,verifySignedPsbt:()=>true}),signed);
  assert.equal(pending.consumed,true);
  assert.throws(()=>bindTypedToPending(signed,pending,{now:2000,verifySignedPsbt:()=>true}),/closed/);
- const unsigned={...pending,phase:"unsigned"};
+ const unsigned={...pending,consumed:false,phase:"unsigned"};
  assert.throws(()=>bindTypedToPending(signed,unsigned,{now:2000}),/PSBT bytes differ/);
 });
 
