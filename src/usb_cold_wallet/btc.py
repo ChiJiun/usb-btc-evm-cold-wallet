@@ -82,6 +82,12 @@ def _validate_raw_psbt(raw: bytes) -> bytes | None:
         raise ValueError("Malformed global unsigned transaction") from exc
     if raw_tx.serialize() != unsigned_tx:
         raise ValueError("Non-canonical global unsigned transaction")
+    # Bound attacker-controlled counts before iterating their PSBT maps or
+    # allowing the library parser to allocate matching input/output scopes.
+    if not 1 <= len(raw_tx.vin) <= _MAX_INPUTS:
+        raise ValueError("PSBT input count exceeds supported limit")
+    if not 1 <= len(raw_tx.vout) <= _MAX_OUTPUTS:
+        raise ValueError("PSBT output count exceeds supported limit")
     if any(vin.script_sig.data or vin.witness.items for vin in raw_tx.vin):
         raise ValueError("PSBT unsigned transaction must have empty scriptSig and witness")
 
