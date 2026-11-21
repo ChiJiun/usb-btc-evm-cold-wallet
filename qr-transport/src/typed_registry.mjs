@@ -142,20 +142,47 @@ export function encodeTypedFrames(type, data, {fragmentBytes=220,maxFrames=MAX_F
   return frames;
 }
 /** Explicit context binding; do not feed parsed UR directly to a signer. */
-export function bindTypedToPending(parsed,pending,{now=Date.now()}={}) {
-  if (!pending || !Number.isFinite(now) || now<pending.createdAt ||
+/**
+ * Context guard, NOT a substitute for chain signature verification.
+ * Required callbacks must return literal true synchronously; async, missing,
+ * or inconclusive verification fails closed.
+ */
+export function bindTypedToPending(parsed,pending,{
+  now=Date.now(),verifySignature=null,verifySignedPsbt=null
+}={}) {
+  if (!pending || !Number.isFinite(now) || !Number.isFinite(pending.createdAt) ||
+      now<pending.createdAt ||
       now-pending.createdAt>Math.min(pending.ttlMs??MAX_SCAN_MS,MAX_SCAN_MS) ||
       pending.consumed || pending.cancelled) throw Error("Expired or closed signing session");
-  if (parsed.type!==pending.type || parsed.requestId!==pending.requestId ||
+  const signatureResponse=parsed.type==="eth-signature" && pending.type==="eth-sign-request";
+  if (!(parsed.type===pending.type || signatureResponse) ||
+      (parsed.requestId!==undefined && parsed.requestId!==pending.requestId) ||
       (parsed.chainId!==undefined && parsed.chainId!==pending.chainId) ||
       (parsed.address!==undefined && parsed.address.toLowerCase()!==pending.address?.toLowerCase()) ||
-      (parsed.unsignedTxHex!==undefined && hex(sha256(bytes(parsed.unsignedTxHex)))!==pending.unsignedDigest) ||
-      (parsed.psbtHex!==undefined && hex(sha256(bytes(parsed.psbtHex)))!==pending.psbtDigest)) {
+      (parsed.unsignedTxHex!==undefined &&
+        hex(sha256(bytes(parsed.unsignedTxHex)))!==pending.unsignedDigest)) {
     throw Error("Typed UR mismatches immutable pending request");
   }
-  if (parsed.type==="eth-signature" && typeof pending.unsignedDigest!=="string")
-    throw Error("Missing original unsigned signing intent");
-  return parsed; // Chain-specific signature/PSBT verification is STILL required.
+  if (signatureResponse) {
+    if (pending.chainId!==ETH_CHAIN || typeof pending.unsignedDigest!=="string" ||
+        typeof pending.address!=="string" ||
+        typeof verifySignature!=="function" ||
+        verifySignature(parsed,pending)!==true) {
+      throw Error("Independent EIP-1559 signature verification required");
+    }
+  }
+  if (parsed.psbtHex!==undefined) {
+    if (pending.phase==="signed") {
+      // crypto-psbt carries no request ID or unsigned payload digest: exact
+      // outputs/UTXOs/fees/signatures MUST be checked against original PSBT.
+      if(typeof verifySignedPsbt!=="function" ||
+         verifySignedPsbt(parsed,pending)!==true)
+        throw Error("Independent signed PSBT verification required");
+    } else if (hex(sha256(bytes(parsed.psbtHex)))!==pending.psbtDigest) {
+      throw Error("PSBT bytes differ from pending unsigned transaction");
+    }
+  }
+  return parsed;
 }
 export class TypedURScanner {
   #decoder=new MultipartDecoder();#seen=new Set();#first=null;#mode=null;#type=null;#count=0;#done=null;

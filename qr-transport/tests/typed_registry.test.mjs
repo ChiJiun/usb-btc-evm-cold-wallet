@@ -53,8 +53,10 @@ test("immutable pending context binds chain/account/request/digest and refuses s
  }
  assert.throws(()=>bindTypedToPending(parsed,pending,{now:7000}),/Expired/);
  const sig=parseTypedUR(makeTypedUR("eth-signature",{requestId:rid,signatureHex:"11".repeat(64)+"1b"}));
- assert.deepEqual(bindTypedToPending(sig,{...pending,type:"eth-signature"},{now:2000}),sig);
- assert.throws(()=>bindTypedToPending(sig,{...pending,type:"eth-signature",unsignedDigest:undefined},{now:2000}),/original unsigned/);
+ assert.throws(()=>bindTypedToPending(sig,pending,{now:2000}),/Independent EIP-1559/);
+ assert.deepEqual(bindTypedToPending(sig,pending,{now:2000,verifySignature:()=>true}),sig);
+ assert.throws(()=>bindTypedToPending(sig,{...pending,unsignedDigest:undefined},{now:2000,verifySignature:()=>true}),/Independent EIP-1559/);
+ assert.throws(()=>bindTypedToPending(sig,pending,{now:2000,verifySignature:()=>false}),/Independent EIP-1559/);
 });
 test("bounded multipart rejects wrong type, mixed messages, malformed CBOR, scan timeout and excessive frames",()=>{
  const large={psbtHex:"70736274ff"+"aa".repeat(11000)};
@@ -124,4 +126,15 @@ test("Bitcoin Core/Sparrow shared external BIP174 PSBT fixture is preserved byte
  // This known P2PKH PSBT is intentionally rejected by the separate P2WPKH
  // wallet-policy verifier. Transport alone does NOT confer signing authority.
  assert.equal(fixture.vectors.shared_bip174_valid_v0.expect_wallet_policy,false);
+});
+
+test("signed crypto-psbt cannot be confused with unsigned request without independent verifier",()=>{
+ const pending={type:"crypto-psbt",phase:"signed",createdAt:1000,ttlMs:5000,
+  psbtDigest:digest(psbtHex),requestId:rid};
+ const signed=parseTypedUR(makeTypedUR("crypto-psbt",{psbtHex:"70736274ff"+"aa".repeat(80)}));
+ assert.throws(()=>bindTypedToPending(signed,pending,{now:2000}),/Independent signed PSBT/);
+ assert.throws(()=>bindTypedToPending(signed,pending,{now:2000,verifySignedPsbt:()=>false}),/Independent signed PSBT/);
+ assert.deepEqual(bindTypedToPending(signed,pending,{now:2000,verifySignedPsbt:()=>true}),signed);
+ const unsigned={...pending,phase:"unsigned"};
+ assert.throws(()=>bindTypedToPending(signed,unsigned,{now:2000}),/PSBT bytes differ/);
 });
