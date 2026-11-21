@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 import struct
 import uuid
+import zlib
 
 
 EXPECTED_DISK_UUID = uuid.UUID("f1448aa1-28cc-54bf-8fdd-3008514c0ab5")
@@ -48,10 +49,19 @@ def main() -> int:
         raise SystemExit("single-USB image is unexpectedly small")
     if data[510:512] != b"\x55\xaa":
         raise SystemExit("protective MBR signature missing")
+    if data[450] != 0xEE or any(data[462:510]):
+        raise SystemExit("protective MBR is missing or contains hybrid partitions")
 
     header = data[SECTOR:SECTOR * 2]
     if header[:8] != b"EFI PART":
         raise SystemExit("GPT header missing")
+    size, checksum = struct.unpack_from("<II", header, 12)
+    if not 92 <= size <= SECTOR:
+        raise SystemExit("invalid GPT header size")
+    canonical = bytearray(header[:size])
+    canonical[16:20] = bytes(4)
+    if zlib.crc32(canonical) != checksum:
+        raise SystemExit("invalid GPT header CRC")
 
     disk_uuid = uuid.UUID(bytes_le=header[56:72])
     if disk_uuid != EXPECTED_DISK_UUID:
@@ -60,12 +70,24 @@ def main() -> int:
     entries_lba = struct.unpack_from("<Q", header, 72)[0]
     count = struct.unpack_from("<I", header, 80)[0]
     entry_size = struct.unpack_from("<I", header, 84)[0]
+    if not (2 <= entries_lba and 3 <= count <= 128 and
+            128 <= entry_size <= SECTOR and entry_size % 8 == 0):
+        raise SystemExit("invalid GPT entry geometry")
+    entries_start = entries_lba * SECTOR
+    entries = data[entries_start:entries_start + count * entry_size]
+    if len(entries) != count * entry_size:
+        raise SystemExit("GPT entry table truncated")
+    if zlib.crc32(entries) != struct.unpack_from("<I", header, 88)[0]:
+        raise SystemExit("invalid GPT entries CRC")
     partitions = []
-    for index in range(min(count, 16)):
-        start = entries_lba * SECTOR + index * entry_size
-        entry = data[start:start + entry_size]
+    seen_empty = False
+    for index in range(count):
+        entry = entries[index * entry_size:(index + 1) * entry_size]
         if entry[:16] == bytes(16):
+            seen_empty = True
             continue
+        if seen_empty:
+            raise SystemExit("non-contiguous GPT partition entries")
         part_type = uuid.UUID(bytes_le=entry[:16])
         part_uuid = uuid.UUID(bytes_le=entry[16:32])
         first_lba, last_lba, attrs = struct.unpack_from("<QQQ", entry, 32)
@@ -88,6 +110,8 @@ def main() -> int:
             raise SystemExit(f"{label} has unexpected partition UUID: {part[1]}")
         if _sectors(part) != sectors:
             raise SystemExit(f"{label} has unexpected fixed size")
+        if not (1 < part[2] <= part[3] < len(data) // SECTOR - 1):
+            raise SystemExit(f"{label} extends beyond the image/GPT usable area")
         if _fat_label(data, part[2]) != label:
             raise SystemExit(f"{label} FAT volume label mismatch")
 
