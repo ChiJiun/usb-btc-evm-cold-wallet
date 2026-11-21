@@ -7,12 +7,14 @@ BOOT_DEVICE_FILE=/run/usb-wallet/boot-device
 BOOT_PARENT_FILE=/run/usb-wallet/boot-parent
 VAULT_DEVICE_FILE=/run/usb-wallet/vault-device
 TRANSFER_DEVICE_FILE=/run/usb-wallet/transfer-device
+BOOT_SYSFS_FILE=/run/usb-wallet/boot-sysfs-path
+BOOT_DISKSEQ_FILE=/run/usb-wallet/boot-diskseq
 FAILED=0
 
 mkdir -p /run/usb-wallet /mnt/cold-vault /mnt/transfer
 chmod 0700 /run/usb-wallet /mnt/cold-vault /mnt/transfer
 : > "$CHECKS"
-rm -f "$LOCKDOWN" "$BOOT_DEVICE_FILE" "$BOOT_PARENT_FILE" "$VAULT_DEVICE_FILE" "$TRANSFER_DEVICE_FILE"
+rm -f "$LOCKDOWN" "$BOOT_DEVICE_FILE" "$BOOT_PARENT_FILE" "$VAULT_DEVICE_FILE" "$TRANSFER_DEVICE_FILE" "$BOOT_SYSFS_FILE" "$BOOT_DISKSEQ_FILE"
 
 pass() {
 	printf 'PASS: %s\n' "$1" >> "$CHECKS"
@@ -79,6 +81,15 @@ if [ -n "$BOOT_DEVICE" ] && [ -n "$VAULT_DEVICE" ]; then
 		printf '%s\n' "$BOOT_DEVICE" > "$BOOT_DEVICE_FILE"
 		printf '%s\n' "$BOOT_PARENT" > "$BOOT_PARENT_FILE"
 		printf '%s\n' "$VAULT_DEVICE" > "$VAULT_DEVICE_FILE"
+		BOOT_SYSFS="$(readlink -f "/sys/class/block/$BOOT_PARENT" 2>/dev/null || true)"
+		BOOT_DISKSEQ="$(cat "/sys/class/block/$BOOT_PARENT/diskseq" 2>/dev/null || true)"
+		if [ -n "$BOOT_SYSFS" ] && [ -n "$BOOT_DISKSEQ" ]; then
+			printf '%s\n' "$BOOT_SYSFS" > "$BOOT_SYSFS_FILE"
+			printf '%s\n' "$BOOT_DISKSEQ" > "$BOOT_DISKSEQ_FILE"
+			pass "boot USB sysfs ancestry and disk sequence pinned for runtime replacement detection"
+		else
+			fail "boot USB sysfs ancestry or disk sequence unavailable"
+		fi
 		if [ -n "$TRANSFER_DEVICE" ]; then
 			TRANSFER_PARENT="$(block_parent_name "$TRANSFER_DEVICE" 2>/dev/null || true)"
 			if [ "$TRANSFER_PARENT" = "$BOOT_PARENT" ]; then
@@ -166,7 +177,7 @@ else
 fi
 
 if [ "$FAILED" -ne 0 ]; then
-	rm -f "$BOOT_DEVICE_FILE" "$BOOT_PARENT_FILE" "$VAULT_DEVICE_FILE" "$TRANSFER_DEVICE_FILE"
+	rm -f "$BOOT_DEVICE_FILE" "$BOOT_PARENT_FILE" "$VAULT_DEVICE_FILE" "$TRANSFER_DEVICE_FILE" "$BOOT_SYSFS_FILE" "$BOOT_DISKSEQ_FILE"
 	: > "$LOCKDOWN"
 	printf 'LOCKDOWN: one or more boot security checks failed\n' >> "$CHECKS"
 else
