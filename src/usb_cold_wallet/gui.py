@@ -1031,7 +1031,7 @@ class OfflineReviewApp:
             self.security.signing(digest)
             signed = self.session.sign(self.wallet_root, self.policy_profile,
                                        extra_confirmation=extra_confirmation)
-            if self._active_qr_request is not None:
+            if getattr(self, "_active_qr_request", None) is not None:
                 self._signed_qr_text = signed_qr_text(
                     self._active_qr_request, signed, self.session.plan.signed_kind)
             self.security.signed(digest)
