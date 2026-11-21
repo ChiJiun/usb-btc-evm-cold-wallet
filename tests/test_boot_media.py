@@ -53,9 +53,17 @@ def _disk(disk_uuid=media.DISK_UUID, boot_uuid=media.BOOT_UUID,
 
 def _create(sys_block: Path, dev: Path, name="sda",
             disk_uuid=media.DISK_UUID, boot_uuid=media.BOOT_UUID,
-            boot_label="USBCOLD_EFI", vault_label="COLD_VAULT") -> None:
-    (sys_block / name / "queue").mkdir(parents=True)
-    (sys_block / name / "queue/logical_block_size").write_text("512\n")
+            boot_label="USBCOLD_EFI", vault_label="COLD_VAULT",
+            usb=True) -> None:
+    sys_block.mkdir(parents=True, exist_ok=True)
+    # Simulate /sys/class/block/sdX -> /sys/devices/.../usbN/port/.../block/sdX.
+    # An ordinary sdX directory without USB ancestors is NOT trusted.
+    location = (sys_block.parent / "devices" / "pci0000:00" /
+                ("usb1/1-1/1-1:1.0" if usb else "ata1/host0") /
+                "host0/target0:0:0/0:0:0:0/block" / name)
+    (location / "queue").mkdir(parents=True)
+    (sys_block / name).symlink_to(location, target_is_directory=True)
+    (location / "queue/logical_block_size").write_text("512\n")
     for index in (1, 2):
         partition = sys_block / f"{name}{index}"
         partition.mkdir()
@@ -121,4 +129,28 @@ def test_collision_with_malformed_matching_disk_is_denied(tmp_path):
     _create(sys_block, dev, "sda")
     _create(sys_block, dev, "sdb", vault_label="IMPOSTOR")
     with pytest.raises(ValueError, match="duplicated"):
+        media.identify(sys_block, dev)
+
+
+def test_identical_gpt_on_sata_scsi_disk_is_not_usb_trusted(tmp_path):
+    sys_block, dev = tmp_path / "sys", tmp_path / "dev"
+    _create(sys_block, dev, "sda", usb=False)
+    assert not media._usb_mass_storage(sys_block / "sda")
+    with pytest.raises(ValueError, match="inconsistent|duplicated"):
+        media.identify(sys_block, dev)
+
+
+def test_spoofed_trusted_identifiers_on_non_usb_disk_lock_down_even_with_valid_usb(tmp_path):
+    sys_block, dev = tmp_path / "sys", tmp_path / "dev"
+    _create(sys_block, dev, "sda", usb=True)
+    _create(sys_block, dev, "sdb", usb=False)
+    assert media._usb_mass_storage(sys_block / "sda")
+    with pytest.raises(ValueError, match="inconsistent|duplicated"):
+        media.identify(sys_block, dev)
+
+
+def test_usb_transport_does_not_make_wrong_gpt_authentic(tmp_path):
+    sys_block, dev = tmp_path / "sys", tmp_path / "dev"
+    _create(sys_block, dev, "sda", disk_uuid=uuid.uuid4())
+    with pytest.raises(ValueError, match="missing|inconsistent|duplicated"):
         media.identify(sys_block, dev)
