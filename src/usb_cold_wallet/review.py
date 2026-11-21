@@ -509,3 +509,66 @@ class ReviewSession:
             raise ValueError("Transaction has not been signed")
         verify(self._signed_envelope, self.plan.signed_kind)
         save_vault(path, self._signed_envelope)
+
+
+def build_erc20_review_pages(payload: dict, root, offline_profile: dict) -> tuple[tuple[ReviewPage, ...], object]:
+    """Existing GUI ReviewPage abstraction; never authorizes a signature."""
+    from .policy import decide_erc20
+    review, decision = decide_erc20(offline_profile, root, payload)
+    if decision.status == "DENY":
+        return (ReviewPage("policy", (_field("decision", "DENY", "offline contract policy"),
+                                      _field("reason", "; ".join(decision.reasons), "offline contract policy"))),), decision
+    operation = review["method"]
+    party_field = "recipient" if operation == "transfer" else "spender"
+    quantity_field = "amount" if operation == "transfer" else "allowance"
+    pages = (
+        ReviewPage("network_account", (
+            _field("network", "Ethereum Sepolia", "offline EVM policy"),
+            _field("chain_id", review["chain_id"], "raw transaction"),
+            _field("account", evm_account(root).address, "offline wallet"))),
+        ReviewPage("contract", (
+            _field("contract", review["contract"], "offline contract allowlist"),
+            _field("method", operation, "strict 4-byte selector"),
+            _field(party_field, review[party_field], "decoded calldata"),
+            _field(quantity_field + "_atomic", review[quantity_field], "decoded uint256, no untrusted decimals"),
+            _field("revoke", operation == "approve" and review["allowance"] == 0, "decoded allowance"))),
+        ReviewPage("fees", (
+            _field("nonce", review["nonce"], "raw transaction"),
+            _field("gas", review["gas"], "raw transaction"),
+            _field("max_fee_per_gas", review["max_fee_per_gas"], "raw transaction"),
+            _field("max_priority_fee_per_gas", review["max_priority_fee_per_gas"], "raw transaction"),
+            _field("maximum_fee_wei", review["max_fee_wei"], "computed from transaction"))),
+        ReviewPage("policy", (
+            _field("decision", decision.status, "encrypted offline contract policy"),
+            _field("reason", "; ".join(decision.reasons), "offline contract policy"),
+            _field("signing_enabled", False, "runtime safety gate"))),
+    )
+    return pages, decision
+
+
+def build_eip712_review_pages(typed_data: dict, *, trusted_approval: dict) -> tuple[ReviewPage, ...]:
+    """Explicitly review preverified typed-data; no EIP-712 signature path exists.
+
+    Caller must obtain trusted_approval from authenticated offline state, never
+    from an exchange envelope, RPC, or online-decoded JSON.
+    """
+    from .evm_eip712 import review_eip712_intent
+    reviewed = review_eip712_intent(typed_data, **trusted_approval)
+    operation = reviewed["primary_type"]
+    party_field = "recipient" if operation == "WalletTransferIntent" else "spender"
+    qty_field = "amount" if operation == "WalletTransferIntent" else "allowance"
+    return (
+        ReviewPage("typed_domain", (
+            _field("network", "Ethereum Sepolia", "offline policy"),
+            _field("chain_id", reviewed["chain_id"], "EIP-712 domain"),
+            _field("verifying_contract", reviewed["domain"]["verifyingContract"], "EIP-712 domain"),
+            _field("owner", reviewed["owner"], "EIP-712 message"),
+            _field("schema", operation, "strict schema allowlist"))),
+        ReviewPage("typed_intent", (
+            _field(party_field, reviewed[party_field], "EIP-712 message"),
+            _field(qty_field + "_atomic", reviewed[qty_field], "EIP-712 uint256"),
+            _field("nonce", reviewed["nonce"], "EIP-712 message"),
+            _field("deadline", reviewed["deadline"], "EIP-712 message"),
+            _field("signing_digest", reviewed["signing_digest"], "EIP-712 canonical hash"),
+            _field("signing_enabled", False, "no trusted nonce consumption/deployed verifier"))),
+    )
