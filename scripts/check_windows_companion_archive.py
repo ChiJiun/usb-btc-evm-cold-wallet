@@ -19,6 +19,7 @@ ALLOW = {
     "usb_cold_wallet.companion_btc",
     "usb_cold_wallet.companion_envelope",
     "usb_cold_wallet.companion_crossboot",
+    "usb_cold_wallet.transaction_state",
     # Exact reviewed, static frontend assets bundled by PyInstaller --add-data.
     "usb_cold_wallet.companion_static.index.html",
     "usb_cold_wallet.companion_static.companion.css",
@@ -27,7 +28,7 @@ ALLOW = {
 DENY = {
     "vault", "keys", "btc", "evm", "recovery", "cli", "gui", "gui_qr_bridge",
     "policy", "review", "signer_session", "qr_cli", "qr_workflow", "qr_session",
-    "keystone_public", "exchange",
+    "keystone_public", "exchange", "cross_boot",
 }
 
 
