@@ -90,14 +90,14 @@ def execute(raw: bytes) -> Observation:
 def initial_corpus() -> list[bytes]:
     """One valid policy seed, two valid-PSBT policy denials, and malformed bytes."""
     allowed = vector().serialize()
-    wrong_recipient_amount = vector()
-    wrong_recipient_amount.tx.vout[0].value += 1
-    excessive_fee = vector()
-    excessive_fee.tx.vout[1].value -= 2_000
+    unsupported_sighash = vector()
+    unsupported_sighash.inputs[0].sighash_type = 2
+    unexpected_metadata = vector()
+    unexpected_metadata.inputs[0].unknown[b"\xfc\x01"] = b"\x01"
     return [
         allowed,
-        wrong_recipient_amount.serialize(),
-        excessive_fee.serialize(),
+        unsupported_sighash.serialize(),
+        unexpected_metadata.serialize(),
         allowed[:5],
         b"",
         b"psbt\xff" + b"\xff" * 8,
