@@ -29,7 +29,7 @@ def _live_mounts(tmp_path: Path):
     vault_device.write_text("/dev/sdb2\n", encoding="ascii")
     mountinfo.write_text(
         "1 0 0:1 / / rw - rootfs rootfs rw\n"
-        "2 1 8:18 / /mnt/cold-vault rw,nodev,nosuid,noexec,sync - vfat /dev/sdb2 rw,sync\n"
+        "2 1 8:18 / /mnt/cold-vault rw,nodev,nosuid,noexec,sync,fmask=0177,dmask=0077 - vfat /dev/sdb2 rw,sync\n"
         "3 1 0:3 / /proc rw - proc proc rw\n",
         encoding="utf-8",
     )
@@ -135,11 +135,13 @@ def test_live_mount_revalidation_rejects_remount_and_media_swap(tmp_path):
     original = live["proc_mountinfo"].read_text(encoding="utf-8")
     attacks = [
         original.replace("/dev/sdb2", "/dev/sdc2"),
-        original.replace("rw,nodev,nosuid,noexec,sync", "rw,nodev,nosuid"),
+        original.replace("rw,nodev,nosuid,noexec,sync,fmask=0177,dmask=0077", "rw,nodev,nosuid"),
+        original.replace("fmask=0177", "fmask=0000"),
+        original.replace("dmask=0077", "dmask=0000"),
         original.replace("vfat /dev/sdb2", "ext4 /dev/sdb2"),
         original.replace("rootfs rootfs", "ext4 /dev/sda1"),
         original + "4 1 8:40 / /mnt/other rw - ext4 /dev/sdc1 rw\n",
-        original + "4 1 8:18 / /mnt/transfer rw,nodev,nosuid,noexec,sync - vfat /dev/sdb2 rw,sync\n",
+        original + "4 1 8:18 / /mnt/transfer rw,nodev,nosuid,noexec,sync,fmask=0177,dmask=0077 - vfat /dev/sdb2 rw,sync\n",
         original.replace("2 1 8:18 / /mnt/cold-vault", "2 1 8:18 / /not-vault"),
     ]
     for corrupted in attacks:
@@ -169,7 +171,7 @@ def test_live_mount_allows_only_boot_verified_same_device_transfer(tmp_path):
 
     same_disk = (
         original
-        + "4 1 8:19 / /mnt/transfer rw,nodev,nosuid,noexec,sync "
+        + "4 1 8:19 / /mnt/transfer rw,nodev,nosuid,noexec,sync,fmask=0177,dmask=0077 "
           "- vfat /dev/sdb3 rw,sync\n"
     )
     mountinfo.write_text(same_disk, encoding="utf-8")
@@ -185,14 +187,14 @@ def test_live_mount_allows_only_boot_verified_same_device_transfer(tmp_path):
 
     transfer_device.unlink()
     mountinfo.write_text(
-        original + "4 1 8:34 / /mnt/transfer rw,nodev,nosuid,noexec,sync "
+        original + "4 1 8:34 / /mnt/transfer rw,nodev,nosuid,noexec,sync,fmask=0177,dmask=0077 "
                    "- vfat /dev/sdc2 rw,sync\n",
         encoding="utf-8",
     )
     assert runtime_audit(**kwargs)[0]
 
     mountinfo.write_text(
-        original + "4 1 8:19 / /mnt/transfer rw,nodev,nosuid,noexec,sync "
+        original + "4 1 8:19 / /mnt/transfer rw,nodev,nosuid,noexec,sync,fmask=0177,dmask=0077 "
                    "- vfat /dev/sdc2 rw,sync\n",
         encoding="utf-8",
     )
@@ -200,7 +202,7 @@ def test_live_mount_allows_only_boot_verified_same_device_transfer(tmp_path):
 
     (live["sys_dev_block"] / "8:34").unlink()
     mountinfo.write_text(
-        original + "4 1 8:34 / /mnt/transfer rw,nodev,nosuid,noexec,sync "
+        original + "4 1 8:34 / /mnt/transfer rw,nodev,nosuid,noexec,sync,fmask=0177,dmask=0077 "
                    "- vfat /dev/sdc2 rw,sync\n",
         encoding="utf-8",
     )
