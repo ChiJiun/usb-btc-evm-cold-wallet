@@ -26,6 +26,9 @@ def test_kernel_removes_network_and_internal_storage():
     assert "# CONFIG_NET is not set" in text
     assert "CONFIG_USB_STORAGE=y" in text
     assert "CONFIG_VFAT_FS=y" in text
+    # Initramfs cannot load missing FAT charset modules at boot.
+    assert "CONFIG_NLS_CODEPAGE_437=y" in text
+    assert "CONFIG_NLS_ISO8859_1=y" in text
     for forbidden in (
         "CONFIG_ATA=y",
         "CONFIG_BLK_DEV_NVME=y",
@@ -33,6 +36,29 @@ def test_kernel_removes_network_and_internal_storage():
         "CONFIG_VIRTIO_BLK=y",
     ):
         assert forbidden not in text
+
+
+def test_rootfs_device_management_does_not_force_kernel_networking():
+    config = (ROOT / "buildroot-external/configs/usb_wallet_x86_64_defconfig").read_text()
+    assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y" in config
+    assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV=y" not in config
+    assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y" not in config
+    validator = (ROOT / "scripts/validate_buildroot_config.py").read_text()
+    assert '"BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS"' in validator
+    assert '"BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV"' in validator
+    verifier = (ROOT / "scripts/verify_image.sh").read_text()
+    assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y$" in verifier
+    assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_(MDEV|EUDEV)=y$" in verifier
+
+
+def test_initramfs_mounts_devtmpfs_before_boot_audit():
+    init_dir = ROOT / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d"
+    early_mount = (init_dir / "S00devtmpfs").read_text()
+    audit = init_dir / "S01airgap"
+    assert "mount -t devtmpfs" in early_mount
+    assert "test -c /dev/console" in early_mount
+    assert "test -c /dev/ttyS0" not in early_mount  # physical PCs may lack a serial port
+    assert (init_dir / "S00devtmpfs").name < audit.name
 
 
 def test_image_verifier_audits_the_kernel_used_for_shipped_bzimage():
@@ -54,6 +80,26 @@ def test_image_has_separate_boot_and_cold_vault_partitions():
     assert "partition boot" in text
     assert "partition vault" in text
     assert "read-only = true" in text
+
+
+def test_uefi_smoke_uses_matched_flash_firmware_and_serial_audit():
+    script = (ROOT / "scripts/verify_uefi_boot.sh").read_text()
+    grub = (ROOT / "buildroot-external/board/usb-wallet/grub.cfg").read_text()
+    boot_audit = (
+        ROOT
+        / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d/S01airgap"
+    ).read_text()
+    assert "OVMF_CODE_4M.fd" in script and "VARS_4M.fd" in script
+    assert 'cp "$OVMF_VARS" "$TMP/ovmf-vars.fd"' in script
+    assert "-drive if=pflash,unit=0,format=raw,readonly=on" in script
+    assert "-drive if=pflash,unit=1,format=raw" in script
+    assert '\n    -bios ' not in script
+    assert "console=tty1 console=ttyS0,115200" in grub
+    assert "earlyprintk=serial,ttyS0,115200" in grub
+    assert "loglevel=7" in grub
+    assert 'grep \'^FAIL:\' "$CHECKS" > /dev/ttyS0' in boot_audit
+    assert "USB_WALLET_UEFI_AUDIT_LOCKDOWN" in boot_audit
+    assert "-net none" in script
 
 
 def test_image_generation_is_deterministic():
@@ -81,9 +127,15 @@ def test_boot_audit_binds_vault_to_unique_partuuid_and_boot_device():
         ROOT
         / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d/S01airgap"
     ).read_text()
-    assert "BOOT_PARTUUID=e2bd6d1b-8de5-502d-a897-c53a8e60f46b" in init
-    assert "VAULT_PARTUUID=18f1c36f-d5c0-5052-9cd2-03e9c2a48f00" in init
-    assert 'blkid -t "PARTUUID=$partuuid" -o device' in init
+    helper = (ROOT / "buildroot-external/board/usb-wallet/identify_media.py").read_text()
+    postbuild = (ROOT / "buildroot-external/board/usb-wallet/post-build.sh").read_text()
+    assert 'BOOT_UUID = uuid.UUID("e2bd6d1b-8de5-502d-a897-c53a8e60f46b")' in helper
+    assert 'VAULT_UUID = uuid.UUID("18f1c36f-d5c0-5052-9cd2-03e9c2a48f00")' in helper
+    assert "zlib.crc32" in helper
+    assert "missing, duplicated, or inconsistent" in helper
+    assert "usb-wallet-identify-media" in postbuild
+    assert "/usr/libexec/usb-wallet-identify-media" in init
+    assert "blkid -t" not in init and "blkid -s" not in init
     assert "boot and vault partitions share verified block parent" in init
     assert '"$VAULT_DEVICE" /mnt/cold-vault' in init
     assert "COLD_VAULT mount source matches verified PARTUUID device" in init

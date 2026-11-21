@@ -9,7 +9,8 @@ BR2_GLOBAL_PATCH_DIR="board/pc/patches"
 
 BR2_TARGET_GENERIC_HOSTNAME="usb-cold-wallet"
 BR2_TARGET_GENERIC_ISSUE="USB BTC+EVM Cold Wallet - TESTNET RESEARCH APPLIANCE"
-# Keep CONFIG_NET disabled: Buildroot mdev mode forces it on.
+# Use kernel devtmpfs directly. Buildroot's mdev mode forcibly enables
+# CONFIG_NET during linux.mk config fixups and defeats the air-gap policy.
 BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y
 BR2_TARGET_GENERIC_GETTY_PORT=""
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_USB_WALLET_PATH)/board/usb-wallet/rootfs-overlay"
