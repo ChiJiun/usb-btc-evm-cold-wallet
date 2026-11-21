@@ -6,7 +6,11 @@ import { sha256, toUtf8Bytes } from 'ethers';
 import { checkedAddress, makeQrRequest, normalizeUnsigned, verifyQrResponse } from './protocol.ts';
 import type { Pending } from './protocol.ts';
 
-export type StoredRequest = { request: KeyringRequest; pending: Pending };
+type ApprovedSignature = {v: string; r: string; s: string};
+export type TerminalEvent =
+  | {kind: 'approved'; result: ApprovedSignature; responseDigest: string; attempted: boolean}
+  | {kind: 'rejected'; attempted: boolean};
+export type StoredRequest = { request: KeyringRequest; pending: Pending; terminal?: TerminalEvent };
 export type State = {
   accounts: Record<string, KeyringAccount>;
   requests: Record<string, StoredRequest>;
@@ -26,6 +30,16 @@ function stableAccountId(address: string): string {
 }
 export class ColdKeyring implements Keyring {
   constructor(private readonly state: State, private readonly save: Save, private readonly emit: Emit, private readonly now: () => number = Date.now) {}
+
+  private async persist(next: State): Promise<void> {
+    // Never mutate the working state until the durable save has succeeded.
+    await this.save(next);
+    Object.assign(this.state, next);
+  }
+
+  private closedWith(id: string): string[] {
+    return [...this.state.closedIds.filter((item) => item !== id), id].slice(-100);
+  }
 
   async listAccounts(): Promise<KeyringAccount[]> { return Object.values(this.state.accounts); }
   async getAccount(id: string): Promise<KeyringAccount> {
@@ -77,8 +91,7 @@ export class ColdKeyring implements Keyring {
     if (Object.values(this.state.requests).some((r) => !accounts.includes(r.pending.accountId))) {
       throw new Error('Reject pending signature before switching cold accounts');
     }
-    this.state.selected = [...accounts];
-    await this.save(this.state);
+    await this.persist({...this.state, selected:[...accounts]});
   }
   async resolveAccountAddress(scope: CaipChainId, request: JsonRpcRequest): Promise<ResolvedAccountAddress | null> {
     if (scope !== 'eip155:11155111' || request.method !== EthMethod.SignTransaction) return null;
@@ -119,41 +132,117 @@ export class ColdKeyring implements Keyring {
       throw new Error('Invalid or exhausted cold request sequence');
     }
     const pending = makeQrRequest(request.id, account.id, account.address, tx, this.now(), sequence + 1);
-    this.state.requestSequence = sequence + 1;
-    this.state.requests[request.id] = {request, pending};
-    await this.save(this.state);
+    await this.persist({
+      ...this.state, requestSequence: sequence + 1,
+      requests:{...this.state.requests, [request.id]:{request, pending}},
+    });
     return {pending:true, redirect:{
       url:'http://localhost:8000/',
       message:'Review the Sepolia transaction on the offline USB signer. Never enter keys in the browser.',
     }};
   }
+  private async deliverTerminal(id: string): Promise<void> {
+    let entry = this.state.requests[id];
+    if (!entry?.terminal) throw new Error('No persisted terminal event to recover');
+
+    // Persist an ambiguous-delivery marker BEFORE calling MetaMask.
+    // If emit succeeds but cleanup persistence fails, the next Snap instance
+    // cannot safely assume either success or failure. Never auto-retry.
+    if (!entry.terminal.attempted) {
+      await this.persist({
+        ...this.state,
+        requests:{...this.state.requests, [id]:{
+          ...entry, terminal:{...entry.terminal, attempted:true},
+        }},
+      });
+      entry = this.state.requests[id];
+    }
+    const terminal = entry.terminal;
+    if (!terminal) throw new Error('Terminal event vanished');
+    if (terminal.kind === 'approved') {
+      await this.emit(KeyringEvent.RequestApproved, {id, result:terminal.result});
+    } else {
+      await this.emit(KeyringEvent.RequestRejected, {id});
+    }
+    // A failure here leaves the immutable terminal payload persisted. The
+    // user may explicitly retry or abandon after reconciling MetaMask state.
+    const requests = {...this.state.requests};
+    delete requests[id];
+    await this.persist({...this.state, requests});
+  }
+
+  listTerminalEvents(): Array<{id: string; kind: 'approved' | 'rejected'; attempted: boolean}> {
+    return Object.entries(this.state.requests).flatMap(([id, entry]) =>
+      entry.terminal ? [{id, kind:entry.terminal.kind, attempted:entry.terminal.attempted}] : []);
+  }
+
+  async recoverTerminal(id: string, action: 'retry' | 'abandon'): Promise<void> {
+    const entry = this.state.requests[id];
+    if (!entry?.terminal) throw new Error('Unknown terminal event');
+    if (action === 'retry') {
+      // Explicit action only. Never validate a different QR signature here:
+      // the original event result was persisted after independent verification.
+      await this.deliverTerminal(id);
+      return;
+    }
+    if (action !== 'abandon') throw new Error('Unsupported terminal recovery action');
+    // Only after the user has confirmed the MetaMask request is already
+    // resolved or cancelled. This drops the notification, never signs again.
+    const requests = {...this.state.requests};
+    delete requests[id];
+    await this.persist({...this.state, requests});
+  }
+
   async approveRequest(id: string, data?: Record<string, Json>): Promise<void> {
     const entry = this.state.requests[id];
     if (!entry) throw new Error('Unknown or replayed cold request');
+    if (entry.pending.status === 'approving') {
+      if (entry.terminal?.kind !== 'approved') throw new Error('Invalid terminal approval');
+      if (data && (
+          Object.keys(data).length !== 1 || typeof data.responseJson !== 'string' ||
+          sha256(toUtf8Bytes(data.responseJson)) !== entry.terminal.responseDigest)) {
+        throw new Error('Different signed QR response cannot replace persisted approval');
+      }
+      await this.deliverTerminal(id);
+      return;
+    }
+    if (entry.pending.status !== 'pending') throw new Error('Unknown or closed cold request');
     if (!data || Object.keys(data).length !== 1 || typeof data.responseJson !== 'string') {
       throw new Error('Exact QR response JSON required');
     }
     const signature = verifyQrResponse(data.responseJson, entry.pending, this.now());
-    // Fail closed on event or persistence failure: once emitted, this ID cannot be replayed.
-    entry.pending.status = 'approving';
-    this.rememberClosed(id);
-    await this.save(this.state);
-    await this.emit(KeyringEvent.RequestApproved, {id, result:signature});
-    delete this.state.requests[id];
-    await this.save(this.state);
+    const updated: StoredRequest = {
+      ...entry, pending:{...entry.pending, status:'approving'},
+      terminal:{
+        kind:'approved', result:signature,
+        responseDigest:sha256(toUtf8Bytes(data.responseJson)), attempted:false,
+      },
+    };
+    await this.persist({
+      ...this.state, requests:{...this.state.requests, [id]:updated},
+      closedIds:this.closedWith(id),
+    });
+    await this.deliverTerminal(id);
   }
+
   async rejectRequest(id: string): Promise<void> {
     const entry = this.state.requests[id];
-    if (!entry || entry.pending.status !== 'pending') throw new Error('Unknown or closed cold request');
-    entry.pending.status = 'rejected';
-    this.rememberClosed(id);
-    await this.save(this.state);
-    await this.emit(KeyringEvent.RequestRejected, {id});
-    delete this.state.requests[id];
-    await this.save(this.state);
+    if (!entry) throw new Error('Unknown or closed cold request');
+    if (entry.pending.status === 'rejected') {
+      if (entry.terminal?.kind !== 'rejected') throw new Error('Invalid terminal rejection');
+      await this.deliverTerminal(id);
+      return;
+    }
+    if (entry.pending.status !== 'pending') throw new Error('Cannot reject a persisted approval');
+    await this.persist({
+      ...this.state,
+      requests:{...this.state.requests, [id]:{
+        ...entry, pending:{...entry.pending, status:'rejected'},
+        terminal:{kind:'rejected', attempted:false},
+      }},
+      closedIds:this.closedWith(id),
+    });
+    await this.deliverTerminal(id);
   }
-  private rememberClosed(id: string): void {
-    if (!this.state.closedIds.includes(id)) this.state.closedIds.push(id);
-    this.state.closedIds = this.state.closedIds.slice(-100);
-  }
+
 }
