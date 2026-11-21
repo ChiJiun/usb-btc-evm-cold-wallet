@@ -111,7 +111,8 @@ def test_image_generation_is_deterministic():
     image = (ROOT / "buildroot-external/board/usb-wallet/genimage.cfg").read_text()
     repro = (ROOT / "infra/reproducible.env").read_text()
     assert "BR2_REPRODUCIBLE=y" in defconfig
-    assert image.count('extraargs = "--invariant"') == 3
+    assert image.count('extraargs = "--invariant"') == 2
+    assert 'extraargs = "--invariant -F 32"' in image
     assert 'disk-uuid = "f1448aa1-28cc-54bf-8fdd-3008514c0ab5"' in image
     assert 'partition-uuid = "e2bd6d1b-8de5-502d-a897-c53a8e60f46b"' in image
     assert 'partition-uuid = "18f1c36f-d5c0-5052-9cd2-03e9c2a48f00"' in image
