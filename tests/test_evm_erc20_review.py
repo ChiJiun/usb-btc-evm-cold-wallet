@@ -38,7 +38,8 @@ def tx(method="transfer", party=RECIPIENT, amount=123):
 def review(payload, method="transfer", party=RECIPIENT, amount=123, **kwargs):
     return review_erc20_transaction(
         payload, expected_contract=CONTRACT, expected_counterparty=party,
-        expected_amount=amount, trusted_contracts={CONTRACT},
+        expected_amount=amount, expected_method=method, expected_nonce=7,
+        trusted_contracts={CONTRACT},
         max_fee_wei=FEE_LIMIT, **kwargs,
     )
 
@@ -128,17 +129,20 @@ def test_contract_allowlist_and_trusted_limit_are_required():
         with pytest.raises(ValueError):
             review_erc20_transaction(
                 p, expected_contract=CONTRACT, expected_counterparty=RECIPIENT,
-                expected_amount=123, trusted_contracts=allow, max_fee_wei=FEE_LIMIT
+                expected_amount=123, expected_method="transfer", expected_nonce=7,
+                trusted_contracts=allow, max_fee_wei=FEE_LIMIT
             )
     with pytest.raises(ValueError):
         review_erc20_transaction(
             p, expected_contract=CONTRACT, expected_counterparty=RECIPIENT,
-            expected_amount=123, trusted_contracts={CONTRACT}, max_fee_wei=1,
+            expected_amount=123, expected_method="transfer", expected_nonce=7,
+            trusted_contracts={CONTRACT}, max_fee_wei=1,
         )
     with pytest.raises(ValueError):
         review_erc20_transaction(
             p, expected_contract=CONTRACT, expected_counterparty=RECIPIENT,
-            expected_amount=123, trusted_contracts={CONTRACT}, max_fee_wei=FEE_LIMIT,
+            expected_amount=123, expected_method="transfer", expected_nonce=7,
+            trusted_contracts={CONTRACT}, max_fee_wei=FEE_LIMIT,
             max_gas=30_000,
         )
 
@@ -168,7 +172,8 @@ def test_independent_eth_account_signed_bytes_recovered_and_reviewed(method, par
     recovered = review_signed_erc20_transaction(
         signed.raw_transaction, expected_sender=signer.address,
         expected_contract=CONTRACT, expected_counterparty=party,
-        expected_amount=amount, trusted_contracts=[CONTRACT], max_fee_wei=FEE_LIMIT,
+        expected_amount=amount, expected_method=method, expected_nonce=7,
+        trusted_contracts=[CONTRACT], max_fee_wei=FEE_LIMIT,
     )
     assert recovered["signed_bytes_verified"] is True
     assert recovered["sender"] == signer.address
@@ -180,7 +185,8 @@ def test_independent_eth_account_signed_bytes_recovered_and_reviewed(method, par
         review_signed_erc20_transaction(
             signed.raw_transaction, expected_sender=OTHER,
             expected_contract=CONTRACT, expected_counterparty=party,
-            expected_amount=amount, trusted_contracts=[CONTRACT], max_fee_wei=FEE_LIMIT,
+            expected_amount=amount, expected_method=method, expected_nonce=7,
+            trusted_contracts=[CONTRACT], max_fee_wei=FEE_LIMIT,
         )
     with pytest.raises(ValueError):
         review_signed_erc20_transaction(
@@ -196,9 +202,52 @@ def test_signed_raw_transaction_truncation_bad_type_and_size_denied():
     expected = dict(
         expected_sender=signer.address, expected_contract=CONTRACT,
         expected_counterparty=RECIPIENT, expected_amount=123,
+        expected_method="transfer", expected_nonce=7,
         trusted_contracts={CONTRACT}, max_fee_wei=FEE_LIMIT,
     )
     for malformed in (signed[:-1], b"\x01" + signed[1:], signed + b"\x00",
                       b"\x02" + b"\xff" * 2049, "0x02" + "00" * 2050):
         with pytest.raises(ValueError):
             review_signed_erc20_transaction(malformed, **expected)
+
+
+@pytest.mark.parametrize("method,substituted", [
+    ("transfer", "approve"), ("approve", "transfer"),
+])
+def test_cannot_substitute_method_with_same_party_and_quantity(method, substituted):
+    party = RECIPIENT
+    untrusted = tx(substituted, party, 123)
+    with pytest.raises(ValueError, match="method"):
+        review(untrusted, method, party, 123)
+    # Post-signature verification must have the identical independent method binding.
+    signer = Account.from_key("0x" + "12" * 32)
+    signed = Account.sign_transaction(untrusted, signer.key)
+    with pytest.raises(ValueError, match="method"):
+        review_signed_erc20_transaction(
+            signed.raw_transaction, expected_sender=signer.address,
+            expected_contract=CONTRACT, expected_counterparty=party,
+            expected_amount=123, expected_method=method, expected_nonce=7,
+            trusted_contracts={CONTRACT}, max_fee_wei=FEE_LIMIT,
+        )
+
+
+@pytest.mark.parametrize("wrong_nonce", [0, 6, 8, True, -1, UINT256_MAX + 1])
+def test_trusted_expected_nonce_required_for_unsigned_and_signed(wrong_nonce):
+    with pytest.raises(ValueError, match="nonce"):
+        review(tx(), expected_nonce=wrong_nonce)
+    signer = Account.from_key("0x" + "12" * 32)
+    signed = Account.sign_transaction(tx(), signer.key)
+    with pytest.raises(ValueError, match="nonce"):
+        review_signed_erc20_transaction(
+            signed.raw_transaction, expected_sender=signer.address,
+            expected_contract=CONTRACT, expected_counterparty=RECIPIENT,
+            expected_amount=123, expected_method="transfer",
+            expected_nonce=wrong_nonce, trusted_contracts={CONTRACT},
+            max_fee_wei=FEE_LIMIT,
+        )
+
+
+@pytest.mark.parametrize("bad_method", ["", "permit", "Transfer", None, True])
+def test_invalid_trusted_erc20_method_fails_closed(bad_method):
+    with pytest.raises(ValueError, match="method"):
+        review(tx(), expected_method=bad_method)

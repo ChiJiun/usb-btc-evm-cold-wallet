@@ -67,7 +67,8 @@ def _hash_struct(name: str, fields: list[dict], values: dict) -> bytes:
 
 def review_eip712_intent(
     typed_data: object, *, expected_contract: str, expected_owner: str,
-    expected_counterparty: str, expected_amount: int, expected_nonce: int,
+    expected_primary_type: str, expected_counterparty: str,
+    expected_amount: int, expected_nonce: int,
     expected_deadline: int, trusted_contracts: Collection[str],
     now_timestamp: int, max_validity_seconds: int = MAX_VALIDITY_SECONDS,
 ) -> dict:
@@ -82,6 +83,10 @@ def review_eip712_intent(
     primary = typed_data["primaryType"]
     if type(primary) is not str or primary not in _INTENT_FIELDS:
         raise ValueError("EIP-712 schema is not allowlisted (Permit/Permit2 forbidden)")
+    if type(expected_primary_type) is not str or expected_primary_type not in _INTENT_FIELDS:
+        raise ValueError("Independently approved EIP-712 primary type required")
+    if primary != expected_primary_type:
+        raise ValueError("EIP-712 primary type differs from independently approved intent")
     fields = _INTENT_FIELDS[primary]
     types = typed_data["types"]
     if type(types) is not dict or set(types) != {"EIP712Domain", primary}:

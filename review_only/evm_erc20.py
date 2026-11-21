@@ -1,7 +1,7 @@
 """Fail-closed Sepolia ERC-20 transfer/approve *review*; no signing entry point.
 
-The caller must supply independently verified contract/counterparty/amount and
-maximum fee. No RPC, token metadata, decimals, or online summary is trusted.
+The caller must supply independently verified method/nonce/contract,
+counterparty/amount and maximum fee. No RPC, token metadata, decimals, or online summary is trusted.
 The existing native-only evm.py signer intentionally remains unchanged.
 """
 from __future__ import annotations
@@ -87,6 +87,7 @@ def parse_erc20_calldata(data: object) -> dict:
 def review_erc20_transaction(
     payload: object, *, expected_contract: str,
     expected_counterparty: str, expected_amount: int,
+    expected_method: str, expected_nonce: int,
     trusted_contracts: Collection[str], max_fee_wei: int,
     max_gas: int = MAX_ERC20_GAS,
 ) -> dict:
@@ -110,10 +111,16 @@ def review_erc20_transaction(
     checked_contracts(trusted_contracts, contract)
 
     expected_party = checked_address(expected_counterparty, "expected recipient/spender")
+    if type(expected_method) is not str or expected_method not in ("transfer", "approve"):
+        raise ValueError("Independently approved ERC-20 method required")
     decoded = parse_erc20_calldata(payload["data"])
+    if decoded["method"] != expected_method:
+        raise ValueError("ERC-20 method differs from independently approved intent")
     expected_qty = checked_uint(expected_amount, "expected token amount",
                                 minimum=1 if decoded["method"] == "transfer" else 0)
     nonce = checked_uint(payload["nonce"], "nonce")
+    if nonce != checked_uint(expected_nonce, "independently approved nonce"):
+        raise ValueError("ERC-20 transaction nonce differs from approved session")
     gas = checked_uint(payload["gas"], "gas", minimum=21_000)
     gas_ceiling = checked_uint(max_gas, "independently verified gas limit", minimum=21_000)
     if gas > min(gas_ceiling, MAX_ERC20_GAS):
@@ -155,6 +162,7 @@ def review_erc20_transaction(
 def review_signed_erc20_transaction(
     raw_transaction: str | bytes, *, expected_sender: str,
     expected_contract: str, expected_counterparty: str, expected_amount: int,
+    expected_method: str, expected_nonce: int,
     trusted_contracts: Collection[str], max_fee_wei: int,
     max_gas: int = MAX_ERC20_GAS,
 ) -> dict:
@@ -184,6 +192,7 @@ def review_signed_erc20_transaction(
     reviewed = review_erc20_transaction(
         payload, expected_contract=expected_contract,
         expected_counterparty=expected_counterparty, expected_amount=expected_amount,
+        expected_method=expected_method, expected_nonce=expected_nonce,
         trusted_contracts=trusted_contracts, max_fee_wei=max_fee_wei,
         max_gas=max_gas,
     )

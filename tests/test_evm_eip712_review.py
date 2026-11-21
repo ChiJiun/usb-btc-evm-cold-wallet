@@ -61,6 +61,7 @@ def typed(primary="WalletTransferIntent", value=123, nonce=9):
 def review(data, **overrides):
     options = {
         "expected_contract": CONTRACT, "expected_owner": OWNER,
+        "expected_primary_type": data["primaryType"],
         "expected_counterparty": PARTY, "expected_amount": 123,
         "expected_nonce": 9, "expected_deadline": DEADLINE,
         "trusted_contracts": [CONTRACT], "now_timestamp": NOW,
@@ -154,3 +155,19 @@ def test_reject_genuine_permit2612_schema_and_permit2():
         data["types"][name] = data["types"].pop("WalletTransferIntent")
         with pytest.raises(ValueError, match="schema"):
             review(data)
+
+
+@pytest.mark.parametrize("approved,substituted", [
+    ("WalletTransferIntent", "WalletApprovalIntent"),
+    ("WalletApprovalIntent", "WalletTransferIntent"),
+])
+def test_cross_schema_intent_substitution_denied(approved, substituted):
+    # Same party, amount, nonce and deadline, distinct operation and signing hash.
+    with pytest.raises(ValueError, match="primary type"):
+        review(typed(substituted), expected_primary_type=approved)
+
+
+@pytest.mark.parametrize("untrusted", ["Permit", "", None, True])
+def test_invalid_independently_approved_schema_denied(untrusted):
+    with pytest.raises(ValueError, match="primary type"):
+        review(typed(), expected_primary_type=untrusted)

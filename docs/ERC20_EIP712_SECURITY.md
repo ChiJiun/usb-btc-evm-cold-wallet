@@ -6,10 +6,10 @@
 
 - `review_only/evm_erc20.py`：
   - `parse_erc20_calldata(data)` 只允許 ERC-20 `transfer(address,uint256)` (`0xa9059cbb`) 與 `approve(address,uint256)` (`0x095ea7b3`)；精確長度 68 bytes（4-byte selector + 2 × 32-byte ABI words）。拒絕尾隨資料、動態 ABI、位址欄位非零的前置 12 bytes、非 hex、未知 selector、零地址、零額 transfer 及 unlimited approval（但允許明確核准的 `approve(spender, 0)` 撤銷授權） (`2**256-1`)。
-  - `review_erc20_transaction(...)` 要求 **獨立提供** contract、recipient/spender、amount/allowance、已核准的 token contract allowlist 和最大 Gas 費。只接受 Sepolia `chainId=11155111`、EIP-1559 type 2、`value=0`、空 access list、正整數及上限內的 Gas；從原始 calldata 解碼後逐欄比對，以 `gas * maxFeePerGas` 計算最壞 ETH 手續費。
+  - `review_erc20_transaction(...)` 要求 **獨立提供** `expected_method`（transfer/approve）、`expected_nonce`、contract、recipient/spender、amount/allowance、已核准的 token contract allowlist 和最大 Gas 費。只接受 Sepolia `chainId=11155111`、EIP-1559 type 2、`value=0`、空 access list、正整數及上限內的 Gas；從原始 calldata 解碼後逐欄比對，以 `gas * maxFeePerGas` 計算最壞 ETH 手續費。
   - `review_signed_erc20_transaction(...)` 另針對**已取得的** signed type-2 raw tx 做大小限制、獨立 RLP 解碼、同一政策回驗和簽署者地址還原；不會建立或核准簽章。
 - `review_only/evm_eip712.py`：
-  - `review_eip712_intent(...)` 只核對本專案明確定義的 **`WalletTransferIntent`**、**`WalletApprovalIntent`** 兩種 flat schema。兩者皆有 `owner`、`token`、`nonce`、`deadline`，前者有 `recipient/amount`，後者有 `spender/allowance`。
+  - `review_eip712_intent(...)` 強制獨立提供 `expected_primary_type` 防止 transfer/approval 意圖置換，只核對本專案明確定義的 **`WalletTransferIntent`**、**`WalletApprovalIntent`** 兩種 flat schema。兩者皆有 `owner`、`token`、`nonce`、`deadline`，前者有 `recipient/amount`，後者有 `spender/allowance`。
   - 只接受 domain `EIP712Domain(name,version,chainId,verifyingContract)`，其中 name=`USB Cold Wallet Intent`、version=`1`、chainId=`11155111`；verifyingContract 必須與 independently approved contract/allowlist 相符，且 token 地址需與它一致。
   - 所有欄位及 ABI 類型的**集合與順序**都要與 schema 完全一致。拒絕 `Permit`、`PermitSingle`、`PermitBatch`、Permit2、未知 domain/typed fields、嵌套型別、額外欄位、跨鏈與錯帳戶。
   - 使用外部可信的 `expected_nonce`、`expected_deadline` 和 `now_timestamp`，拒絕 stale nonce、逾期或超過 7 日期限；回傳 EIP-712 domain separator、struct hash 及 digest 作為**檢查結果**，不提供簽章 API。
