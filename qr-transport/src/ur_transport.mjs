@@ -258,3 +258,5 @@ export class BoundedURScanner {
     }
   }
 }
+
+// Temporary CI scope-only regression probe; do not merge.
