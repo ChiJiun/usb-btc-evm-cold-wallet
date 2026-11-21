@@ -1,5 +1,9 @@
 """Offline wheel build gate: connected network code must never ship to the signer."""
 from pathlib import Path
+import importlib.util
+import os
+import subprocess
+import sys
 import zipfile
 
 import pytest
@@ -67,6 +71,36 @@ def test_offline_build_does_not_overwrite_combined_wheel(tmp_path):
     _mock_combined_wheel(source)
     with pytest.raises(ValueError, match="overwrite"):
         build_offline_wheel(source, tmp_path)
+
+
+def test_real_project_offline_wheel_install_contains_no_online_code(tmp_path):
+    """CI must build the actual distribution, strip it and install offline-only."""
+    if importlib.util.find_spec("build") is None:
+        if os.environ.get("CI") == "true":
+            pytest.fail("CI must install pinned Python build tooling")
+        pytest.skip("Local developer environment lacks the build tool")
+    project = Path(__file__).resolve().parents[1]
+    dist = tmp_path / "combined"
+    dist.mkdir()
+    subprocess.run([
+        sys.executable, "-m", "build", "--no-isolation", "--wheel",
+        "--outdir", str(dist), str(project),
+    ], cwd=project, check=True, timeout=90, capture_output=True, text=True)
+    source = list(dist.glob("*.whl"))
+    assert len(source) == 1
+    offline = build_offline_wheel(source[0], tmp_path / "offline")
+    installed = tmp_path / "installed"
+    subprocess.run([
+        sys.executable, "-m", "pip", "install", "--no-deps",
+        "--target", str(installed), str(offline),
+    ], check=True, timeout=90, capture_output=True, text=True)
+    assert (installed / "usb_cold_wallet/cli.py").is_file()
+    assert (installed / "bin/usb-cold-wallet").exists()
+    assert not (installed / "usb_cold_wallet/companion_core.py").exists()
+    assert not (installed / "usb_cold_wallet/companion_btc.py").exists()
+    assert not (installed / "usb_cold_wallet/companion_web.py").exists()
+    assert not (installed / "usb_cold_wallet/companion_static").exists()
+    assert not (installed / "bin/usb-cold-companion").exists()
 
 
 def test_offline_wheel_detects_tampered_record(tmp_path):
