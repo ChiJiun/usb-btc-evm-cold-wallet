@@ -134,7 +134,7 @@ transaction and should never accept an old response after account/state reset.
   type-2 fail-closed validation, v1 #18 QR envelope, signed raw transaction
   binding and recovery, replay/cancel/timeout guards, zh-TW Companion UI.
 - **Snap and browser bundles build:** MetaMask Snaps CLI SES eval succeeds;
-  19 automated adversarial/recovery tests and TypeScript typecheck pass locally; dedicated CI results must be checked on the latest commit.
+  20 automated adversarial/recovery tests and TypeScript typecheck pass locally; dedicated CI results must be checked on the latest commit. Production Companion Chromium tests are additionally required in Snap CI.
 - **Not yet verified:** installation into a compatible real MetaMask client,
   full MetaMask native account selection and transaction/broadcast lifecycle,
   physical dual-machine camera/QR workflow, RPC failure/reorg handling at
@@ -166,6 +166,6 @@ MetaMask install and air-gapped integration test.
 
 1. **重送相同事件**：手動重新發送原本持久化的核准／拒絕事件，不重新簽章，也不重新解碼一個新的 QR 回覆。MetaMask 可能已收到前一次事件，因此重送可能是重複通知；不做背景自動重試。
 2. **確認後清除**：只有在已確認 MetaMask 中該筆請求**完成或已取消**，才用此功能清除不確定的 outbox 狀態。保留 closed request ID 的重播保護，不會廣播或簽署交易。
-3. 在 event 狀態未處理前，新交易繼續 fail closed；恢復完成後才可發起新 request。MetaMask 事件 API 與 Snap 持久化之間無共同原子交易，因此**無法保證精確一次通知**。
+3. 在 event 狀態未處理前，新交易繼續 fail closed；恢復完成後才可發起新 request。普通 `keyring_approveRequest` 與 `keyring_rejectRequest` 不得對已持久化的終止事件再次 emit；一律使用明確的恢復介面。MetaMask 事件 API 與 Snap 持久化之間無共同原子交易，因此**無法保證精確一次通知**。
 
 已加入持久化失敗、事件傳送失敗、Snap 重啟後重送及「已送出但最終儲存失敗」情境的故障注入測試。建立／刪除帳戶也使用持久化通知 outbox：先儲存新的帳戶集合與固定的 AccountCreated/AccountDeleted 事件，再標記 attempted、發送通知並清除。save/emit/清理失敗可於 Snap 重啟後在 Companion「帳戶通知失敗恢復」頁面手動重送，或核對 MetaMask 帳戶集合後清除；不自動重試，仍無法保證 exactly-once。已加入故障注入與重啟測試。此工作仍是 **Draft POC**，實體 MetaMask 擴充功能完整 E2E 尚未驗收。

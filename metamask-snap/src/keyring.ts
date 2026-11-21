@@ -247,8 +247,9 @@ export class ColdKeyring implements Keyring {
           sha256(toUtf8Bytes(data.responseJson)) !== entry.terminal.responseDigest)) {
         throw new Error('Different signed QR response cannot replace persisted approval');
       }
-      await this.deliverTerminal(id);
-      return;
+      // MetaMask may have received the first event before an interrupted cleanup.
+      // A normal keyring RPC must never silently re-emit an ambiguous event.
+      throw new Error('Approval delivery is uncertain; use explicit terminal recovery');
     }
     if (entry.pending.status !== 'pending') throw new Error('Unknown or closed cold request');
     if (!data || Object.keys(data).length !== 1 || typeof data.responseJson !== 'string') {
@@ -274,8 +275,7 @@ export class ColdKeyring implements Keyring {
     if (!entry) throw new Error('Unknown or closed cold request');
     if (entry.pending.status === 'rejected') {
       if (entry.terminal?.kind !== 'rejected') throw new Error('Invalid terminal rejection');
-      await this.deliverTerminal(id);
-      return;
+      throw new Error('Rejection delivery is uncertain; use explicit terminal recovery');
     }
     if (entry.pending.status !== 'pending') throw new Error('Cannot reject a persisted approval');
     await this.persist({

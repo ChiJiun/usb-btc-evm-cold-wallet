@@ -289,7 +289,10 @@ test('rejected terminal event survives transport failure and resumes without a s
   assert.deepEqual(keyring.listTerminalEvents(), [{id:'mm-1',kind:'rejected',attempted:true}]);
   await assert.rejects(() => keyring.approveRequest('mm-1'), /closed/);
   keyring = h.open();
-  await keyring.rejectRequest('mm-1');
+  const count = h.events.length;
+  await assert.rejects(() => keyring.rejectRequest('mm-1'), /explicit terminal recovery/);
+  assert.equal(h.events.length, count, 'ordinary rejection must not resend an uncertain event');
+  await keyring.recoverTerminal('mm-1', 'retry');
   assert.equal(h.events.at(-1)?.event, 'notify:requestRejected');
   assert.equal(h.snapshot().requests['mm-1'], undefined);
   assert.equal((await keyring.submitRequest(request(account.id,'mm-2'))).pending,true);
@@ -323,6 +326,10 @@ test('emit succeeded but final save failed: restart requires explicit retry or a
   assert.deepEqual(h.snapshot().requests['mm-1'].terminal?.attempted,true);
   keyring = h.open();
   assert.deepEqual(keyring.listTerminalEvents(), [{id:'mm-1',kind:'approved',attempted:true}]);
+  const emitted = h.events.length;
+  await assert.rejects(() => keyring.approveRequest('mm-1'), /explicit terminal recovery/);
+  await assert.rejects(() => keyring.approveRequest('mm-1', {responseJson:response}), /explicit terminal recovery/);
+  assert.equal(h.events.length, emitted, 'ordinary approval must never re-emit');
   // User first verifies MetaMask already completed or cancels the pending
   // request there, then explicitly abandons the uncertain delivery.
   await keyring.recoverTerminal('mm-1','abandon');

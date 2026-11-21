@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "build": "mm-snap build",
     "build:companion": "vite build --config vite.config.mjs",
+    "test:browser": "node --test tests/companion-browser.test.mjs",
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {
@@ -23,6 +24,7 @@
   "devDependencies": {
     "@metamask/snaps-cli": "8.4.1",
     "@types/node": "22.15.30",
+    "playwright": "1.65.1",
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "vite": "7.3.8"
