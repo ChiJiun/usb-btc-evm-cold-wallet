@@ -212,3 +212,122 @@ test('persistent request sequence rejects invalid or exhausted state before allo
   await assert.rejects(() => keyring.submitRequest(request(account.id)), /exhausted/);
   assert.deepEqual(state.requests, {});
 });
+
+
+function persistentSnapHarness() {
+  let disk: State = freshState();
+  let failNextEmit = false;
+  let failNextCleanupSave = false;
+  let failNextTerminalSave = false;
+  const events: Array<{event:string;data:Record<string, unknown>}> = [];
+  const open = () => new ColdKeyring(
+    structuredClone(disk),
+    async (next) => {
+      const record = next.requests['mm-1'];
+      if (failNextTerminalSave && record?.terminal && !disk.requests['mm-1']?.terminal) {
+        failNextTerminalSave = false;
+        throw Error('simulated terminal persistence failure');
+      }
+      if (failNextCleanupSave && !record && disk.requests['mm-1']?.terminal?.attempted) {
+        failNextCleanupSave = false;
+        throw Error('simulated post-emit persistence failure');
+      }
+      disk = structuredClone(next);
+    },
+    async (event, data) => {
+      if (failNextEmit) {
+        failNextEmit = false;
+        throw Error('simulated MetaMask event transport failure');
+      }
+      events.push({event, data});
+    },
+    () => 1000,
+  );
+  return {
+    open, events, snapshot:() => disk,
+    failEmit:() => {failNextEmit = true;},
+    failCleanup:() => {failNextCleanupSave = true;},
+    failTerminalSave:() => {failNextTerminalSave = true;},
+  };
+}
+
+test('approved terminal event is persisted and explicitly recoverable after emit failure/restart', async () => {
+  const h = persistentSnapHarness();
+  let keyring = h.open();
+  const account = await keyring.createAccount({address:wallet.address});
+  await keyring.submitRequest(request(account.id));
+  const response = await responseFor(h.snapshot().requests['mm-1'].pending);
+  h.failEmit();
+  await assert.rejects(() => keyring.approveRequest('mm-1', {responseJson:response}), /event transport failure/);
+  assert.equal(h.snapshot().requests['mm-1'].pending.status, 'approving');
+  assert.equal(h.snapshot().requests['mm-1'].terminal?.kind, 'approved');
+  assert.deepEqual(keyring.listTerminalEvents(), [{id:'mm-1',kind:'approved',attempted:true}]);
+  assert.deepEqual(await keyring.listRequests(), []);
+  await assert.rejects(() => keyring.submitRequest(request(account.id,'mm-2')), /existing/);
+  await assert.rejects(
+    () => keyring.approveRequest('mm-1', {responseJson:response + ' '}),
+    /Different signed QR response/,
+  );
+  await assert.rejects(() => keyring.rejectRequest('mm-1'), /Cannot reject a persisted approval/);
+  keyring = h.open();  // Simulated Snap process restart reloads the durable state.
+  await keyring.recoverTerminal('mm-1', 'retry');
+  assert.equal(h.snapshot().requests['mm-1'], undefined);
+  assert.equal(h.events.at(-1)?.event, 'notify:requestApproved');
+  assert.equal(h.events.filter((e) => e.event === 'notify:requestApproved').length, 1);
+  await assert.rejects(() => keyring.submitRequest(request(account.id)), /replayed/);
+  assert.equal((await keyring.submitRequest(request(account.id,'mm-2'))).pending,true);
+});
+
+test('rejected terminal event survives transport failure and resumes without a signature', async () => {
+  const h = persistentSnapHarness();
+  let keyring = h.open();
+  const account = await keyring.createAccount({address:wallet.address});
+  await keyring.submitRequest(request(account.id));
+  h.failEmit();
+  await assert.rejects(() => keyring.rejectRequest('mm-1'), /event transport failure/);
+  assert.equal(h.snapshot().requests['mm-1'].pending.status, 'rejected');
+  assert.deepEqual(keyring.listTerminalEvents(), [{id:'mm-1',kind:'rejected',attempted:true}]);
+  await assert.rejects(() => keyring.approveRequest('mm-1'), /closed/);
+  keyring = h.open();
+  await keyring.rejectRequest('mm-1');
+  assert.equal(h.events.at(-1)?.event, 'notify:requestRejected');
+  assert.equal(h.snapshot().requests['mm-1'], undefined);
+  assert.equal((await keyring.submitRequest(request(account.id,'mm-2'))).pending,true);
+});
+
+test('save-before-emit failure never creates a ghost terminal or notifies MetaMask', async () => {
+  const h = persistentSnapHarness();
+  const keyring = h.open();
+  const account = await keyring.createAccount({address:wallet.address});
+  await keyring.submitRequest(request(account.id));
+  const response = await responseFor(h.snapshot().requests['mm-1'].pending);
+  const priorEventCount = h.events.length;
+  h.failTerminalSave();
+  await assert.rejects(() => keyring.approveRequest('mm-1',{responseJson:response}), /terminal persistence failure/);
+  assert.equal(h.snapshot().requests['mm-1'].pending.status, 'pending');
+  assert.equal(keyring.listTerminalEvents().length, 0);
+  assert.equal(h.events.length, priorEventCount);
+  await keyring.approveRequest('mm-1',{responseJson:response});
+  assert.equal(h.snapshot().requests['mm-1'], undefined);
+});
+
+test('emit succeeded but final save failed: restart requires explicit retry or abandon', async () => {
+  const h = persistentSnapHarness();
+  let keyring = h.open();
+  const account = await keyring.createAccount({address:wallet.address});
+  await keyring.submitRequest(request(account.id));
+  const response = await responseFor(h.snapshot().requests['mm-1'].pending);
+  h.failCleanup();
+  await assert.rejects(() => keyring.approveRequest('mm-1',{responseJson:response}), /post-emit persistence failure/);
+  assert.equal(h.events.filter((e) => e.event === 'notify:requestApproved').length,1);
+  assert.deepEqual(h.snapshot().requests['mm-1'].terminal?.attempted,true);
+  keyring = h.open();
+  assert.deepEqual(keyring.listTerminalEvents(), [{id:'mm-1',kind:'approved',attempted:true}]);
+  // User first verifies MetaMask already completed or cancels the pending
+  // request there, then explicitly abandons the uncertain delivery.
+  await keyring.recoverTerminal('mm-1','abandon');
+  assert.equal(h.events.filter((e) => e.event === 'notify:requestApproved').length,1);
+  assert.equal(h.snapshot().requests['mm-1'],undefined);
+  await assert.rejects(() => keyring.submitRequest(request(account.id)),/replayed/);
+  await assert.rejects(() => keyring.recoverTerminal('mm-1','retry'),/Unknown terminal/);
+});
