@@ -436,9 +436,10 @@ class CrossBootManager:
 
     def _load_request(self, request_id: str, expected_account: str | None = None):
         data = _read_json(self._request_path(request_id))
-        return _verify_request_public(
+        _verify_request_public(
             data, expected_account=expected_account, allow_no_trusted_clock=True
         )
+        return data
 
     def _request_from_pending(self, session, btc_session):
         if session.pending is not None and btc_session.pending is not None:
