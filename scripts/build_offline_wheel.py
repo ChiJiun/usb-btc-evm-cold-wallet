@@ -21,6 +21,7 @@ ALLOWED_OFFLINE_MODULES = frozenset({
     "__init__.py", "btc.py", "cli.py", "evm.py", "exchange.py",
     "keys.py", "recovery.py", "vault.py", "policy.py", "gui.py", "review.py",
     "signer_session.py", "qr_session.py", "qr_workflow.py", "qr_cli.py",
+    "gui_qr_bridge.py",
 })
 ONLINE_MODULES = frozenset({"companion_core.py", "companion_btc.py", "companion_web.py"})
 ONLINE_ENTRY = re.compile(r"^\s*usb-cold-companion\s*=", re.MULTILINE)
