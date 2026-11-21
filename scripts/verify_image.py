@@ -23,7 +23,7 @@ VAULT_SECTORS = 64 * 1024 * 1024 // SECTOR
 TRANSFER_SECTORS = 512 * 1024 * 1024 // SECTOR
 
 
-def _fat_label(data: bytes, first_lba: int) -> str:
+def _fat_label(data: bytes, first_lba: int, *, require_fat32: bool = False) -> str:
     sector = data[first_lba * SECTOR:(first_lba + 1) * SECTOR]
     if len(sector) != SECTOR or sector[510:512] != b"\x55\xaa":
         raise SystemExit("FAT boot sector missing")
@@ -32,6 +32,8 @@ def _fat_label(data: bytes, first_lba: int) -> str:
     fat_type = sector[82:90] if sector[82:90] == b"FAT32   " else sector[54:62]
     if fat_type not in (b"FAT12   ", b"FAT16   ", b"FAT32   "):
         raise SystemExit("unsupported FAT filesystem")
+    if require_fat32 and fat_type != b"FAT32   ":
+        raise SystemExit("TX_TRANSFER must be FAT32")
     raw = sector[71:82] if fat_type == b"FAT32   " else sector[43:54]
     return raw.decode("ascii").rstrip(" ")
 
@@ -112,7 +114,7 @@ def main() -> int:
             raise SystemExit(f"{label} has unexpected fixed size")
         if not (1 < part[2] <= part[3] < len(data) // SECTOR - 1):
             raise SystemExit(f"{label} extends beyond the image/GPT usable area")
-        if _fat_label(data, part[2]) != label:
+        if _fat_label(data, part[2], require_fat32=label == "TX_TRANSFER") != label:
             raise SystemExit(f"{label} FAT volume label mismatch")
 
     if not (boot[4] & GPT_READ_ONLY):
