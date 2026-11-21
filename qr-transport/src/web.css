@@ -1,0 +1,13 @@
+:root { color-scheme: dark; font-family: system-ui, "Noto Sans TC", sans-serif; background: #111827; color: #f3f4f6; line-height: 1.5; }
+body { margin: 0; } main { max-width: 900px; margin: auto; padding: 2rem 1rem; }
+h1 { font-size: 1.6rem; } h2 { font-size: 1.15rem; }
+small { font-size: .65rem; color: #fbbf24; }
+section { padding: 1.2rem; margin: 1.25rem 0; border: 1px solid #475569; border-radius: 12px; background: #1e293b; }
+.warning { border-left: 4px solid #f59e0b; padding: .8rem 1rem; background: #312e20; }
+button, input { margin: .4rem; padding: .5rem .75rem; font: inherit; }
+button { background: #2563eb; color: white; border: 0; border-radius: 6px; cursor: pointer; }
+button:disabled { background: #4b5563; cursor: not-allowed; }
+#qrCanvas { display: block; max-width: 100%; margin: 1rem auto; background: white; }
+#preview { display: block; width: min(100%, 460px); min-height: 130px; margin: 1rem 0; background: #020617; }
+progress { width: 60%; margin: 0 .6rem; accent-color: #22c55e; }
+#status { min-height: 3rem; padding: .8rem; color: #a7f3d0; }
