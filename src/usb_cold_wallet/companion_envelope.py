@@ -42,10 +42,55 @@ def _public(value, depth=0):
         raise ValueError("Invalid public exchange value")
 
 
+def _validate_payload(kind, payload):
+    """Validate public wire schema; final signed-byte verification is caller-owned."""
+    if kind == "evm-request":
+        required = {"type", "chainId", "nonce", "to", "value", "gas",
+                    "maxFeePerGas", "maxPriorityFeePerGas"}
+        if (type(payload) is not dict or
+                not required <= payload.keys() or
+                payload.keys() - required - {"data", "accessList"}):
+            raise ValueError("Unexpected EVM request fields")
+        ints = ("type", "chainId", "nonce", "value", "gas", "maxFeePerGas", "maxPriorityFeePerGas")
+        if any(type(payload[k]) is not int for k in ints):
+            raise ValueError("Invalid EVM request quantity")
+        if (payload["type"] != 2 or payload["chainId"] != 11155111 or
+                not 0 <= payload["nonce"] <= 2**53 - 1 or
+                not 1 <= payload["value"] < 2**256 or
+                payload["gas"] != 21000 or
+                not 1 <= payload["maxFeePerGas"] <= 1_000_000_000_000 or
+                not 0 <= payload["maxPriorityFeePerGas"] <= payload["maxFeePerGas"] or
+                payload.get("data", "0x") not in ("0x", "") or
+                payload.get("accessList", []) != []):
+            raise ValueError("Invalid Sepolia EVM request")
+        import re
+        from eth_utils import to_checksum_address
+        address = payload["to"]
+        if (type(address) is not str or
+                not re.fullmatch(r"0x[0-9a-fA-F]{40}", address) or
+                address != to_checksum_address(address)):
+            raise ValueError("EVM recipient must be checksummed")
+    elif kind == "btc-request":
+        if type(payload) is not str or not 0 < len(payload) <= 180_000:
+            raise ValueError("Invalid BTC PSBT request")
+        import base64
+        import binascii
+        try:
+            raw = base64.b64decode(payload, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ValueError("Invalid BTC PSBT base64") from exc
+        if not raw.startswith(b"psbt\\xff") or len(raw) > 130_000:
+            raise ValueError("Invalid BTC PSBT framing")
+    elif kind in ("evm-signed", "btc-signed", "watch-only"):
+        if type(payload) is not dict:
+            raise ValueError("Invalid signed/public exchange fields")
+
+
 def package(kind, payload):
     if type(kind) is not str or kind not in NETWORKS:
         raise ValueError("Unknown exchange kind")
     _public(payload)
+    _validate_payload(kind, payload)
     content = {"format": FORMAT, "version": VERSION, "kind": kind,
                "network": NETWORKS[kind], "payload": payload}
     encoded = _canonical(content)
