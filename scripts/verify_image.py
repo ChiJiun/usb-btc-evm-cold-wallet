@@ -119,8 +119,8 @@ def main() -> int:
 
     if not (boot[4] & GPT_READ_ONLY):
         raise SystemExit("boot partition is not marked GPT read-only")
-    if vault[4] & GPT_READ_ONLY or transfer[4] & GPT_READ_ONLY:
-        raise SystemExit("vault/transfer partition unexpectedly marked read-only")
+    if vault[4] != 0 or transfer[4] != 0:
+        raise SystemExit("vault/transfer partition has unexpected GPT attributes (hidden/no-drive-letter/read-only)")
     if boot[3] >= vault[2] or vault[3] >= transfer[2]:
         raise SystemExit("GPT partitions overlap or are out of order")
 
