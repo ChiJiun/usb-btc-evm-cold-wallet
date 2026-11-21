@@ -7,17 +7,23 @@ base. All transaction semantics come from :mod:`usb_cold_wallet.review`.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
 import re
+import resource
+import stat
 import sys
 import time
 from typing import Callable
 
+from .exchange import read_bounded, verify, _unique_object, MAX_BYTES
 from .keys import btc_address, evm_account, root_from_mnemonic
-from .review import (ReviewPlan, ReviewSession, load_review_file,
-                     load_review_qr, review_policy_decision)
+from .review import (ReviewPlan, ReviewSession, build_review_plan, load_review_qr,
+                     review_policy_decision)
+from .signer_session import SignerSession, State, DEFAULT_IDLE_SECONDS
 from .policy import read_policy_snapshot, load_policy_snapshot
 from .vault import load_vault
 
@@ -25,7 +31,10 @@ DEFAULT_VAULT = Path("/mnt/cold-vault/wallet.vault")
 DEFAULT_TRANSFER = Path("/mnt/transfer")
 BOOT_CHECKS = Path("/run/usb-wallet/boot-checks.txt")
 LOCKDOWN = Path("/run/usb-wallet/lockdown")
-IDLE_SECONDS = 120
+MOUNTINFO = Path("/proc/self/mountinfo")
+VAULT_DEVICE = Path("/run/usb-wallet/vault-device")
+SYS_DEV_BLOCK = Path("/sys/dev/block")
+IDLE_SECONDS = DEFAULT_IDLE_SECONDS
 PUBLIC_TEST_EVM = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
 PUBLIC_TEST_BTC = "tb1q6rz28mcfaxtmd6v789l9rrlrusdprr9pqcpvkl"
 
@@ -51,7 +60,7 @@ _TEXT = {
         "ack": "I verified every value on this page on the trusted offline display.",
         "source": "Source",
         "challenge": "Type this exact challenge; Enter never signs:",
-        "signed": "Signed successfully; wallet key material is now locked.",
+        "signed": "Signed. Short attended session remains unlocked for a limited number of transactions. Lock now when finished.",
         "export": "Export signed response to USB-B",
         "signed_qr": "Show signed QR",
         "qr_output_unavailable": "Signed QR presentation requires the #18 QR adapter.",
@@ -86,7 +95,7 @@ _TEXT = {
         "ack": "我已在可信任的離線畫面逐項核對本頁所有資料。",
         "source": "資料來源",
         "challenge": "請完整輸入以下確認字串；按 Enter 永遠不會簽章：",
-        "signed": "簽章完成；錢包金鑰資料已立即鎖定。",
+        "signed": "簽章完成；短暫在場工作階段仍可能解鎖以處理下一筆。完成後請立即鎖定。",
         "export": "將已簽回覆匯出至 USB-B",
         "signed_qr": "顯示已簽 QR",
         "qr_output_unavailable": "顯示已簽 QR 需等待 #18 QR adapter 整合。",
@@ -185,11 +194,108 @@ class CameraUnavailable(RuntimeError):
     pass
 
 
+def _decode_envelope_text(text: str, kind: str | None):
+    """Validate hostile USB/QR JSON without the wallet root or vault unlock."""
+    if type(text) is not str:
+        raise ValueError("Exchange payload must be UTF-8 text")
+    try:
+        if len(text.encode("utf-8")) > MAX_BYTES + 8192:
+            raise ValueError("Exchange payload too large")
+        envelope = json.loads(
+            text, object_pairs_hook=_unique_object,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError("Non-finite JSON value: " + value)))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid exchange JSON") from exc
+    verify(envelope, kind)
+    return envelope
+
+
 def _is_public_test_root(root) -> bool:
     try:
         return evm_account(root).address == PUBLIC_TEST_EVM and btc_address(root, 0, 0) == PUBLIC_TEST_BTC
     except Exception:
         return False
+
+
+def _mounted_disk(mount: dict, sys_dev_block: Path) -> Path | None:
+    """Resolve mountinfo major:minor to the real disk, not just its /dev path."""
+    try:
+        disk_device = (sys_dev_block / mount["device"]).resolve(strict=True)
+        if disk_device.name != Path(mount["source"]).name:
+            return None
+        return disk_device.parent if (disk_device / "partition").is_file() else disk_device
+    except (OSError, ValueError):
+        return None
+
+
+def _current_mount_evidence(
+    mountinfo: Path, vault_device: Path, sys_dev_block: Path = SYS_DEV_BLOCK
+) -> list[str]:
+    """Revalidate current kernel mount identities; boot PASS lines are historical."""
+    try:
+        source_expected = vault_device.read_text(encoding="ascii").strip()
+        if not re.fullmatch(r"/dev/[A-Za-z0-9._/-]{2,80}", source_expected):
+            raise ValueError("Invalid verified vault device identity")
+        lines = mountinfo.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError, ValueError):
+        return ["FAIL: live mountinfo or verified vault device identity unavailable"]
+
+    mounts = []
+    for line in lines:
+        try:
+            left, right = line.split(" - ", 1)
+            left_cols, right_cols = left.split(), right.split()
+            if len(left_cols) < 6 or len(right_cols) < 3:
+                raise ValueError("Malformed mountinfo")
+            mounts.append({
+                "device": left_cols[2],
+                "target": left_cols[4], "options": set(left_cols[5].split(",")),
+                "type": right_cols[0], "source": right_cols[1],
+                "super": set(right_cols[2].split(",")),
+            })
+        except (IndexError, ValueError):
+            return ["FAIL: malformed live mountinfo"]
+
+    findings = []
+    root = [m for m in mounts if m["target"] == "/"]
+    vault = [m for m in mounts if m["target"] == "/mnt/cold-vault"]
+    transfer = [m for m in mounts if m["target"] == "/mnt/transfer"]
+    if len(root) != 1 or root[0]["type"] not in ("rootfs", "tmpfs"):
+        findings.append("FAIL: live root filesystem is not uniquely RAM-backed")
+    else:
+        findings.append("PASS: live RAM-backed root")
+    required = {"rw", "nodev", "nosuid", "noexec", "sync"}
+    vault_disk = _mounted_disk(vault[0], sys_dev_block) if len(vault) == 1 else None
+    if (len(vault) != 1 or vault[0]["type"] != "vfat"
+            or vault[0]["source"] != source_expected or vault_disk is None
+            or not required <= (vault[0]["options"] | vault[0]["super"])):
+        findings.append("FAIL: live COLD_VAULT source, type or mount options changed")
+    else:
+        findings.append("PASS: live COLD_VAULT verified device and mount flags")
+
+    # TX_TRANSFER is mounted only during imports/exports. If present, require
+    # separate media and restrictive flags; it must not replace the vault.
+    if transfer:
+        transfer_disk = _mounted_disk(transfer[0], sys_dev_block) if len(transfer) == 1 else None
+        if (len(transfer) != 1 or transfer[0]["type"] != "vfat"
+                or transfer_disk is None or vault_disk is None
+                or transfer_disk == vault_disk
+                or not required <= (transfer[0]["options"] | transfer[0]["super"])):
+            findings.append("FAIL: live TX_TRANSFER must be a separate physical disk with safe flags")
+    safe_pseudo = {
+        "rootfs", "tmpfs", "proc", "sysfs", "devtmpfs", "devpts",
+        "cgroup2", "pstore", "tracefs",
+    }
+    for mounted in mounts:
+        options = mounted["options"] | mounted["super"]
+        if ("rw" in options and mounted["type"] not in safe_pseudo
+                and mounted["target"] not in ("/mnt/cold-vault", "/mnt/transfer")):
+            findings.append("FAIL: unexpected live writable persistent mount")
+            break
+    if not any(x.startswith("FAIL:") for x in findings):
+        findings.append("PASS: no unexpected writable persistent filesystem mounted now")
+    return findings
 
 
 def runtime_audit(
@@ -198,8 +304,11 @@ def runtime_audit(
     lockdown: Path = LOCKDOWN,
     proc_net: Path = Path("/proc/net"),
     proc_swaps: Path = Path("/proc/swaps"),
+    proc_mountinfo: Path = MOUNTINFO,
+    vault_device: Path = VAULT_DEVICE,
+    sys_dev_block: Path = SYS_DEV_BLOCK,
 ) -> tuple[bool, tuple[str, ...]]:
-    """Re-check the trusted boot result before the GUI can unlock the vault."""
+    """Check historical boot evidence AND live kernel state before every unlock/sign."""
     findings: list[str] = []
     if lockdown.exists():
         findings.append("FAIL: offline lockdown marker exists")
@@ -213,17 +322,14 @@ def runtime_audit(
         findings.append("FAIL: boot security audit contained no checks")
     else:
         findings.extend(checks)
-        required = (
+        required_boot = (
             ("network isolation", ("network stack absent", "/proc/net absent")),
             ("no active swap", ("no active swap",)),
             ("RAM-backed root", ("root filesystem is RAM-backed",)),
             ("COLD_VAULT mount", ("COLD_VAULT mounted",)),
-            (
-                "no unexpected writable persistent filesystem",
-                ("no unexpected writable persistent filesystem",),
-            ),
+            ("no unexpected writable persistent filesystem", ("no unexpected writable persistent filesystem",)),
         )
-        for name, markers in required:
+        for name, markers in required_boot:
             if not any(
                 line.startswith("PASS:") and any(marker in line for marker in markers)
                 for line in checks
@@ -238,6 +344,7 @@ def runtime_audit(
         findings.append("PASS: no active swap" if len(swaps) <= 1 else "FAIL: active swap detected")
     except OSError:
         findings.append("FAIL: unable to inspect swap")
+    findings.extend(_current_mount_evidence(proc_mountinfo, vault_device, sys_dev_block))
     ok = bool(findings) and not any(line.startswith("FAIL:") for line in findings)
     return ok, tuple(findings)
 
@@ -328,8 +435,16 @@ class OfflineReviewApp:
         self.root.bind_all("<Any-Button>", self._activity, add="+")
 
         self.wallet_root = None
+        self._active_usb_file = None
+        self._active_usb_identity = None
+        self._active_usb_digest = None
         self.policy_profile = None
         self.last_activity = time.monotonic()
+        self.security = SignerSession(
+            audit=lambda: self.development_mode or (self.audit_ok and runtime_audit()[0]),
+            on_lock=self._drop_wallet_references,
+            idle_seconds=idle_seconds,
+        )
         self.selected_kind: str | None = None
         self.session: ReviewSession | None = None
         self.page_index = 0
@@ -339,7 +454,14 @@ class OfflineReviewApp:
         self.container = ttk.Frame(self.root, padding=16)
         self.container.pack(fill="both", expand=True)
         self._render_home()
+        self.root.after_idle(self._mark_locked_ready)
         self.root.after(1000, self._idle_tick)
+
+    def _mark_locked_ready(self) -> None:
+        """Kernel-to-locked-GUI metric only; not a power-on benchmark."""
+        if self.security.state == State.LOCKED and hasattr(time, "CLOCK_BOOTTIME"):
+            elapsed_ms = round(time.clock_gettime(time.CLOCK_BOOTTIME) * 1000)
+            print(f"READY locked_gui kernel_boot_elapsed_ms={elapsed_ms}", flush=True)
 
     def t(self, key: str) -> str:
         return _TEXT[self.language][key]
@@ -349,19 +471,46 @@ class OfflineReviewApp:
 
     def _activity(self, _event=None):
         self.last_activity = time.monotonic()
+        if self.security.state in (State.REVIEWING, State.APPROVED, State.SIGNED):
+            try:
+                self.security.activity()
+            except ValueError:
+                self._lock_wallet(self.t("idle"))
+                self._render_home()
 
     def _idle_tick(self):
-        if self.wallet_root is not None and time.monotonic() - self.last_activity >= self.idle_seconds:
+        if self.security.tick() or not self._transport_available():
             self._lock_wallet(self.t("idle"))
             self._render_home()
         self.root.after(1000, self._idle_tick)
 
-    def _callback_exception(self, _exc_type, _exc, _traceback):
-        signed = bool(self.session and self.session.signed)
+    def _transport_available(self) -> bool:
+        if self._active_usb_file is None:
+            return True
+        try:
+            info = self._active_usb_file.lstat()
+            if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != self._active_usb_identity:
+                return False
+            if self._active_usb_digest is None:
+                return False
+            raw = read_bounded(self._active_usb_file)
+            return hmac.compare_digest(hashlib.sha256(raw).digest(), self._active_usb_digest)
+        except (OSError, ValueError):
+            return False
+
+    def _drop_wallet_references(self):
         self.wallet_root = None
-        if self.session and not signed:
+        self.policy_profile = None
+        self._active_usb_file = None
+        self._active_usb_identity = None
+        self._active_usb_digest = None
+        if self.session and not self.session.signed:
             self.session.cancel()
             self.session = None
+
+    def _callback_exception(self, _exc_type, _exc, _traceback):
+        signed = bool(self.session and self.session.signed)
+        self.security.lock("ui_exception")
         self.status_message = self.t("locked")
         self.messagebox.showerror(
             self.t("error"),
@@ -386,6 +535,8 @@ class OfflineReviewApp:
         ttk.Label(parent, text=self.t("testnet"), anchor="center").pack(fill="x", pady=(0, 6))
         if self.development_mode:
             ttk.Label(parent, text=self.t("dev"), anchor="center").pack(fill="x", pady=(0, 6))
+        if self.security.unlocked:
+            ttk.Label(parent, text=f"{self.security.state.value} · signed {self.security.transaction_count}/{self.security.max_transactions} · idle lock {self.idle_seconds}s", anchor="center").pack(fill="x", pady=(0, 6))
 
     def _language_buttons(self, parent):
         row = self.ttk.Frame(parent)
@@ -419,6 +570,9 @@ class OfflineReviewApp:
                 self.ttk.Label(self.container, text=line, wraplength=780).pack(fill="x")
             return
         self.ttk.Label(self.container, text=self.t("choose"), font=("", 15, "bold")).pack(pady=(16, 12))
+        self.ttk.Label(self.container, text="Session: " + self.security.state.value + f" · Idle auto-lock: {self.idle_seconds}s · Python RAM zeroization cannot be guaranteed", wraplength=780).pack(fill="x", pady=4)
+        self.ttk.Button(self.container, text="Lock now / 立即鎖定", command=self._cancel_to_home).pack(fill="x", pady=4)
+        self.ttk.Button(self.container, text="Exit signer / 離開（不等於電腦關機）", command=self._close).pack(fill="x", pady=4)
         choices = self.ttk.Frame(self.container)
         choices.pack(fill="x", expand=True, pady=12)
         self.ttk.Button(
@@ -433,8 +587,8 @@ class OfflineReviewApp:
         ).pack(side="left", fill="both", expand=True, padx=(8, 0), ipady=24)
 
     def _choose_kind(self, kind: str):
-        if not self._unlock():
-            return
+        # Select the source first; never ask for a passphrase before camera/USB
+        # selection. QR capture must always happen while locked.
         self.selected_kind = kind
         self.session = None
         self.page_index = 0
@@ -445,21 +599,31 @@ class OfflineReviewApp:
             if self.policy_profile is None:
                 self._lock_wallet(self.t("locked"))
                 return False
-            self._activity()
-            return True
-        if not self.audit_ok and not self.development_mode:
-            self.messagebox.showerror(self.t("error"), self.t("audit_failed"), parent=self.root)
+            try:
+                self.security.activity()
+                if self.security.tick():
+                    raise ValueError("Signer session locked due to failed safety audit")
+                return True
+            except ValueError:
+                self._lock_wallet(self.t("locked"))
+                return False
+        try:
+            self.security.begin_unlock()
+        except ValueError as exc:
+            self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
             return False
         anchor = self.simpledialog.askstring(
             self.t("unlock"), "Independently recorded policy SHA-256 (64 lowercase hex)",
             parent=self.root,
         )
         if anchor is None:
+            self.security.lock("cancel_unlock")
             return False
         try:
             policy_path = self.vault.with_name(self.vault.name + ".policy")
             snapshot = read_policy_snapshot(policy_path, anchor)
         except ValueError as exc:
+            self.security.lock("invalid_policy_anchor")
             self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
             return False
         password = self.simpledialog.askstring(
@@ -469,6 +633,7 @@ class OfflineReviewApp:
             parent=self.root,
         )
         if password is None:
+            self.security.lock("cancel_unlock")
             return False
         bip39_password = self.simpledialog.askstring(
             self.t("unlock"),
@@ -477,19 +642,22 @@ class OfflineReviewApp:
             parent=self.root,
         )
         if bip39_password is None:
+            self.security.lock("cancel_unlock")
             return False
         policy_password = self.simpledialog.askstring(
             self.t("unlock"), "Encrypted offline policy passphrase",
             show="*", parent=self.root,
         )
         if policy_password is None:
+            self.security.lock("cancel_unlock")
             return False
         try:
             mnemonic = load_vault(self.vault, password)
             wallet_root = root_from_mnemonic(mnemonic, bip39_password)
             policy_profile = load_policy_snapshot(snapshot, wallet_root, policy_password)
         except (ValueError, OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
-            self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
+            self.security.unlock_failed()
+            self.messagebox.showerror(self.t("error"), "Vault unlock failed. Retry is rate-limited.", parent=self.root)
             return False
         finally:
             password = ""
@@ -499,11 +667,17 @@ class OfflineReviewApp:
             if "mnemonic" in locals():
                 mnemonic = ""
         if self.development_mode and not _is_public_test_root(wallet_root):
+            self.security.unlock_failed()
             self.messagebox.showerror(
                 self.t("error"),
                 "Development audit bypass only permits the repository's known-compromised public test wallet.",
                 parent=self.root,
             )
+            return False
+        try:
+            self.security.unlock_succeeded()
+        except ValueError as exc:
+            self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
             return False
         self.wallet_root = wallet_root
         self.policy_profile = policy_profile
@@ -532,8 +706,7 @@ class OfflineReviewApp:
         return common == str(self.transfer_dir.absolute())
 
     def _import_usb(self):
-        if self.wallet_root is None and not self._unlock():
-            return
+        kind = self.selected_kind
         filename = self.filedialog.askopenfilename(
             parent=self.root,
             initialdir=str(self.transfer_dir),
@@ -541,41 +714,97 @@ class OfflineReviewApp:
             filetypes=(("JSON exchange", "*.json"), ("All files", "*")),
         )
         if not filename:
+            self._lock_wallet(self.t("locked"))
+            self._render_home()
             return
         path = Path(filename)
         if not self._path_allowed(path):
+            self._lock_wallet(self.t("locked"))
             self.messagebox.showerror(self.t("error"), "Request must come from TX_TRANSFER.", parent=self.root)
+            self._render_home()
             return
         try:
-            plan = load_review_file(path, self.wallet_root, self.selected_kind)
-        except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
-            self.session = None
+            # One bounded read supplies both reviewed snapshot and its file hash.
+            # No attacker-controlled second read after vault unlock.
+            raw = read_bounded(path)
+            envelope = _decode_envelope_text(raw.decode("utf-8"), kind)
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("Transfer request is not a regular file")
+            identity = (info.st_dev, info.st_ino)
+            digest = hashlib.sha256(raw).digest()
+        except (ValueError, OSError, KeyError, TypeError, OverflowError, UnicodeError) as exc:
+            self._lock_wallet(self.t("locked"))
             self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
+            self._render_home()
+            return
+        if self.wallet_root is None and not self._unlock():
+            self._render_home()
+            return
+        try:
+            plan = build_review_plan(envelope, self.wallet_root, kind)
+            self.selected_kind = kind
+            self._active_usb_file = path
+            self._active_usb_identity = identity
+            self._active_usb_digest = digest
+            if not self._transport_available():
+                raise ValueError("USB request changed during unlock")
+        except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
+            self._lock_wallet(self.t("locked"))
+            self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
+            self._render_home()
             return
         self._start_review(plan)
 
     def _import_qr(self):
-        if self.wallet_root is None and not self._unlock():
-            return
+        # A camera decoder can block the Tk event loop indefinitely. Capture
+        # with the wallet locked; only unlock after obtaining validated bytes.
+        requested_kind = self.selected_kind
+        self._lock_wallet()
         if self.qr_reader is None:
+            self._lock_wallet(self.t("locked"))
             self.messagebox.showwarning(self.t("error"), self.t("qr_unavailable"), parent=self.root)
+            self._render_home()
             return
         try:
             text = self.qr_reader()
             if not text:
                 raise CameraUnavailable("empty QR capture")
-            plan = load_review_qr(text, self.wallet_root, self.selected_kind)
+            _decode_envelope_text(text, requested_kind)  # Validate before unlock.
         except CameraUnavailable:
-            self.session = None
+            self._lock_wallet(self.t("locked"))
             self.messagebox.showwarning(self.t("error"), self.t("camera_failed"), parent=self.root)
+            self._render_home()
             return
         except (ValueError, OSError, KeyError, TypeError, OverflowError):
-            self.session = None
+            self._lock_wallet(self.t("locked"))
             self.messagebox.showerror(self.t("error"), self.t("camera_failed"), parent=self.root)
+            self._render_home()
             return
+        if not self._unlock():
+            self._render_home()
+            return
+        try:
+            plan = load_review_qr(text, self.wallet_root, requested_kind)
+        except (ValueError, OSError, KeyError, TypeError, OverflowError):
+            self._lock_wallet(self.t("locked"))
+            self.messagebox.showerror(self.t("error"), self.t("camera_failed"), parent=self.root)
+            self._render_home()
+            return
+        self.selected_kind = requested_kind
+        self._active_usb_file = None
+        self._active_usb_identity = None
+        self._active_usb_digest = None
         self._start_review(plan)
 
     def _start_review(self, plan: ReviewPlan):
+        try:
+            self.security.start_review(plan.review_digest)
+        except ValueError as exc:
+            self._lock_wallet(self.t("locked"))
+            self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
+            self._render_home()
+            return
         self.session = ReviewSession(plan)
         self.page_index = 0
         self.status_message = ""
@@ -714,7 +943,12 @@ class OfflineReviewApp:
     def _sign(self):
         if not self.session or self.wallet_root is None:
             return
+        digest = self.session.plan.review_digest
         try:
+            if not self._transport_available():
+                raise ValueError("USB transport removed or changed; signing canceled")
+            if not self.session.can_sign:
+                raise ValueError("Explicit confirmation required for every transaction")
             decision = review_policy_decision(
                 self.session.plan, self.wallet_root, self.policy_profile)
             extra_confirmation = None
@@ -726,15 +960,16 @@ class OfflineReviewApp:
                 if answer != "UNVERIFIED RECIPIENT":
                     raise ValueError("Unknown recipient requires separate confirmation")
                 extra_confirmation = answer
+            self.security.approve(digest)
+            self.security.signing(digest)
             self.session.sign(self.wallet_root, self.policy_profile,
                               extra_confirmation=extra_confirmation)
+            self.security.signed(digest)
         except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
             self._lock_wallet(self.t("locked"))
             self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
             self._render_home()
             return
-        self.wallet_root = None
-        self.policy_profile = None
         self._render_signed()
 
     def _render_signed(self):
@@ -744,7 +979,8 @@ class OfflineReviewApp:
         self._clear()
         self._language_buttons(self.container)
         self._banner(self.container)
-        self.ttk.Label(self.container, text=self.t("signed"), font=("", 16, "bold"), wraplength=820).pack(pady=(20, 12))
+        signed_status = self.t("signed") if self.security.state == State.SIGNED else self.t("locked")
+        self.ttk.Label(self.container, text=signed_status, font=("", 16, "bold"), wraplength=820).pack(pady=(20, 12))
         envelope = json.loads(self.session.signed_envelope_text())
         self.ttk.Label(self.container, text=f"Signed envelope SHA-256: {envelope['sha256']}", wraplength=820).pack(fill="x", pady=6)
         self.ttk.Label(self.container, text=f"Request SHA-256: {self.session.plan.request_digest}", wraplength=820).pack(fill="x", pady=6)
@@ -755,6 +991,8 @@ class OfflineReviewApp:
         if self.qr_presenter is None:
             qr_button.state(["disabled"])
             self.ttk.Label(self.container, text=self.t("qr_output_unavailable"), wraplength=820).pack(fill="x")
+        if self.security.state == State.SIGNED and self.wallet_root is not None:
+            self.ttk.Button(self.container, text="Review next transaction / 下一筆重新審核", command=self._next_transaction).pack(fill="x", pady=8)
         self.ttk.Button(self.container, text=self.t("done"), command=self._done).pack(pady=(24, 0))
 
     def _export_signed(self):
@@ -778,7 +1016,9 @@ class OfflineReviewApp:
         except FileExistsError:
             self.messagebox.showerror(self.t("error"), self.t("output_exists"), parent=self.root)
         except (ValueError, OSError, KeyError, TypeError) as exc:
+            self._lock_wallet(self.t("locked"))
             self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
+            self._render_home()
 
     def _present_signed_qr(self):
         if not self.session or self.qr_presenter is None:
@@ -786,7 +1026,9 @@ class OfflineReviewApp:
         try:
             self.qr_presenter(self.session.signed_envelope_text())
         except Exception:
+            self._lock_wallet(self.t("locked"))
             self.messagebox.showwarning(self.t("error"), self.t("qr_output_unavailable"), parent=self.root)
+            self._render_home()
 
     def _reject(self):
         if self.session:
@@ -799,28 +1041,37 @@ class OfflineReviewApp:
         self._render_home()
 
     def _lock_wallet(self, message: str = ""):
-        self.wallet_root = None
-        self.policy_profile = None
-        if self.session and not self.session.signed:
-            self.session.cancel()
+        self.security.lock("manual_or_failure")
         self.session = None
         self.selected_kind = None
         self.page_index = 0
         self.status_message = message
 
+    def _next_transaction(self):
+        if self.security.state != State.SIGNED or self.wallet_root is None:
+            self._lock_wallet(self.t("locked"))
+        else:
+            self.session = None
+            self.selected_kind = None
+            self.page_index = 0
+            self.status_message = "Next transaction needs a new full review and typed confirmation."
+        self._render_home()
+
     def _done(self):
-        self.policy_profile = None
-        self.session = None
-        self.selected_kind = None
-        self.status_message = self.t("locked")
+        self._lock_wallet(self.t("locked"))
         self._render_home()
 
     def _close(self):
-        self.wallet_root = None
-        self.policy_profile = None
-        if self.session and not self.session.signed:
-            self.session.cancel()
+        self._lock_wallet(self.t("locked"))
         self.root.destroy()
+
+
+def _block_process_core_dumps() -> None:
+    """Process-local defense: never leave an unencrypted wallet in core files."""
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    soft, hard = resource.getrlimit(resource.RLIMIT_CORE)
+    if soft != 0 or hard != 0:
+        raise RuntimeError("Cannot disable core dumps on offline signer")
 
 
 def _load_tk():
@@ -855,8 +1106,10 @@ def main(argv=None) -> int:
         return 2
 
     try:
+        _block_process_core_dumps()
+        os.umask(0o077)
         tk, ttk, filedialog, messagebox, simpledialog = _load_tk()
-    except RuntimeError as exc:
+    except (RuntimeError, OSError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 

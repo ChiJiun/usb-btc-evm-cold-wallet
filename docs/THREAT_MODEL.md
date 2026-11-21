@@ -22,7 +22,7 @@ An offline, trusted physical computer boots from verified media. The networked c
 ## Out of scope / NOT mitigated
 - Infected host/USB firmware/bootloader; physical theft during unlock.
 - Hidden OS swap, cold boot attacks, DMA, malware in binaries or Python interpreter.
-- RAM zeroization (Python immutable strings are not easily zeroizable).
+- RAM zeroization (Python immutable strings are not easily zeroizable). Issue #20 only limits key lifetime by idle/absolute timeout and bounded transaction count; it cannot guarantee secret wiping.\n- OS kernel crash dumps / ptrace or privileged debugging; the GUI disables *process-local* core files with RLIMIT_CORE=0, while OS-level kernel kdump, hibernation and swap must still be disabled by verified boot and runtime audits.\n- Failed-unlock backoff is local to the running process and resets on process restart; scrypt remains the main offline password-guessing cost.
 - USB transport payload parsers being exploitable. PSBT strictness needs independent audit.
 - Sophisticated physical side channels, hardware anti-tamper, Secure Element or device confirmation screen.
 - Full Bitcoin policy support, multisig, script wallets, all EVM chain transactions and token approvals.
