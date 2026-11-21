@@ -103,9 +103,10 @@ MetaMask 原生的 **QR Hardware Wallet Device** 整合已認識以下
 3. 在離線主機開啟 `http://127.0.0.1:8011`，匯入
    `public-evm.json`，點選「產生 MetaMask 配對 QR」。
    MetaMask 擴充功能的 **Connect Hardware Wallet → QR-based** 掃描。
-   MetaMask 的 QR Keyring 會列出多個從公開 xpub 衍生的地址；
-   **本版只能簽 `m/44'/60'/0'/0/0`（第一個、index 0）地址，
-   不能選其他地址接收資金或簽署。** 比對顯示的完整地址。
+   MetaMask QR Keyring 可能列出五筆重複的相同公開地址。
+   本橋接已將 HD 子路徑固定為 `0/0`，避免對外列出其他不可簽的
+   衍生地址。**只匯入與可信離線端顯示的完整 `m/44'/60'/0'/0/0`
+   地址相同的帳戶**；若 MetaMask 顯示任何不同地址，立即中止配對。
 
 4. MetaMask 上切換 **Sepolia**，對 index 0 帳戶進行原生測試 ETH
    轉帳。MetaMask 顯示待簽 QR 時，在離線頁面開啟攝影機掃描
@@ -151,8 +152,9 @@ MetaMask 原生的 **QR Hardware Wallet Device** 整合已認識以下
 - 攝影機啟動需等權限回應；按停止／取消後若先前的啟動請求才完成，
   會立即關閉遲到的攝影機控制物件，過期掃描回呼不能接受交易。
 - QR 動畫採序列化渲染與 session generation；取消或新交易會使尚未完成的 QR 編碼失效，舊簽章 QR 不會重新顯示。
-- MetaMask 帳戶列舉會呈現更多公開衍生地址，**不代表它們目前
-  能簽署**。只有 index 0 經過本版完整測試；其他地址切勿入金。
+- 配對 QR 現以固定子路徑把帳戶列舉限制在同一個 index 0 公開地址；
+  上游 Keyring 的五筆/頁規則可能在 MetaMask UI 顯示重複列。
+  任何不同地址都不得入金或使用。此行為仍須實際 MetaMask 擴充功能驗收。
 - 目前一般 CI 已要求跑 Node 24 MetaMask QR Keyring／Python 跨語言簽署測試、
   Vite build 和 production dependency audit；實機 camera/browser、
   獨立離線 OS、RPC 斷線/nonce stale/reorg 仍須另外驗收。
@@ -190,8 +192,9 @@ EIP-1559 交易，再經 Keystone UR 返回上游 MetaMask
 **實體 MetaMask 擴充功能、相機權限與雙機離線操作尚未驗收**；
 上游 `vm` polyfill 警告仍存在，瀏覽器 smoke 只證明受測路徑可執行。
 
-依賴的 #18 QR transport 仍使用通用 `ur:bytes`、#19 離線
-GUI 尚未併入，此獨立整合是原生 MetaMask 協定 POC。未來可把
+#18 QR transport 與 #19/#40 離線 GUI 已併入主線；原生 MetaMask
+QR adapter 尚未接入現有 GUI／Live USB，因此仍是選用整合。
+未來可把
 `eth-sign-request`／`eth-signature` 的瀏覽器掃描器整合進
 #19 GUI，消除下載 JSON 與手動 CLI 的中間步驟，但不能移除
 離線使用者的明確確認。
