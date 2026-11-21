@@ -229,6 +229,22 @@ def test_stale_online_instances_cannot_recreate_or_rebroadcast(tmp_path):
         stale.create(request)
 
 
+def test_journal_snapshot_metadata_cannot_mutate_reserved_txid(tmp_path):
+    request = evm_request()
+    signed = sign_evm(ROOT, request["payload"], EVM_RECIPIENT, request["intent"]["amount"])
+    response = package_v2_response(request, signed, trusted_time=100)
+    store = PendingRequestStore(tmp_path / "state")
+    store.create(request)
+    store.exported(request)
+    store.import_verified(request, response, trusted_time=100)
+    snapshot = store.broadcast_requested(request, signed["transaction_hash"])
+    fake = "0x" + "ff" * 32
+    snapshot.metadata["txid"] = fake
+    with pytest.raises(ValueError, match="durable pre-broadcast"):
+        store.broadcasted(request, fake)
+    assert store.get(request["requestId"]).metadata["txid"] == signed["transaction_hash"]
+
+
 def test_partial_journal_write_blocks_new_broadcast_attempt(tmp_path):
     request = evm_request()
     signed = sign_evm(ROOT, request["payload"], EVM_RECIPIENT, request["intent"]["amount"])
