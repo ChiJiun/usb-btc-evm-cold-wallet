@@ -473,6 +473,84 @@ def test_main_exchange_evm_request_and_signed_result_are_end_to_end_compatible()
     assert len(rpc.sent) == 1
 
 
+
+def test_companion_usb_cli_policy_sign_broadcast_end_to_end(tmp_path, monkeypatch):
+    """Companion -> strict USB -> offline CLI anchored policy -> raw EVM compare -> broadcast."""
+    import hashlib
+    from usb_cold_wallet import cli
+    from usb_cold_wallet.exchange import write as write_exchange
+    from usb_cold_wallet.policy import default_profile, save_profile
+    from usb_cold_wallet.vault import encrypt_mnemonic, save_vault
+
+    password = "public-test-vector-signing-password"
+    app, rpc, _ = prepare_session()
+    vault = tmp_path / "test.vault"
+    save_vault(vault, encrypt_mnemonic(PUBLIC_TEST_MNEMONIC, password))
+    policy = vault.with_name(vault.name + ".policy")
+    save_profile(policy, default_profile(TEST_ROOT), TEST_ROOT, password)
+    anchor = hashlib.sha256(policy.read_bytes()).hexdigest()
+    incoming, outgoing = tmp_path / "unsigned.json", tmp_path / "signed.json"
+    write_exchange(incoming, "evm-request", app.pending["tx"])
+    monkeypatch.setattr(cli.getpass, "getpass",
+                        lambda prompt: password if prompt.startswith("Vault") else "")
+    monkeypatch.setattr("builtins.input",
+                        lambda prompt: prompt.split("type '", 1)[1].split("'", 1)[0])
+    assert cli.main([
+        "--vault", str(vault), "sign-evm", "--request", str(incoming),
+        "--to", TO, "--wei", str(app.pending["tx"]["value"]),
+        "--expected-policy-sha256", anchor, "--out", str(outgoing),
+    ]) == 0
+    signed = strict_exchange_verify(decode_json(outgoing.read_bytes()), "evm-signed")
+    assert signed["from"] == ADDRESS
+    assert app.accept_signed(outgoing.read_bytes())["stage"] == "verified"
+    assert app.broadcast()["stage"] == "broadcasted"
+    assert rpc.sent == [signed["signed_raw_transaction"]]
+
+
+def test_companion_qr_policy_sign_broadcast_end_to_end():
+    """Companion -> QR session -> anchored-policy decision -> signed response -> broadcast check."""
+    from usb_cold_wallet.policy import default_profile
+    from usb_cold_wallet.qr_workflow import (
+        prepare_evm_qr, sign_offline, verify_evm_response,
+    )
+    app, rpc, _ = prepare_session()
+    tx = app.pending["tx"]
+    request = prepare_evm_qr(tx, ADDRESS, TO, tx["value"])
+    response = sign_offline(
+        TEST_ROOT, request, recipient=TO, amount=tx["value"],
+        profile=default_profile(TEST_ROOT), extra_confirmation="UNVERIFIED RECIPIENT",
+    )
+    assert verify_evm_response(request, response)["transaction_hash"] == response["payload"]["transaction_hash"]
+    signed = strict_exchange_package("evm-signed", response["payload"])
+    other, other_rpc = session_with_wallet()
+    other.prepare(TO, "0.02")
+    with pytest.raises(ValueError):
+        other.accept_signed(canonical(signed))
+    assert other_rpc.sent == []  # Reject an unrelated pending request before broadcast.
+    assert app.accept_signed(canonical(signed))["stage"] == "verified"
+    assert app.broadcast()["stage"] == "broadcasted"
+    assert len(rpc.sent) == 1
+
+
+def test_companion_gui_policy_sign_broadcast_end_to_end():
+    """Companion -> shared GUI ReviewSession -> policy -> strict signed-v1 -> broadcast."""
+    from usb_cold_wallet.policy import default_profile
+    from usb_cold_wallet.review import build_review_plan, ReviewSession
+    app, rpc, _ = prepare_session()
+    plan = build_review_plan(app.request_envelope(), TEST_ROOT, "evm-request")
+    session = ReviewSession(plan)
+    for i in range(len(plan.pages)):
+        session.acknowledge(i, plan.review_digest)
+    session.set_confirmation(plan.challenge, plan.review_digest)
+    signed = session.sign(TEST_ROOT, default_profile(TEST_ROOT),
+                          extra_confirmation="UNVERIFIED RECIPIENT")
+    assert "request_sha256" not in signed["payload"]
+    assert strict_exchange_verify(signed, "evm-signed") == signed["payload"]
+    assert app.accept_signed(canonical(signed))["stage"] == "verified"
+    assert app.broadcast()["stage"] == "broadcasted"
+    assert len(rpc.sent) == 1
+
+
 def test_main_exchange_watch_only_is_accepted_by_companion():
     envelope = strict_exchange_package("watch-only", PUBLIC)
     assert parse_watch_only(canonical(envelope))["bitcoin"]["master_fingerprint"] == PUBLIC["bitcoin"]["master_fingerprint"]

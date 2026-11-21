@@ -2,8 +2,12 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
+  # Scheduled workflows run from the default branch even when no files change.
+  schedule:
+    - cron: "20 2 * * *"
 
 permissions:
   contents: read
@@ -16,7 +20,35 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
+  # Run on every PR so CI / Required is always reported.
+  # Skip expensive jobs for documentation-only changes, not the status check.
+  changes:
+    name: Detect CI scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.scope.outputs.code }}
+      deps: ${{ steps.scope.outputs.deps }}
+      metadata: ${{ steps.scope.outputs.metadata }}
+      node: ${{ steps.scope.outputs.node }}
+    steps:
+      - name: Check out source and history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select required checks
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: python3 scripts/ci_checks.py scope
+
   tests:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: Tests / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -50,7 +82,113 @@ jobs:
       - name: Smoke-test CLI
         run: usb-cold-wallet --help
 
+  qr_transport:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    name: QR transport / Node 24
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Require QR transport manifest and lockfile
+        run: |
+          set -euo pipefail
+          test -f qr-transport/package.json
+          test -f qr-transport/package-lock.json
+
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: qr-transport/package-lock.json
+
+      - name: QR unit tests, offline build, and dependency audit
+        working-directory: qr-transport
+        run: |
+          npm ci --ignore-scripts
+          npm test
+          npm run build
+          npm audit --omit=dev --audit-level=high
+          npm audit --audit-level=high
+
+      - name: Set up Python for Python-to-QR interoperability vectors
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Verify Python signed transaction survives browser UR without integer rounding
+        run: |
+          python -m pip install --require-hashes -r requirements/ci.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+          QR_INTEROP=1 python -m pytest -q tests/test_qr_interop.py
+
+  metamask_native_qr:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    name: MetaMask native QR / Node 24
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Require native MetaMask QR app files (fail closed)
+        run: |
+          set -euo pipefail
+          test -f qr-metamask/package.json
+          test -f qr-metamask/package-lock.json
+
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: qr-metamask/package-lock.json
+
+      - name: Set up Python for cross-language signing test
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned Python and Node dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements/ci.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+          npm ci --prefix qr-metamask --ignore-scripts --no-audit --no-fund
+
+      - name: Verify Python public account export
+        run: python -m pytest -q tests/test_keystone_public.py
+
+      - name: Test real MetaMask QR Keyring and Python-signed transactions
+        working-directory: qr-metamask
+        env:
+          PYTHON_BIN: python
+        run: |
+          npm test
+          npm run test:python
+
+      - name: Build offline browser bundle
+        run: npm run build --prefix qr-metamask
+
+      - name: Test production browser bundle under its CSP
+        working-directory: qr-metamask
+        run: |
+          npx playwright install --with-deps --only-shell chromium
+          npm run test:browser
+
+      - name: Audit native QR runtime dependencies
+        run: npm audit --prefix qr-metamask --omit=dev --audit-level=high
+
   dependency_audit:
+    needs: changes
+    if: needs.changes.outputs.deps == 'true'
     name: Dependency audit
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -70,6 +208,51 @@ jobs:
 
       - name: Audit locked dependency set
         run: python -m pip_audit -r requirements/ci.lock --require-hashes
+
+  node_audit:
+    name: Node production dependency audit
+    needs: changes
+    if: needs.changes.outputs.node == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Audit every checked-in Node application
+        shell: bash
+        run: |
+          set -euo pipefail
+          found=false
+          # A trusted checkout contains only repository files. Never execute
+          # package lifecycle scripts: dependency audits do not require them.
+          while IFS= read -r -d '' manifest; do
+            found=true
+            dir="${manifest%/package.json}"
+            if [[ "$dir" == "$manifest" ]]; then dir="."; fi
+            if [[ ! -f "$dir/package-lock.json" && ! -f "$dir/npm-shrinkwrap.json" ]]; then
+              echo "::error::Missing npm lockfile for $manifest; supported Node CI requires npm lockfiles"
+              exit 1
+            fi
+            echo "Auditing Node production dependencies: $dir"
+            npm ci --prefix "$dir" --ignore-scripts --omit=dev --no-fund --no-audit
+            npm audit --prefix "$dir" --omit=dev --audit-level=high
+            # Daily schedule skips the QR build job. Also audit dev/build
+            # dependencies from the complete lockfile (e.g. Vite).
+            echo "Auditing Node build and development dependencies: $dir"
+            npm audit --prefix "$dir" --audit-level=high
+          done < <(git ls-files -z -- 'package.json' '*/package.json')
+
+          if [[ "$found" != true ]]; then
+            echo "No tracked Node manifests yet; nothing to audit."
+          fi
 
   secret_scan:
     name: Secret scan
@@ -91,46 +274,63 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   dependency_review:
+    needs: changes
     name: Dependency review
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
     steps:
-      - name: Detect Dependency Graph availability
-        id: dependency-graph
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          status="$(curl --silent --show-error --output /tmp/sbom.json --write-out '%{http_code}' \
-            --header 'Accept: application/vnd.github+json' \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            --header 'X-GitHub-Api-Version: 2022-11-28' \
-            "${{ github.api_url }}/repos/${{ github.repository }}/dependency-graph/sbom")"
-          case "$status" in
-            200)
-              echo "available=true" >> "$GITHUB_OUTPUT"
-              ;;
-            403|404)
-              echo "available=false" >> "$GITHUB_OUTPUT"
-              echo "::warning::GitHub Dependency Graph is not enabled; dependency-review is skipped. Hash locking and pip-audit remain required."
-              ;;
-            *)
-              echo "Unexpected Dependency Graph API status: $status" >&2
-              cat /tmp/sbom.json >&2
-              exit 1
-              ;;
-          esac
-
-      - name: Review dependency changes
-        if: steps.dependency-graph.outputs.available == 'true'
-        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+      # Dependency Review uses dependency-graph/compare; a failure must
+      # fail this job and the downstream Required gate.
+      - name: Review dependency changes (required)
+        uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.0
         with:
           fail-on-severity: moderate
 
+  wheel_smoke:
+    name: README wheel metadata smoke
+    needs: changes
+    if: needs.changes.outputs.metadata == 'true' && needs.changes.outputs.code == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install hash-locked build tools
+        run: python -m pip install --require-hashes -r requirements/ci.lock
+
+      - name: Build wheel once and verify included README metadata
+        run: |
+          set -euo pipefail
+          python -m build --no-isolation --wheel --outdir /tmp/ci-readme-wheel .
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheels = list(Path("/tmp/ci-readme-wheel").glob("*.whl"))
+          assert len(wheels) == 1, wheels
+          with ZipFile(wheels[0]) as wheel:
+              metadata_files = [p for p in wheel.namelist() if p.endswith(".dist-info/METADATA")]
+              assert len(metadata_files) == 1, metadata_files
+              metadata = wheel.read(metadata_files[0]).decode("utf-8")
+          readme = Path("README.md").read_text(encoding="utf-8")
+          assert readme.strip() in metadata, "Wheel METADATA is missing README.md content"
+          print("README.md is embedded in the built wheel metadata")
+          PY
+
   reproducible_build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: Reproducible wheel
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -168,28 +368,39 @@ jobs:
     name: CI / Required
     if: always()
     needs:
+      - changes
       - tests
+      - metamask_native_qr
       - dependency_audit
+      - node_audit
+      - qr_transport
       - secret_scan
       - dependency_review
+      - wheel_smoke
       - reproducible_build
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require all security and test jobs
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Require every scheduled test and security check
         env:
+          SCOPE: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          DEPS: ${{ needs.changes.outputs.deps }}
+          NODE: ${{ needs.changes.outputs.node }}
+          NODE_AUDIT: ${{ needs.node_audit.result }}
+          QR_TRANSPORT: ${{ needs.qr_transport.result }}
+          NATIVE_QR: ${{ needs.metamask_native_qr.result }}
+          METADATA: ${{ needs.changes.outputs.metadata }}
+          EVENT_NAME: ${{ github.event_name }}
           TESTS: ${{ needs.tests.result }}
           AUDIT: ${{ needs.dependency_audit.result }}
           SECRET_SCAN: ${{ needs.secret_scan.result }}
           DEPENDENCY_REVIEW: ${{ needs.dependency_review.result }}
+          WHEEL_SMOKE: ${{ needs.wheel_smoke.result }}
           REPRODUCIBLE_BUILD: ${{ needs.reproducible_build.result }}
-        run: |
-          set -euo pipefail
-          test "$TESTS" = "success"
-          test "$AUDIT" = "success"
-          test "$SECRET_SCAN" = "success"
-          test "$REPRODUCIBLE_BUILD" = "success"
-          if [ "$DEPENDENCY_REVIEW" != "success" ] && [ "$DEPENDENCY_REVIEW" != "skipped" ]; then
-            echo "dependency-review result: $DEPENDENCY_REVIEW" >&2
-            exit 1
-          fi
+        run: python3 scripts/ci_checks.py required

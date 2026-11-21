@@ -148,6 +148,90 @@ def test_main_exchange_btc_psbt_signed_result_and_broadcast_are_compatible():
     assert len(rpc.sent) == 1
 
 
+
+def test_companion_usb_cli_policy_btc_sign_broadcast_end_to_end(tmp_path, monkeypatch):
+    """Companion -> PSBT USB-B -> policy-authorized offline CLI -> signed PSBT -> pre-broadcast check."""
+    import hashlib
+    from usb_cold_wallet import cli
+    from usb_cold_wallet.exchange import write as write_exchange
+    from usb_cold_wallet.policy import default_profile, save_profile
+    from usb_cold_wallet.vault import encrypt_mnemonic, save_vault
+
+    password = "public-test-vector-signing-password"
+    online, rpc = companion()
+    req = online.prepare(TARGET, "0.0005")
+    decoded = strict_exchange_verify(req["envelope"], "btc-request")
+    vault = tmp_path / "test.vault"
+    save_vault(vault, encrypt_mnemonic(MNEMONIC, password))
+    policy = vault.with_name(vault.name + ".policy")
+    save_profile(policy, default_profile(ROOT), ROOT, password)
+    anchor = hashlib.sha256(policy.read_bytes()).hexdigest()
+    incoming, outgoing = tmp_path / "unsigned.json", tmp_path / "signed.json"
+    write_exchange(incoming, "btc-request", decoded)
+    monkeypatch.setattr(cli.getpass, "getpass",
+                        lambda prompt: password if prompt.startswith("Vault") else "")
+    monkeypatch.setattr("builtins.input",
+                        lambda prompt: prompt.split("type '", 1)[1].split("'", 1)[0])
+    assert cli.main([
+        "--vault", str(vault), "sign-btc", "--request", str(incoming),
+        "--to", TARGET, "--sats", "50000", "--max-fee-sats", str(MAX_FEE_SATS),
+        "--change-index", str(req["pending"]["change_index"]),
+        "--expected-policy-sha256", anchor, "--out", str(outgoing),
+    ]) == 0
+    assert strict_exchange_verify(json.loads(outgoing.read_bytes()), "btc-signed")["signature_count"] == 1
+    assert online.accept_signed(outgoing.read_bytes())["stage"] == "verified"
+    assert online.broadcast()["stage"] == "broadcasted"
+    assert len(rpc.sent) == 1
+
+
+def test_companion_qr_policy_btc_sign_broadcast_end_to_end():
+    """Companion -> QR PSBT -> policy -> signed QR -> compare original unsigned tx -> broadcast."""
+    from usb_cold_wallet.policy import default_profile
+    from usb_cold_wallet.qr_workflow import (
+        prepare_btc_qr, sign_offline, verify_btc_response,
+    )
+    online, rpc = companion()
+    req = online.prepare(TARGET, "0.0005")
+    encoded = strict_exchange_verify(req["envelope"], "btc-request")
+    change = req["pending"]["change_index"]
+    request = prepare_btc_qr(
+        encoded, ROOT.my_fingerprint.hex(), TARGET, 50000, MAX_FEE_SATS, change)
+    response = sign_offline(
+        ROOT, request, recipient=TARGET, amount=50000,
+        max_fee_sats=MAX_FEE_SATS, change_index=change,
+        profile=default_profile(ROOT), extra_confirmation="UNVERIFIED RECIPIENT",
+    )
+    assert verify_btc_response(request, response)["signature_count"] == 1
+    signed = strict_exchange_package("btc-signed", response["payload"])
+    other, other_rpc = companion()
+    other.prepare(TARGET, "0.0004")
+    with pytest.raises(ValueError):
+        other.accept_signed(canonical(signed))
+    assert other_rpc.sent == []  # Reject mismatched original BTC outputs before broadcast.
+    assert online.accept_signed(canonical(signed))["stage"] == "verified"
+    assert online.broadcast()["stage"] == "broadcasted"
+    assert len(rpc.sent) == 1
+
+
+def test_companion_gui_policy_btc_sign_broadcast_end_to_end():
+    """Companion -> GUI ReviewSession -> policy -> exact signed-v1 PSBT -> broadcast."""
+    from usb_cold_wallet.policy import default_profile
+    from usb_cold_wallet.review import ReviewSession, build_review_plan
+    online, rpc = companion()
+    req = online.prepare(TARGET, "0.0005")
+    plan = build_review_plan(req["envelope"], ROOT, "btc-request")
+    session = ReviewSession(plan)
+    for index in range(len(plan.pages)):
+        session.acknowledge(index, plan.review_digest)
+    session.set_confirmation(plan.challenge, plan.review_digest)
+    signed = session.sign(ROOT, default_profile(ROOT),
+                          extra_confirmation="UNVERIFIED RECIPIENT")
+    assert strict_exchange_verify(signed, "btc-signed") == signed["payload"]
+    assert online.accept_signed(canonical(signed))["stage"] == "verified"
+    assert online.broadcast()["stage"] == "broadcasted"
+    assert len(rpc.sent) == 1
+
+
 def test_hardened_signer_output_with_finalized_transaction_is_checked():
     online, _ = companion()
     encoded = unpack_envelope(online.prepare(TARGET, "0.0005")["envelope"], "btc-request")

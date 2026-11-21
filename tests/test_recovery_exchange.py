@@ -1,4 +1,6 @@
 """Issue #5 regression tests use only the PUBLIC, compromised BIP39 vector."""
+import hashlib
+import os
 import json
 from pathlib import Path
 
@@ -8,13 +10,22 @@ from embit import psbt, script, transaction
 from usb_cold_wallet import cli
 from usb_cold_wallet.exchange import package, read, read_bounded, read_envelope, verify, write
 from usb_cold_wallet.keys import root_from_mnemonic, watch_only
+from usb_cold_wallet.policy import default_profile, save_profile
 from usb_cold_wallet.recovery import PUBLIC_TEST_MNEMONIC, rehearsal, restore_paper_wallet
-from usb_cold_wallet.vault import load_vault
+from usb_cold_wallet.vault import load_vault, save_vault
+from usb_cold_wallet import vault
 
 PASSWORD = "fictional-test-encryption-password"
 PUBLIC = watch_only(root_from_mnemonic(PUBLIC_TEST_MNEMONIC), 1)
 BTC = PUBLIC["bitcoin"]["receive_addresses"][0]
 EVM = PUBLIC["evm"]["address"]
+
+
+def _test_policy_anchor(vault):
+    root = root_from_mnemonic(PUBLIC_TEST_MNEMONIC)
+    policy = vault.with_name(vault.name + ".policy")
+    save_profile(policy, default_profile(root), root, PASSWORD)
+    return hashlib.sha256(policy.read_bytes()).hexdigest()
 
 
 def test_rehearsal_deletes_and_restores_only_temporary_test_vault():
@@ -173,6 +184,7 @@ def test_cli_approved_sepolia_envelope_signing_roundtrip(tmp_path, monkeypatch):
 
     vault = tmp_path / "test-only.vault"
     save_vault(vault, encrypt_mnemonic(PUBLIC_TEST_MNEMONIC, PASSWORD))
+    anchor = _test_policy_anchor(vault)
     tx = {
         "type": 2, "chainId": 11155111, "nonce": 0,
         "to": "0x000000000000000000000000000000000000dEaD",
@@ -190,11 +202,12 @@ def test_cli_approved_sepolia_envelope_signing_roundtrip(tmp_path, monkeypatch):
         return challenge
     monkeypatch.setattr("builtins.input", approve)
     args = ["--vault", str(vault), "sign-evm", "--request", str(inbound),
-            "--to", tx["to"], "--wei", str(tx["value"]), "--out", str(outbound)]
+            "--to", tx["to"], "--wei", str(tx["value"]), "--out", str(outbound),
+            "--expected-policy-sha256", anchor]
     assert cli.main(args) == 0
     signed = load_exchange(outbound, "evm-signed")
     assert Account.recover_transaction(signed["signed_raw_transaction"]) == EVM
-    assert challenges == ["SEPOLIA 0000dEaD 1000000000000"]
+    assert challenges == ["UNVERIFIED RECIPIENT", "SEPOLIA 0000dEaD 1000000000000"]
 
     inbound_data = json.loads(inbound.read_text())
     inbound_data["payload"]["value"] = 2000000000000
@@ -241,6 +254,7 @@ def test_cli_approved_btc_envelope_signing_roundtrip(tmp_path, monkeypatch):
     )
     vault = tmp_path / "public-test-only.vault"
     save_vault(vault, encrypt_mnemonic(PUBLIC_TEST_MNEMONIC, PASSWORD))
+    anchor = _test_policy_anchor(vault)
     inbound = tmp_path / "unsigned-btc.json"
     outbound = tmp_path / "signed-btc.json"
     # Decode the fixture before putting it in the USB envelope.
@@ -252,7 +266,8 @@ def test_cli_approved_btc_envelope_signing_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr("builtins.input", approve)
     args = ["--vault", str(vault), "sign-btc", "--request", str(inbound),
             "--to", dest, "--sats", "60000", "--max-fee-sats", "1500",
-            "--change-index", "0", "--out", str(outbound)]
+            "--change-index", "0", "--out", str(outbound),
+            "--expected-policy-sha256", anchor]
     assert cli.main(args) == 0
     signed = load_exchange(outbound, "btc-signed")
     assert signed["signature_count"] == 1
@@ -319,3 +334,99 @@ def test_cli_recover_no_overwrite(tmp_path, monkeypatch):
                      "--i-have-paper-backup", "--expected-btc", BTC,
                      "--expected-evm", EVM]) == 1
     assert existing.read_text() == "original"
+
+
+def test_vault_creation_publishes_only_after_fsync(monkeypatch, tmp_path):
+    target = tmp_path / "wallet.vault"
+    original = vault.os.fsync
+    visits = []
+
+    def inspect(fd):
+        visits.append(fd)
+        if len(visits) == 1:
+            assert not target.exists(), "An incomplete wallet must stay invisible"
+            stages = list(tmp_path.glob(".*.partial"))
+            assert len(stages) == 1
+            assert stages[0].name.startswith(".usbwallet-")
+            assert json.loads(stages[0].read_text()) == {"ciphertext": "test-public"}
+        return original(fd)
+
+    with monkeypatch.context() as m:
+        m.setattr(vault.os, "fsync", inspect)
+        save_vault(target, {"ciphertext": "test-public"})
+    assert len(visits) == 2
+    assert json.loads(target.read_text()) == {"ciphertext": "test-public"}
+    assert not list(tmp_path.glob(".*.partial"))
+    with pytest.raises(FileExistsError):
+        save_vault(target, {"ciphertext": "another"})
+    assert json.loads(target.read_text()) == {"ciphertext": "test-public"}
+
+
+def test_vault_fsync_failure_is_retryable_without_partial_final(monkeypatch, tmp_path):
+    target = tmp_path / "recoverable.vault"
+
+    def failure(_fd):
+        raise OSError(5, "injected failed vault writeback")
+
+    with monkeypatch.context() as m:
+        m.setattr(vault.os, "fsync", failure)
+        with pytest.raises(OSError, match="failed vault writeback"):
+            save_vault(target, {"ciphertext": "x"})
+    assert not target.exists()
+    assert not list(tmp_path.glob(".*.partial"))
+    save_vault(target, {"ciphertext": "x"})
+    assert json.loads(target.read_text()) == {"ciphertext": "x"}
+
+
+def test_vault_write_enospc_failure_is_retryable(monkeypatch, tmp_path):
+    target = tmp_path / "recoverable.vault"
+    actual = vault.os.write
+    attempts = []
+
+    def fail(fd, content):
+        attempts.append(len(content))
+        if len(attempts) == 1:
+            actual(fd, content[:3])
+        raise OSError(28, "injected vault ENOSPC")
+
+    with monkeypatch.context() as m:
+        m.setattr(vault.os, "write", fail)
+        with pytest.raises(OSError, match="ENOSPC"):
+            save_vault(target, {"ciphertext": "x"})
+    assert not target.exists()
+    assert not list(tmp_path.glob(".*.partial"))
+    save_vault(target, {"ciphertext": "x"})
+    assert json.loads(target.read_text()) == {"ciphertext": "x"}
+
+
+def test_vault_postpublish_directory_fsync_failure_is_not_silent(monkeypatch, tmp_path):
+    target = tmp_path / "complete-but-unsynced.vault"
+    actual = vault.os.fsync
+    calls = []
+
+    def failure_on_directory(fd):
+        calls.append(fd)
+        if len(calls) == 2:
+            raise OSError(5, "injected directory sync failure")
+        return actual(fd)
+
+    with monkeypatch.context() as m:
+        m.setattr(vault.os, "fsync", failure_on_directory)
+        with pytest.raises(OSError, match="directory sync"):
+            save_vault(target, {"ciphertext": "x"})
+    assert len(calls) == 2
+    assert json.loads(target.read_text()) == {"ciphertext": "x"}
+    assert not list(tmp_path.glob(".*.partial"))
+    with pytest.raises(FileExistsError):
+        save_vault(target, {"ciphertext": "not-an-overwrite"})
+
+
+def test_vault_target_symlink_cannot_be_overwritten(tmp_path):
+    original = tmp_path / "original.vault"
+    original.write_bytes(b"existing wallet")
+    fake = tmp_path / "alias.vault"
+    fake.symlink_to(original)
+    with pytest.raises((FileExistsError, ValueError, OSError)):
+        save_vault(fake, {"ciphertext": "attacker"})
+    assert original.read_bytes() == b"existing wallet"
+    assert not list(tmp_path.glob(".*.partial"))
