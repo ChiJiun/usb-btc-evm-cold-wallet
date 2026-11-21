@@ -392,8 +392,8 @@ def test_unknown_broadcast_recovers_status_only_after_restart(tmp_path):
         assert code == 400
         assert session2.pending["stage"] == "broadcast_unknown"
         snap = PendingRequestStore(manager2.state_root).get(request_id)
-        assert snap.state == "FAILED"
-        assert "broadcast outcome unknown" in snap.metadata["reason"]
+        assert snap.state == "BROADCAST_REQUESTED"
+        assert snap.metadata["txid"] == session2.pending["tx_hash"]
     finally:
         _stop(server2, worker2)
 
