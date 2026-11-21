@@ -155,7 +155,8 @@ def test_cli_policy_cap_denial_precedes_approval(root, tmp_path, monkeypatch):
     args = ["--vault", str(vault), "sign-evm", "--tx", str(tx),
             "--to", RECIPIENT, "--wei", str(10**12), "--out", str(tmp_path / "signed.json"),
             "--expected-policy-sha256", trusted_digest]
-    assert cli.main(args) == 1igned.json").exists()
+    assert cli.main(args) == 1
+    assert not (tmp_path / "signed.json").exists()
 
 
 def test_symlink_policy_refused(root, tmp_path):
