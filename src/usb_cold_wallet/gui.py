@@ -722,12 +722,10 @@ class OfflineReviewApp:
         except (OSError, ValueError):
             return False
 
-    def _open_transfer_fd(self, path: Path, flags: int) -> int:
-        """Open beneath the actual USB mount via dirfd and O_NOFOLLOW each segment."""
+    def _transfer_parent_fd(self, path: Path) -> tuple[int, str]:
+        """Pin the checked transfer directory chain; reject swapped symlinks."""
         if not self._path_allowed(path):
             raise ValueError("Path must be beneath TX_TRANSFER without symlinks")
-        if self.development_mode:
-            return os.open(path, flags | getattr(os, "O_NOFOLLOW", 0), 0o600)
         pieces = path.absolute().relative_to(self.transfer_dir.absolute()).parts
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         directory = os.O_RDONLY | os.O_DIRECTORY | nofollow
@@ -737,9 +735,50 @@ class OfflineReviewApp:
                 nested = os.open(part, directory, dir_fd=parent)
                 os.close(parent)
                 parent = nested
-            return os.open(pieces[-1], flags | nofollow, 0o600, dir_fd=parent)
+            return parent, pieces[-1]
+        except BaseException:
+            os.close(parent)
+            raise
+
+    def _open_transfer_fd(self, path: Path, flags: int) -> int:
+        """Open beneath the actual USB mount via dirfd and O_NOFOLLOW."""
+        if self.development_mode:
+            if not self._path_allowed(path):
+                raise ValueError("Path must be beneath TX_TRANSFER")
+            return os.open(path, flags | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        parent, name = self._transfer_parent_fd(path)
+        try:
+            return os.open(name, flags | getattr(os, "O_NOFOLLOW", 0),
+                           0o600, dir_fd=parent)
         finally:
             os.close(parent)
+
+    def _cleanup_failed_export(self, path: Path, identity: tuple[int, int]) -> None:
+        """Only delete the same freshly-created inode after an unsuccessful write.
+
+        A malicious USB can replace directory entries at any time; never
+        unlink an unrelated pre-existing file or follow a path symlink.
+        """
+        parent = None
+        try:
+            if self.development_mode:
+                if not self._path_allowed(path):
+                    return
+                info = os.lstat(path)
+                if stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == identity:
+                    os.unlink(path)
+                return
+            parent, name = self._transfer_parent_fd(path)
+            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == identity:
+                os.unlink(name, dir_fd=parent)
+        except (OSError, ValueError):
+            # E.g. an unplugged USB; the failed export remains invalid and
+            # create-only retry refuses to overwrite any surviving file.
+            pass
+        finally:
+            if parent is not None:
+                os.close(parent)
 
     def _read_transfer_snapshot(self, path: Path) -> tuple[bytes, tuple[int, int]]:
         fd = self._open_transfer_fd(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
@@ -758,17 +797,30 @@ class OfflineReviewApp:
     def _write_transfer_signed(self, path: Path) -> None:
         if self.session is None or not self.session.signed:
             raise ValueError("No signed response to export")
-        # The signed envelope is verified again before touching the USB.
-        signed = json.loads(self.session.signed_envelope_text())
-        verify(signed, self.session.plan.signed_kind)
+        text = self.session.signed_envelope_text()
+        verify(json.loads(text), self.session.plan.signed_kind)
+        data = text.encode("ascii")
         fd = self._open_transfer_fd(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        identity = None
         try:
-            data = self.session.signed_envelope_text().encode("ascii")
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("Signed export is not a regular file")
+            identity = (info.st_dev, info.st_ino)
             with os.fdopen(fd, "wb", closefd=False) as output:
-                output.write(data)
+                if output.write(data) != len(data):
+                    raise OSError("Short write to signed transaction output")
                 output.flush()
-        finally:
+            os.fsync(fd)
             os.close(fd)
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            if identity is not None:
+                self._cleanup_failed_export(path, identity)
+            raise
 
     def _import_usb(self):
         kind = self.selected_kind
