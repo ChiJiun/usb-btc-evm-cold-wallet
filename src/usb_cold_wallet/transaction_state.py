@@ -17,7 +17,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .cross_boot import (\n    _canonical, REQUEST_ID_RE, HEX64_RE, verify_v2_request, verify_v2_response,\n)
+from .cross_boot import (
+    _canonical,
+    REQUEST_ID_RE,
+    HEX64_RE,
+    verify_v2_request,
+    verify_v2_response,
+)
 
 FORMAT = "usb-cold-wallet-cross-boot-state"
 VERSION = 1
