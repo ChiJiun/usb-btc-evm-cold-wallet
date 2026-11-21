@@ -37,6 +37,9 @@ test('create persists account before emit, then restart retries exact event', as
   assert.equal(Object.keys(h.snapshot().accounts).length, 1);
   assert.deepEqual(k.listAccountEvents().map((e) => [e.kind,e.attempted]), [['created',true]]);
   await assert.rejects(() => k.createAccount({address:'0x000000000000000000000000000000000000bEEF'}),/previous account notification/);
+  const storedId = Object.keys(h.snapshot().accounts)[0];
+  await assert.rejects(() => k.submitRequest({id:'a',scope:'eip155:11155111',account:storedId,request:{method:'eth_signTransaction',params:[]}} as never),/Recover account notification before signing/);
+  await assert.rejects(() => k.setSelectedAccounts([storedId]),/Recover account notification before selecting/);
   k = h.open();
   await k.recoverAccountEvent('retry');
   assert.deepEqual(k.listAccountEvents(),[]);

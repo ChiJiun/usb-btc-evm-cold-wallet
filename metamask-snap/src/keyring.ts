@@ -127,6 +127,7 @@ export class ColdKeyring implements Keyring {
     return chains.filter((chain) => chain === 'eip155:11155111');
   }
   async setSelectedAccounts(accounts: string[]): Promise<void> {
+    if (this.state.accountEvent) throw new Error('Recover account notification before selecting accounts');
     if (!Array.isArray(accounts) || accounts.some((id) => !this.state.accounts[id])) {
       throw new Error('Unknown selected cold account');
     }
@@ -159,6 +160,7 @@ export class ColdKeyring implements Keyring {
     return entry.pending.qrRequest;
   }
   async submitRequest(request: KeyringRequest): Promise<SubmitRequestResponse> {
+    if (this.state.accountEvent) throw new Error('Recover account notification before signing');
     const account = await this.getAccount(request.account);
     if (this.state.requests[request.id] || this.state.closedIds.includes(request.id)) throw new Error('Duplicate/replayed request ID');
     if (Object.keys(this.state.requests).length !== 0) throw new Error('Complete or reject existing request before another');
