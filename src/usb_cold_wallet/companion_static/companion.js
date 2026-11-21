@@ -173,6 +173,9 @@ function renderPending(p) {
 }
 $("importBtn").addEventListener("click",()=>action(async()=>{
   const data=await api("/api/import",{raw:await fileContents("watchFile")});
+  latestEvmBalance=null;latestBtcBalance=null;evmConfirmedKey=null;btcConfirmedKey=null;
+  $("overview").textContent="已匯入公開帳戶，請更新餘額。";
+  $("btcOverview").textContent="已匯入公開帳戶，請更新餘額。";
   renderWallet(data);
   await refreshBtc();
   message("公開帳戶已載入。請獨立核對所匯入的完整地址。");
@@ -305,6 +308,8 @@ async function refreshBtc(){
   renderBtc(wallet.pending);
 }
 $("btcRefreshBtn").addEventListener("click",()=>action(async()=>{
+  latestBtcBalance=null;
+  $("btcOverview").textContent="正在查詢 Bitcoin Testnet；先前餘額已作廢。";
   const data=await api("/api/btc/overview");
   if(data.network!=="Bitcoin testnet")throw new Error("Bitcoin 網路與帳戶不一致");
   latestBtcBalance=BigInt(data.confirmed_sats);
