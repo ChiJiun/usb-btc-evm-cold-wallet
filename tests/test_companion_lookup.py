@@ -144,3 +144,21 @@ def test_lookup_http_requires_loopback_token_origin_and_rejects_broadcast_overri
         server.shutdown()
         server.server_close()
         thread.join(5)
+
+def test_large_evm_nonce_is_decimal_string_in_public_overview():
+    """Even unusually large RPC nonces must not enter JS as rounded numbers."""
+    from usb_cold_wallet.keys import root_from_mnemonic, watch_only
+    from usb_cold_wallet.companion_core import canonical
+
+    class NonceRpc(Rpc):
+        def account_state(self, address):
+            return 10**19, 2**53 + 127
+
+        def fee_quote(self):
+            return 2_000_000_000, 1_000_000_000
+
+    session = CompanionSession(NonceRpc())
+    session.import_wallet(canonical(watch_only(root_from_mnemonic("abandon " * 11 + "about"), 1)))
+    overview = session.overview()
+    assert overview["balance_wei"] == str(10**19)
+    assert overview["pending_nonce"] == str(2**53 + 127)
