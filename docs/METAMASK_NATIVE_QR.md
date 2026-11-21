@@ -142,8 +142,9 @@ MetaMask 原生的 **QR Hardware Wallet Device** 整合已認識以下
   廣播和狀態；其鏈上資料可受到惡意 RPC 影響。
 - MetaMask 帳戶列舉會呈現更多公開衍生地址，**不代表它們目前
   能簽署**。只有 index 0 經過本版完整測試；其他地址切勿入金。
-- 真正上線前仍需要實機 camera/browser、獨立離線 OS、供應鏈、
-  CI 與 RPC 斷線/nonce stale/reorg 的測試。
+- 目前一般 CI 已要求跑 Node 24 MetaMask QR Keyring／Python 跨語言簽署測試、
+  Vite build 和 production dependency audit；實機 camera/browser、
+  獨立離線 OS、RPC 斷線/nonce stale/reorg 仍須另外驗收。
 
 ## 開發驗證
 
@@ -159,8 +160,21 @@ npm audit --omit=dev --audit-level=high
 JavaScript 相容性測試直接載入 `@metamask/eth-qr-keyring`，
 不是自行模擬 MetaMask Keyring 的行為。Python 部分以
 `tests/test_keystone_public.py` 檢查 BIP32 公開資料與 CLI 輸出。
+`tests/python-integration.mjs` 會以已公開且不安全的測試助記詞，
+讓 Python `eth-account` 實際簽署 18 位以上 Wei 的 Sepolia
+EIP-1559 交易，再經 Keystone UR 返回上游 MetaMask
+`QrKeyring.signTransaction()`，驗證完整 signed raw bytes
+一致。Python signed JSON 的大整數在 JS 會失精度，因此這個
+測試使用簽章原始 RLP 解碼的 BigInt 建立核對交易，不以
+`JSON.parse` 數字欄位作為轉帳金額。
 
-**供應鏈稽核現況（2026-11-18）：** npm audit 生產相依套件為 0 high/critical、2 moderate、3 low；中風險涉及 Keystone Ethereum registry 及傳遞依賴 `uuid`。Browser bundle 能產生，但 Vite 尚有 `vm` Node 相容性提示，實際 MetaMask+鏡頭的瀏覽器運作尚未實測；不可把編譯成功等同真實瀏覽器驗證。
+**供應鏈稽核現況（2026-11-21）：** npm audit 生產相依套件為 0 high/critical、2 moderate、3 low；中風險涉及 Keystone Ethereum registry 及傳遞依賴 `uuid`。需留意上游 `elliptic` 安全公告；不得使用可能造成相容性破壞的 `npm audit fix --force` 自動升級。
+`.github/workflows/ci.yml` 已將 Node 24 的 native-QR 測試、
+實際 Python 跨語言測試、build 和 audit 納入 `CI / Required`
+必要條件；缺少 `qr-metamask/` 的舊分支安全略過該部分。
+Browser bundle 能產生，但 Vite 仍有 `vm` Node 相容性提示，
+實際 MetaMask 擴充功能＋鏡頭的瀏覽器運作尚未實測；
+不可把編譯成功等同真實瀏覽器驗證。
 
 依賴的 #18 QR transport 仍使用通用 `ur:bytes`、#19 離線
 GUI 尚未併入，此獨立整合是原生 MetaMask 協定 POC。未來可把

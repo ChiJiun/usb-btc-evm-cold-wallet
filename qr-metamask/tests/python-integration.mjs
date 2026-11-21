@@ -8,6 +8,8 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { Transaction } from 'ethers';
 import { QrKeyring } from '@metamask/eth-qr-keyring';
+import { FeeMarketEIP1559Transaction } from '@ethereumjs/tx';
+import { Common, Hardfork } from '@ethereumjs/common';
 import { EthSignRequest, DataType, ETHSignature } from '@keystonehq/bc-ur-registry-eth';
 import { makePairingUr, decodeMetaMaskRequest, makeSignedResponseUr } from '../src/adapter.mjs';
 
@@ -40,4 +42,28 @@ test('real Python embit public BIP32 and Python eth-account signature -> MetaMas
   assert.equal(parsed.getRequestId().toString('hex'),decoded.requestId);
   assert.equal(parsed.getSignature().length,65);
   assert.equal(parsed.getSignature()[64],signed.signature.yParity);
+
+  // Exercise the real MetaMask QR Keyring transaction lifecycle with the
+  // *Python-signed* answer, not just an independently decoded UR fixture.
+  let sawRequest=false;
+  const keyring=new QrKeyring({bridge:{requestScan:async ({type,request:pending})=>{
+    assert.equal(type,'sign');
+    sawRequest=true;
+    const scanned=decodeMetaMaskRequest(pending.payload,data.public);
+    assert.equal(scanned.tx.unsignedSerialized,signed.unsignedSerialized,'MetaMask request unsigned bytes must match Python signed transaction');
+    const reply=makeSignedResponseUr(scanned,data.signed);
+    return {type:reply.type,cbor:reply.cbor.toString('hex')};
+  }}});
+  keyring.pairDevice({type:pair.type,cbor:pair.cbor.toString('hex')});
+  const common=Common.custom({chainId:11155111},{hardfork:Hardfork.London});
+  const original=FeeMarketEIP1559Transaction.fromTxData({
+    // Derive the exact value from raw RLP, never JS-number-rounded JSON metadata.
+    nonce:1n,gasLimit:21000n,to:signed.to,value:signed.value,
+    maxFeePerGas:5000000000n,maxPriorityFeePerGas:1000000000n,
+    chainId:11155111,
+  },{common});
+  const output=await keyring.signTransaction(data.public.address,original);
+  assert.equal(sawRequest,true);
+  assert.equal(output.isSigned(),true);
+  assert.equal('0x'+Buffer.from(output.serialize()).toString('hex'),data.signed.signed_raw_transaction);
 });

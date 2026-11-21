@@ -1,6 +1,7 @@
-# Optional CI template for the native MetaMask QR adapter.
-# Repository OAuth access currently cannot write .github/workflows (workflow scope).
-# A maintainer may review and enable this as .github/workflows/metamask-native-qr.yml.
+# Historical standalone CI design reference.
+# The maintained implementation is now in .github/workflows/ci.yml under
+# metamask_native_qr and gated by CI / Required. Do not activate a duplicate.
+# This file is documentation only, not an executable workflow.
 name: MetaMask Native QR Compatibility
 on:
   pull_request:
