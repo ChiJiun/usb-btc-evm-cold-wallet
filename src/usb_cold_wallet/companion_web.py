@@ -266,12 +266,17 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                 elif self.path in ("/api/btc/broadcast", "/api/btc/status", "/api/btc/cancel"):
                     if data:
                         raise ValueError("BTC operation does not accept overrides")
-                    commands = {
-                        "/api/btc/broadcast": btc_session.broadcast,
-                        "/api/btc/status": btc_session.check_status,
-                        "/api/btc/cancel": btc_session.cancel
-                    }
-                    result = commands[self.path]()
+                    if self.path == "/api/btc/cancel":
+                        request_id = btc_session.pending.get("request_id") if btc_session.pending else None
+                        result = btc_session.cancel()
+                        if crossboot is not None and crossboot.available and request_id:
+                            crossboot.remove_exchange(request_id)
+                    else:
+                        commands = {
+                            "/api/btc/broadcast": btc_session.broadcast,
+                            "/api/btc/status": btc_session.check_status,
+                        }
+                        result = commands[self.path]()
                 else:
                     self._json({"error": "Unknown endpoint"}, 404)
                     return
