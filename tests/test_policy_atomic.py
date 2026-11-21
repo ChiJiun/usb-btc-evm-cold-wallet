@@ -117,6 +117,10 @@ def test_stage_replacement_detected_and_unrelated_file_preserved(tmp_path, monke
     old = policy.default_profile(ROOT)
     policy.save_profile(path, old, ROOT, PASSWORD)
     prior = path.read_bytes()
+    # Pre-create a distinct inode: unlink + recreate can reuse the exact
+    # original inode on some filesystems, making this test nondeterministic.
+    attacker = tmp_path / "attacker"
+    attacker.write_bytes(b"attacker-stage")
     real_stat = policy.os.stat
     switched = False
 
@@ -124,10 +128,7 @@ def test_stage_replacement_detected_and_unrelated_file_preserved(tmp_path, monke
         nonlocal switched
         if not switched and isinstance(path_arg, str) and path_arg.startswith(".policy-") and kwargs.get("dir_fd") is not None:
             switched = True
-            parent = tmp_path / path_arg
-            if parent.exists():
-                parent.unlink()
-                parent.write_bytes(b"attacker-stage")
+            os.replace(attacker, tmp_path / path_arg)
         return real_stat(path_arg, *args, **kwargs)
 
     monkeypatch.setattr(policy.os, "stat", swap_stage)
