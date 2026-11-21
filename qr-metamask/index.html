@@ -4,7 +4,7 @@
 <title>USB Offline Signer — MetaMask QR 簽署橋接</title>
 <link rel="stylesheet" href="./style.css"></head><body><main>
 <h1>USB 冷錢包 · MetaMask 原生 QR</h1>
-<p class="warning">Sepolia 測試網研究版。此頁面只處理<strong>公鑰／未簽交易／已簽交易</strong>；不可輸入助記詞、私鑰、密碼或 Vault。請僅在可信任且物理斷網的電腦執行。</p>
+<p class="warning">Sepolia 測試網功能預覽（尚未完成實機驗收）。此頁面只處理<strong>公鑰／未簽交易／已簽交易</strong>；不可輸入助記詞、私鑰、密碼或 Vault。請僅在可信任且物理斷網的電腦執行。</p>
 <section><h2>① 與 MetaMask 配對</h2><p>先在離線 CLI 執行 <code>usb-cold-wallet --vault /offline/wallet.vault export-keystone-public --out public-evm.json</code>，再匯入這份公開資料。</p>
 <label>公開帳戶 JSON <input id="public-file" type="file" accept=".json"></label>
 <button id="pair" disabled>產生 MetaMask 配對 QR</button>

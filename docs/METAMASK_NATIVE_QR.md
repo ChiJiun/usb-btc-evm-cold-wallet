@@ -191,7 +191,7 @@ EIP-1559 交易，再經 Keystone UR 返回上游 MetaMask
 測試使用簽章原始 RLP 解碼的 BigInt 建立核對交易，不以
 `JSON.parse` 數字欄位作為轉帳金額。
 
-**供應鏈稽核現況（2026-11-21）：** npm audit 生產相依套件為 0 high/critical、2 moderate、3 low；中風險涉及 Keystone Ethereum registry 及傳遞依賴 `uuid`。需留意上游 `elliptic` 安全公告；不得使用可能造成相容性破壞的 `npm audit fix --force` 自動升級。
+**供應鏈稽核現況（2026-11-21）：** 已將傳遞依賴 `uuid`（原 8.3.2／9.0.1）以 npm override 鎖定至修補版 `11.1.1`，修復 [GHSA-w5hq-g745-h8pq](https://github.com/advisories/GHSA-w5hq-g745-h8pq) 中風險問題；Dependency Review 已真正執行並成功。GitHub Actions 最新 `npm audit --omit=dev --audit-level=high` 報告 0 high/critical、0 moderate、4 low，剩餘低風險由上游 `elliptic` → `secp256k1` → `hdkey` → Keystone registry 的依賴鏈產生。此頁面只使用公開金鑰衍生及傳輸，不在 Node 端處理 Vault 或私鑰，但仍須追蹤 [GHSA-848j-6mx2-7j84](https://github.com/advisories/GHSA-848j-6mx2-7j84)；`npm audit fix --force` 會嘗試破壞性降版 Keystone，禁止未經完整相容性驗證直接使用。
 `.github/workflows/ci.yml` 已將 Node 24 的 native-QR 測試、
 實際 Python 跨語言測試、Vite build、Playwright Chromium 瀏覽器 smoke
 與 npm audit 納入 `CI / Required` 必要條件；缺少 `qr-metamask/`
