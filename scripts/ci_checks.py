@@ -27,6 +27,7 @@ SCHEDULED = Scope(code=False, deps=True, metadata=False, node=True)
 def is_document(path: str) -> bool:
     return (
         path == "README"
+        or path == "SECURITY.md"
         or path.startswith("README.")
         or path.startswith("docs/")
         or path == "LICENSE"

@@ -7,7 +7,7 @@
 
 | 變更或觸發條件 | 必要驗證 |
 | --- | --- |
-| 純文件（README.en、docs） | 變更分類、完整歷史 Secret scan、Required |
+| 純文件（README.en、`SECURITY.md`、docs） | 變更分類、完整歷史 Secret scan、Required |
 | README.md | 以上檢查，以及一次 wheel build 與 Python package metadata 驗證 |
 | Python／其他程式碼、QR Transport JS | Python 3.12/3.13 pytest、可重現 wheel 雙次建置、QR Transport Node 24 單元測試／bundle build／Python↔QR 互通測試、Required |
 | 依賴 manifest、lockfile、任何 `.github/workflows/*.yml/.yaml` | 上述程式碼驗證，另執行 Python `pip-audit`；PR 必須通過實際 GitHub Dependency Review |
@@ -50,6 +50,6 @@ checkout 不持續保存憑證。
 獨立掃描完整歷史，另建議啟用 GitHub Secret scanning / Push
 protection。
 
-`live-usb-pr-close.yml` 在 PR 關閉時取消可確認屬於該 PR 的
-過時 Live USB 自動建置；只有 GitHub API 明確列出 PR 身分才會
-取消。這項 workflow 與每日排程在合併至 `main` 後才會生效。
+`live-usb-pr-close.yml` 在 PR 關閉時取消可確認屬於該 PR 的過時 Live USB 自動建置。優先採用 GitHub run 上唯一的 `pull_requests` 關聯；若 PR 關閉後該關聯被 GitHub 清空，則再透過 GitHub REST Pulls API（涵蓋已關閉 PR）交叉驗證來源儲存庫、來源分支、完整 head SHA 和**唯一的 PR 號碼**，且只取消 head SHA 相符的自動 `pull_request` 工作；來源不唯一、查詢失敗或版本不符均跳過，絕不只憑分支名稱猜測。這項功能是安全優先的 best-effort 取消，不能保證所有過往 Commit 的 run 都能取消。
+
+這項 workflow 與每日排程在合併至 `main` 後才會生效；真正的 PR close 與 schedule 事件仍需完成合併後驗收。

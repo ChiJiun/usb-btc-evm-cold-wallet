@@ -13,6 +13,8 @@ from scripts import ci_checks
     [
         (["README.md"], ci_checks.Scope(False, False, True, False)),
         (["README.en.md"], ci_checks.Scope(False, False, False, False)),
+        (["SECURITY.md"], ci_checks.Scope(False, False, False, False)),
+        (["SECURITY.md", "docs/CI_SECURITY.md"], ci_checks.Scope(False, False, False, False)),
         (["docs/USB_SETUP.md"], ci_checks.Scope(False, False, False, False)),
         (["LICENSE", "docs/CI_SECURITY.md"], ci_checks.Scope(False, False, False, False)),
         (["README.md", "src/usb_cold_wallet/cli.py"], ci_checks.Scope(True, False, True, False)),
@@ -219,20 +221,25 @@ def test_closed_pr_cancels_only_its_automatic_live_usb_runs():
     assert "pull_request_target:" in workflow
     assert "types: [closed]" in workflow
     assert "actions: write" in workflow
+    assert "pull-requests: read" in workflow
+    assert "PR_HEAD_SHA:" in workflow
+    assert "unique_owner_filter=" in workflow
+    assert 'head="${source_owner}:${PR_BRANCH}"' in workflow
+    assert ".head.sha == $sha" in workflow
     assert "actions/checkout" not in workflow
     assert "event=pull_request" in workflow
     assert 'branch="$PR_BRANCH"' in workflow
     assert ".head_repository.full_name == $source" in workflow
     assert ".head_branch == $branch" in workflow
     assert ".number == $number" in workflow
-    assert "pull_requests | length" not in workflow
+    assert "pull_requests | length) == 0 or any" not in workflow
     assert "Live USB image verification" in workflow
     assert "Live USB fast boot diagnostics" in workflow
     assert "gh api --method POST" in workflow
 
 
 def test_pr_close_jq_filter_requires_positive_pr_identity():
-    """Run the exact checked-in jq expression against conflicting API records."""
+    """Execute BOTH jq programs used by the actual trusted PR-close workflow."""
     import json
     import re
     from pathlib import Path
@@ -241,59 +248,96 @@ def test_pr_close_jq_filter_requires_positive_pr_identity():
         Path(__file__).resolve().parents[1]
         / ".github/workflows/live-usb-pr-close.yml"
     ).read_text(encoding="utf-8")
-    match = re.search(
-        r"(?ms)^          filter='\n(.*?)^          '$", workflow
-    )
-    assert match, "The workflow's actual jq program was not found"
-    expression = match.group(1)
-    same_repo = {"full_name": "ChiJiun/usb-btc-evm-cold-wallet"}
-    other_repo = {"full_name": "another-user/usb-btc-evm-cold-wallet"}
 
-    def run_item(id, *, pr_numbers, name="Live USB image verification",
-                 event="pull_request", branch="shared-feature",
-                 source=same_repo):
+    def extract(name):
+        match = re.search(
+            rf"(?ms)^          {name}='\\n(.*?)^          '$", workflow
+        )
+        assert match, f"Could not find real workflow jq expression: {name}"
+        return match.group(1)
+
+    owner_program = extract("unique_owner_filter")
+    run_program = extract("filter")
+    source = "ChiJiun/usb-btc-evm-cold-wallet"
+    sha = "a" * 40
+    old_sha = "b" * 40
+
+    def pull(number, *, commit=sha, branch="shared-feature", repo=source):
         return {
-            "id": id,
-            "name": name,
-            "event": event,
-            "head_branch": branch,
-            "head_repository": source,
-            "pull_requests": (
-                None if pr_numbers is None
-                else [{"number": number} for number in pr_numbers]
-            ),
+            "number": number,
+            "head": {"sha": commit, "ref": branch, "repo": {"full_name": repo}},
         }
 
-    fixture = {
-        "workflow_runs": [
-            run_item(101, pr_numbers=[38]),  # only correct PR
-            run_item(102, pr_numbers=[7]),  # same branch and repo, different PR
-            run_item(103, pr_numbers=[]),  # closed PR association disappeared
-            run_item(104, pr_numbers=None),  # API omits PR association
-            run_item(105, pr_numbers=[38], source=other_repo),
-            run_item(106, pr_numbers=[38], branch="different-feature"),
-            run_item(107, pr_numbers=[38], event="workflow_dispatch"),
-            run_item(108, pr_numbers=[38], name="CI"),
-            run_item(109, pr_numbers=[38], name="Live USB fast boot diagnostics"),
-            run_item(110, pr_numbers=[7, 38]),  # explicit positive match
-            run_item(111, pr_numbers=[], branch="different-feature"),
-            run_item(112, pr_numbers=[38], source=None),
-        ]
-    }
-    output = subprocess.run(
-        [
-            "jq", "-r",
-            "--arg", "branch", "shared-feature",
-            "--arg", "source", "ChiJiun/usb-btc-evm-cold-wallet",
-            "--argjson", "number", "38",
-            expression,
-        ],
-        input=json.dumps(fixture),
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    assert output.stdout.splitlines() == ["101", "109", "110"]
+    def unique_owner(pages):
+        result = subprocess.run(
+            ["jq", "-sr", "--arg", "sha", sha,
+             "--arg", "branch", "shared-feature", "--arg", "source", source,
+             owner_program],
+            input="\\n".join(json.dumps(page) for page in pages) + "\\n",
+            check=True, capture_output=True, text=True,
+        )
+        return result.stdout.strip()
+
+    # A closed PR with one exact branch/repo/SHA match is identifiable even
+    # after run.pull_requests becomes [] (as observed for PR #9).
+    assert unique_owner([[pull(38), pull(7, commit=old_sha)]]) == "38"
+    # Same branch + same commit can target two different base branches:
+    # the fallback MUST fail closed, even after both PRs close.
+    assert unique_owner([[pull(38)], [pull(7)]]) == ""
+    assert unique_owner([[pull(38, repo="other/repo")]]) == ""
+    assert unique_owner([[pull(38, commit=old_sha)]]) == ""
+    assert unique_owner([[]]) == ""
+
+    def run_item(number, *, associations, name="Live USB image verification",
+                 event="pull_request", branch="shared-feature", repo=source,
+                 commit=sha):
+        return {
+            "id": number,
+            "name": name, "event": event,
+            "head_branch": branch, "head_repository": (
+                None if repo is None else {"full_name": repo}),
+            "head_sha": commit,
+            "pull_requests": (
+                None if associations is None
+                else [{"number": pr} for pr in associations]),
+        }
+
+    runs = {"workflow_runs": [
+        run_item(101, associations=[38]),       # explicit correct PR
+        run_item(102, associations=[7]),        # wrong PR, same repo/branch/SHA
+        run_item(103, associations=[]),         # closed PR: empty association
+        run_item(104, associations=None),       # closed PR: null association
+        run_item(105, associations=[38], repo="other/repo"),
+        run_item(106, associations=[38], branch="other-feature"),
+        run_item(107, associations=[38], event="workflow_dispatch"),
+        run_item(108, associations=[38], name="CI"),
+        run_item(109, associations=[38], name="Live USB fast boot diagnostics"),
+        run_item(110, associations=[7, 38]),    # ambiguous; DO NOT cancel
+        run_item(111, associations=[], branch="other-feature"),
+        run_item(112, associations=[], repo=None),
+        run_item(113, associations=[], commit=old_sha),
+        run_item(114, associations=[7], commit=sha),
+        run_item(115, associations=[], name="Live USB fast boot diagnostics"),
+        run_item(116, associations=[], event="workflow_dispatch"),
+        run_item(117, associations=[38], commit=old_sha),  # explicit identity
+    ]}
+
+    def select_runs(owner):
+        result = subprocess.run(
+            ["jq", "-r", "--arg", "branch", "shared-feature",
+             "--arg", "source", source, "--argjson", "number", "38",
+             "--arg", "sha", sha, "--arg", "unique_owner", owner,
+             run_program],
+            input=json.dumps(runs),
+            check=True, capture_output=True, text=True,
+        )
+        return result.stdout.splitlines()
+
+    assert select_runs("38") == ["101", "103", "104", "109", "115", "117"]
+    # If the PR list is ambiguous or API is unavailable, do not cancel runs
+    # whose PR association vanished. Positive one-to-one links still work.
+    assert select_runs("") == ["101", "109", "117"]
+    assert select_runs("7") == ["101", "109", "117"]
 
 
 @pytest.mark.parametrize("path", [
