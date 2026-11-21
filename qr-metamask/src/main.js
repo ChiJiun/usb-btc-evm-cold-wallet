@@ -2,12 +2,14 @@ import { BrowserQRCodeReader } from '@zxing/browser';
 import QRCode from 'qrcode';
 import { CameraLifecycle } from './camera_lifecycle.mjs';
 import { QrFrameDisplay } from './qr_frame_display.mjs';
+import { PublicAccountImport } from './public_account_import.mjs';
 import { makePairingUr, decodeMetaMaskRequest, makeSignedResponseUr,
   framesFromUr, unsignedJsonForOffline, validatePublic, MAX_FRAMES } from './adapter.mjs';
 
 const $ = (id) => document.getElementById(id);
 const setStatus = (text) => { $('status').textContent = String(text); };
 let publicInfo = null, active = null, used = false;
+const publicImporter = new PublicAccountImport(validatePublic);
 const camera = new CameraLifecycle();
 const qrDisplay = new QrFrameDisplay({
   encode: (frame, options) => QRCode.toDataURL(frame, options),
@@ -80,21 +82,28 @@ function acceptRequest(parts) {
   $('reply').disabled = false;
   setStatus('請逐項核對交易，下載 unsigned JSON，由可信離線 CLI 簽署。');
 }
-$('public-file').addEventListener('change',()=>guarded(async()=>{
-  const raw=await boundedText($('public-file').files?.[0],10_000);
-  const imported=JSON.parse(raw);
-  const validated=validatePublic(imported);
-  clearSession();
-  publicInfo=imported;
-  $('account').textContent='錢包地址：'+validated.address+'（公開資料，請與實體離線電腦比對）';
-  $('pair').disabled = false; $('scan').disabled=false; $('parse').disabled=false;
-  setStatus('公開帳戶已讀取，可以顯示配對 QR。');
-}));
+$('public-file').addEventListener('change',()=>{
+  const file=$('public-file').files?.[0];
+  // Revoke the previous account and signing request before awaiting file I/O.
+  clearSession(); publicInfo=null;
+  $('account').textContent='';
+  $('pair').disabled=true; $('scan').disabled=true; $('parse').disabled=true;
+  const pending=publicImporter.read(file);
+  void guarded(async()=>{
+    const result=await pending;
+    if (!result || $('public-file').files?.[0] !== file) return;
+    publicInfo=result.info;
+    $('account').textContent='錢包地址：'+result.validated.address+'（公開資料，請與實體離線電腦比對）';
+    $('pair').disabled=false; $('scan').disabled=false; $('parse').disabled=false;
+    setStatus('公開帳戶已讀取，可以顯示配對 QR。');
+  });
+});
 $('pair').addEventListener('click',()=>guarded(async()=>{
   if(!publicInfo) throw Error('尚無公開帳戶');
   if(active) throw Error('請先結束當前交易');
-  if (await displayUr(makePairingUr(publicInfo))) {
-    setStatus('MetaMask → Connect Hardware Wallet → QR-based，掃描這個 crypto-account 公開 QR。');
+  const accountAtStart=publicInfo;
+  if (await displayUr(makePairingUr(accountAtStart)) && publicInfo===accountAtStart) {
+    setStatus('MetaMask → Connect Hardware Wallet → QR-based，掃描這個 crypto-hdkey 公開 QR。');
   }
 }));
 $('scan').addEventListener('click',()=>guarded(async()=>{
@@ -156,4 +165,4 @@ $('reply').addEventListener('click',()=>guarded(async()=>{
 $('cancel').addEventListener('click',()=>{
   clearSession();setStatus('已清除目前請求與 QR 動畫。若 MetaMask 尚在等待，請在 MetaMask 取消該交易。');
 });
-window.addEventListener('pagehide',()=>{stopCamera();qrDisplay.clear();});
+window.addEventListener('pagehide',()=>{publicImporter.cancel();stopCamera();qrDisplay.clear();});
