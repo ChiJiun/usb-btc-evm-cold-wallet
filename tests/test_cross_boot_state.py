@@ -201,7 +201,7 @@ def test_online_state_survives_restarts_and_prevents_double_broadcast(tmp_path):
     assert store.broadcasted(request, signed["transaction_hash"]).state == "BROADCASTED"
     store = PendingRequestStore(root)
     assert store.get(request["requestId"]).state == "BROADCASTED"
-    with pytest.raises(ValueError, match="transition"):
+    with pytest.raises(ValueError, match="durable pre-broadcast"):
         store.broadcasted(request, signed["transaction_hash"])
 
 
