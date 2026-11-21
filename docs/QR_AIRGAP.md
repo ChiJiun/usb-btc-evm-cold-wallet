@@ -58,10 +58,18 @@ The separate `qr-transport/src/typed_registry.mjs` module implements:
 **only** `ur:bytes` and continues to require the internal v1 envelope.
 The typed scanner bounds message/frame size, frame count and time;
 the explicit pending-binding function checks request ID, account, chain,
-payload digest, expiry and one-use state. **No calling code should sign or
-broadcast solely because a typed frame parsed or was bound.** The final
-signing request must pass the offline transaction parser, user review,
-Policy Engine, and independent signed transaction / PSBT verification.
+payload digest, expiry and one-use state. For an `eth-signature`
+response, `bindTypedToPending` additionally **requires**
+`verifySignature(parsed,pending) === true`; for signed `crypto-psbt` it
+requires `verifySignedPsbt(parsed,pending) === true`. A missing, false,
+or asynchronous callback is rejected. The callback must independently
+compare the original unsigned transaction/PSBT, signer, chain, outputs,
+fee and actual signature before returning true; **this repository has
+not yet connected those callbacks to the real GUI/signing workflow.**
+**No calling code should sign or broadcast solely because a typed frame
+parsed or was bound.** The final signing request must pass the offline
+transaction parser, user review, Policy Engine and independent signed
+transaction / PSBT verification.
 The UR type itself does not authenticate its sender.
 
 Run `cd qr-transport && npm ci --ignore-scripts && npm test && npm run build`.
