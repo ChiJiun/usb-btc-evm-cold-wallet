@@ -26,6 +26,8 @@ DEFAULT_VAULT = Path("/mnt/cold-vault/wallet.vault")
 DEFAULT_TRANSFER = Path("/mnt/transfer")
 BOOT_CHECKS = Path("/run/usb-wallet/boot-checks.txt")
 LOCKDOWN = Path("/run/usb-wallet/lockdown")
+MOUNTINFO = Path("/proc/self/mountinfo")
+VAULT_DEVICE = Path("/run/usb-wallet/vault-device")
 IDLE_SECONDS = DEFAULT_IDLE_SECONDS
 PUBLIC_TEST_EVM = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
 PUBLIC_TEST_BTC = "tb1q6rz28mcfaxtmd6v789l9rrlrusdprr9pqcpvkl"
@@ -193,14 +195,78 @@ def _is_public_test_root(root) -> bool:
         return False
 
 
+def _current_mount_evidence(mountinfo: Path, vault_device: Path) -> list[str]:
+    """Revalidate current kernel mount identities; boot PASS lines are historical."""
+    try:
+        source_expected = vault_device.read_text(encoding="ascii").strip()
+        if not re.fullmatch(r"/dev/[A-Za-z0-9._/-]{2,80}", source_expected):
+            raise ValueError("Invalid verified vault device identity")
+        lines = mountinfo.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError, ValueError):
+        return ["FAIL: live mountinfo or verified vault device identity unavailable"]
+
+    mounts = []
+    for line in lines:
+        try:
+            left, right = line.split(" - ", 1)
+            left_cols, right_cols = left.split(), right.split()
+            if len(left_cols) < 6 or len(right_cols) < 3:
+                raise ValueError("Malformed mountinfo")
+            mounts.append({
+                "target": left_cols[4], "options": set(left_cols[5].split(",")),
+                "type": right_cols[0], "source": right_cols[1],
+                "super": set(right_cols[2].split(",")),
+            })
+        except (IndexError, ValueError):
+            return ["FAIL: malformed live mountinfo"]
+
+    findings = []
+    root = [m for m in mounts if m["target"] == "/"]
+    vault = [m for m in mounts if m["target"] == "/mnt/cold-vault"]
+    transfer = [m for m in mounts if m["target"] == "/mnt/transfer"]
+    if len(root) != 1 or root[0]["type"] not in ("rootfs", "tmpfs"):
+        findings.append("FAIL: live root filesystem is not uniquely RAM-backed")
+    else:
+        findings.append("PASS: live RAM-backed root")
+    required = {"rw", "nodev", "nosuid", "noexec", "sync"}
+    if (len(vault) != 1 or vault[0]["type"] != "vfat"
+            or vault[0]["source"] != source_expected
+            or not required <= (vault[0]["options"] | vault[0]["super"])):
+        findings.append("FAIL: live COLD_VAULT source, type or mount options changed")
+    else:
+        findings.append("PASS: live COLD_VAULT verified device and mount flags")
+
+    # TX_TRANSFER is mounted only during imports/exports. If present, require
+    # separate media and restrictive flags; it must not replace the vault.
+    if transfer and (len(transfer) != 1 or transfer[0]["type"] != "vfat"
+                     or transfer[0]["source"] == source_expected
+                     or not required <= (transfer[0]["options"] | transfer[0]["super"])):
+        findings.append("FAIL: live TX_TRANSFER mount has unsafe identity or options")
+    safe_pseudo = {
+        "rootfs", "tmpfs", "proc", "sysfs", "devtmpfs", "devpts",
+        "cgroup2", "pstore", "tracefs",
+    }
+    for mounted in mounts:
+        options = mounted["options"] | mounted["super"]
+        if ("rw" in options and mounted["type"] not in safe_pseudo
+                and mounted["target"] not in ("/mnt/cold-vault", "/mnt/transfer")):
+            findings.append("FAIL: unexpected live writable persistent mount")
+            break
+    if not any(x.startswith("FAIL:") for x in findings):
+        findings.append("PASS: no unexpected writable persistent filesystem mounted now")
+    return findings
+
+
 def runtime_audit(
     *,
     boot_checks: Path = BOOT_CHECKS,
     lockdown: Path = LOCKDOWN,
     proc_net: Path = Path("/proc/net"),
     proc_swaps: Path = Path("/proc/swaps"),
+    proc_mountinfo: Path = MOUNTINFO,
+    vault_device: Path = VAULT_DEVICE,
 ) -> tuple[bool, tuple[str, ...]]:
-    """Re-check the trusted boot result before the GUI can unlock the vault."""
+    """Check historical boot evidence AND live kernel state before every unlock/sign."""
     findings: list[str] = []
     if lockdown.exists():
         findings.append("FAIL: offline lockdown marker exists")
@@ -214,17 +280,14 @@ def runtime_audit(
         findings.append("FAIL: boot security audit contained no checks")
     else:
         findings.extend(checks)
-        required = (
+        required_boot = (
             ("network isolation", ("network stack absent", "/proc/net absent")),
             ("no active swap", ("no active swap",)),
             ("RAM-backed root", ("root filesystem is RAM-backed",)),
             ("COLD_VAULT mount", ("COLD_VAULT mounted",)),
-            (
-                "no unexpected writable persistent filesystem",
-                ("no unexpected writable persistent filesystem",),
-            ),
+            ("no unexpected writable persistent filesystem", ("no unexpected writable persistent filesystem",)),
         )
-        for name, markers in required:
+        for name, markers in required_boot:
             if not any(
                 line.startswith("PASS:") and any(marker in line for marker in markers)
                 for line in checks
@@ -239,6 +302,7 @@ def runtime_audit(
         findings.append("PASS: no active swap" if len(swaps) <= 1 else "FAIL: active swap detected")
     except OSError:
         findings.append("FAIL: unable to inspect swap")
+    findings.extend(_current_mount_evidence(proc_mountinfo, vault_device))
     ok = bool(findings) and not any(line.startswith("FAIL:") for line in findings)
     return ok, tuple(findings)
 
@@ -601,8 +665,10 @@ class OfflineReviewApp:
         self._start_review(plan)
 
     def _import_qr(self):
-        if self.wallet_root is None and not self._unlock():
-            return
+        # A camera decoder can block the Tk event loop indefinitely. Capture
+        # with the wallet locked; only unlock after obtaining validated bytes.
+        requested_kind = self.selected_kind
+        self._lock_wallet()
         if self.qr_reader is None:
             self._lock_wallet(self.t("locked"))
             self.messagebox.showwarning(self.t("error"), self.t("qr_unavailable"), parent=self.root)
@@ -612,7 +678,8 @@ class OfflineReviewApp:
             text = self.qr_reader()
             if not text:
                 raise CameraUnavailable("empty QR capture")
-            plan = load_review_qr(text, self.wallet_root, self.selected_kind)
+            from .exchange import decode_envelope
+            decode_envelope(text, requested_kind)  # Validate untrusted data before unlock.
         except CameraUnavailable:
             self._lock_wallet(self.t("locked"))
             self.messagebox.showwarning(self.t("error"), self.t("camera_failed"), parent=self.root)
@@ -623,6 +690,17 @@ class OfflineReviewApp:
             self.messagebox.showerror(self.t("error"), self.t("camera_failed"), parent=self.root)
             self._render_home()
             return
+        if not self._unlock():
+            self._render_home()
+            return
+        try:
+            plan = load_review_qr(text, self.wallet_root, requested_kind)
+        except (ValueError, OSError, KeyError, TypeError, OverflowError):
+            self._lock_wallet(self.t("locked"))
+            self.messagebox.showerror(self.t("error"), self.t("camera_failed"), parent=self.root)
+            self._render_home()
+            return
+        self.selected_kind = requested_kind
         self._active_usb_file = None
         self._active_usb_identity = None
         self._start_review(plan)
