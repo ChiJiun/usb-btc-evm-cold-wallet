@@ -1,5 +1,6 @@
 """Policy tests use a publicly compromised mnemonic; never use for funds."""
 from dataclasses import replace
+import hashlib
 import json
 
 import pytest
@@ -9,7 +10,7 @@ from usb_cold_wallet.evm import review_evm_transaction
 from usb_cold_wallet.policy import (
     default_profile, validate_profile, normalize_address, wallet_binding,
     register_verified_address, set_limit, save_profile, load_profile,
-    evm_intent, decide, TransactionIntent, btc_intent,
+    evm_intent, decide, TransactionIntent, btc_intent, authorize_review,
 )
 
 MNEMONIC = "abandon " * 11 + "about"
@@ -27,6 +28,51 @@ def sample_evm_intent(root):
           "value": 10**12, "gas": 21000, "maxFeePerGas": 2 * 10**9,
           "maxPriorityFeePerGas": 10**9, "data": "0x"}
     return evm_intent(root, review_evm_transaction(tx, RECIPIENT, 10**12))
+
+
+def test_shared_policy_gate_requires_external_anchor_and_denies_overspend(root, tmp_path):
+    vault = tmp_path / "wallet.vault"
+    path = tmp_path / "wallet.vault.policy"
+    reviewed = review_evm_transaction({
+        "type": 2, "chainId": 11155111, "nonce": 7, "to": RECIPIENT,
+        "value": 10**12, "gas": 21000, "maxFeePerGas": 2 * 10**9,
+        "maxPriorityFeePerGas": 10**9, "data": "0x",
+    }, RECIPIENT, 10**12)
+    save_profile(path, default_profile(root), root, PASSWORD)
+    anchor = hashlib.sha256(path.read_bytes()).hexdigest()
+    intent, decision = authorize_review(root, vault, PASSWORD, anchor, reviewed, "sepolia")
+    assert intent.amount == 10**12
+    assert decision.status == "REQUIRE_EXTRA_CONFIRMATION"
+    with pytest.raises(ValueError, match="anchor"):
+        authorize_review(root, vault, PASSWORD, None, reviewed, "sepolia")
+    with pytest.raises(ValueError, match="mismatched"):
+        authorize_review(root, vault, PASSWORD, "0" * 64, reviewed, "sepolia")
+    changed = set_limit(default_profile(root), root, "evm_max_value_wei", 1)
+    save_profile(path, changed, root, PASSWORD, replace=True)
+    next_anchor = hashlib.sha256(path.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="denied"):
+        authorize_review(root, vault, PASSWORD, next_anchor, reviewed, "sepolia")
+
+
+def test_shared_policy_gate_applies_btc_fee_cap(root, tmp_path):
+    vault = tmp_path / "wallet.vault"
+    path = tmp_path / "wallet.vault.policy"
+    reviewed = {
+        "network": "bitcoin-testnet", "recipient": btc_address(root, 0, 1),
+        "amount_sats": 60000, "fee_sats": 2000,
+        "psbt": type("StubPSBT", (), {
+            "tx": type("TX", (), {"serialize": lambda self: b"a" * 120})(),
+        })(),
+    }
+    save_profile(path, default_profile(root), root, PASSWORD)
+    anchor = hashlib.sha256(path.read_bytes()).hexdigest()
+    intent, decision = authorize_review(root, vault, PASSWORD, anchor, reviewed, "bitcoin-testnet")
+    assert intent.maximum_fee == 2000 and decision.status == "REQUIRE_EXTRA_CONFIRMATION"
+    limited = set_limit(default_profile(root), root, "btc_max_fee_sats", 100)
+    save_profile(path, limited, root, PASSWORD, replace=True)
+    with pytest.raises(ValueError, match="denied"):
+        authorize_review(root, vault, PASSWORD, hashlib.sha256(path.read_bytes()).hexdigest(),
+                         reviewed, "bitcoin-testnet")
 
 
 def test_default_policy_requires_extra_confirmation_for_unknown_address(root):

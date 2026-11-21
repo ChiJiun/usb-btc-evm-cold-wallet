@@ -324,3 +324,28 @@ def decide(profile: dict, root, intent: TransactionIntent) -> PolicyDecision:
     if label is None:
         return PolicyDecision("REQUIRE_EXTRA_CONFIRMATION", ("Unverified recipient; compare full address offline",), None)
     return PolicyDecision("ALLOW_FOR_REVIEW", ("Verified address label; compare full address anyway",), label)
+
+
+def authorize_review(root, vault: Path, password: str, expected_sha256: str,
+                     review: dict, network: str) -> tuple[TransactionIntent, PolicyDecision]:
+    """Shared CLI/GUI/QR fail-closed policy gate for already reviewed transactions.
+
+    The complete wallet-bound, encrypted policy must be loaded from beside
+    the vault. The SHA-256 must come from an independently retained anchor.
+    Authorization does not replace explicit human confirmation or signing.
+    """
+    if type(expected_sha256) is not str or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise ValueError("An independently verified policy SHA-256 anchor is mandatory")
+    vault = Path(vault)
+    policy_path = vault.with_name(vault.name + ".policy")
+    profile = load_profile(policy_path, root, password, expected_sha256=expected_sha256)
+    if network == "sepolia":
+        intent = evm_intent(root, review)
+    elif network == "bitcoin-testnet":
+        intent = btc_intent(root, review)
+    else:
+        raise ValueError("Unsupported signing network")
+    decision = decide(profile, root, intent)
+    if decision.status == "DENY":
+        raise ValueError("Offline policy denied transaction: " + "; ".join(decision.reasons))
+    return intent, decision

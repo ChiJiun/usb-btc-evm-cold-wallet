@@ -4,7 +4,9 @@
 
 一支 USB，就能將日常交易操作與私鑰簽署分開：平常在 Windows 開啟隨身碟內的 **Online Companion**，查看資產、建立交易；需要轉出資產時，重新開機進入 USB 內的專用離線作業系統，確認交易並簽章，再返回 Windows 廣播。
 
-這是一個開源的 **Bitcoin + EVM 自製冷錢包**專案，以一般 USB、最小化 Live OS 與離線簽章核心組成可攜式錢包。設計重點是：**不必在平常使用的電腦安裝錢包環境，私鑰只在離線簽章系統內使用，收款與轉帳流程保持直覺。**
+這是一個以**實際可用的 Bitcoin + EVM 冷錢包產品**為目標的開源專案，以一般 USB、最小化 Live OS 與離線簽章核心組成可攜式錢包。設計重點是：**不必在日常電腦安裝錢包環境，私鑰只在離線簽章系統內使用，收款與轉帳流程保持直覺。**
+
+**驗證策略**：開發與實機端到端測試使用 Bitcoin testnet／Ethereum Sepolia，確保交易、操作、安全與恢復流程真正可用。測試網是降低開發風險的驗證環境；正式開放主網與真實資產前，仍須完成完整硬體驗收、威脅模型與獨立安全審查。
 
 > 以下介紹完整產品的目標使用方式；目前版本與開發進度見[專案進度](#專案進度)。
 
@@ -133,6 +135,8 @@ Windows：開啟 USB 上的 Companion
 
 單 USB 跨開機模式著重設備最少、Windows 免安裝；雙機 QR 模式著重持續維持實體離線環境。兩種模式共用相同的交易解析、人工核對與簽章核心。
 
+**MetaMask、WalletConnect 與 dApp 整合是選用功能。** 自有 Windows Companion 與 USB 離線 GUI 就必須能完成日常收款、查看餘額、建立交易、離線簽署與廣播，不需另外安裝或依賴 MetaMask。介面以清楚的繁體中文、少量必要操作及安全核對為優先。
+
 ## 錢包功能與設計
 
 - **Bitcoin + EVM**：以 Bitcoin PSBT、EVM 交易與公開帳戶管理為核心，逐步擴充支援的交易類型。
@@ -160,7 +164,7 @@ Windows：開啟 USB 上的 Companion
 
 本 README 描述**規劃完成後的產品流程**，並非宣稱所有功能已在目前版本交付。
 
-目前 `main` 為 **v0.1.0 研究原型**，已有 Bitcoin testnet PSBT v0 與 Ethereum Sepolia EIP-1559 原生轉帳的**離線 CLI 簽章核心**、加密 Vault、公開帳戶輸出及 CI 安全檢查。可開機 Live USB、Windows Portable Companion、交易 GUI、QR、MetaMask 整合及單 USB 跨開機流程，正在各功能分支整合與驗證；實體硬體 E2E 驗收尚未完成。
+目前 `main` 為 **v0.1.0 開發階段版本，尚未通過完整產品發行驗收**，已有 Bitcoin testnet PSBT v0 與 Ethereum Sepolia EIP-1559 原生轉帳的**離線 CLI 簽章核心**、加密 Vault、公開帳戶輸出及 CI 安全檢查。可開機 Live USB、Windows Portable Companion、交易 GUI、QR、MetaMask 整合及單 USB 跨開機流程，正在各功能分支整合與驗證；實體硬體 E2E 驗收尚未完成。
 
 現有 [PR #9 的 Live USB 開發映像](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/9)仍為**系統 USB + 獨立交易交換 USB**；首次空白 USB 建置方式與未來單 USB 目標的差異，請見上方製作說明。
 
@@ -180,7 +184,7 @@ pytest
 usb-cold-wallet --help
 ```
 
-[USB 製作與操作](docs/USB_SETUP.md) · [離線交易政策（PR #28）](docs/OFFLINE_POLICY.md) · [安全政策](SECURITY.md) · [威脅模型](docs/THREAT_MODEL.md) · [CI 與供應鏈](docs/CI_SECURITY.md) · [開源技術參考](docs/OPEN_SOURCE_REFERENCES.md)
+[USB 製作與操作](docs/USB_SETUP.md) · [紙本復原與 USB 交換安全](docs/RECOVERY_AND_USB_EXCHANGE.md) · [安全政策](SECURITY.md) · [威脅模型](docs/THREAT_MODEL.md) · [CI 與供應鏈](docs/CI_SECURITY.md) · [開源技術參考](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## 授權
 
