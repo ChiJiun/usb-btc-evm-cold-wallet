@@ -70,15 +70,19 @@ def test_image_verifier_audits_the_kernel_used_for_shipped_bzimage():
     assert "Auditing built kernel config:" in verifier
 
 
-def test_image_has_separate_boot_and_cold_vault_partitions():
+def test_image_has_single_usb_boot_vault_and_transfer_partitions():
     text = (ROOT / "buildroot-external/board/usb-wallet/genimage.cfg").read_text()
     assert 'label = "USBCOLD_EFI"' in text
     assert 'label = "COLD_VAULT"' in text
-    # The blank vault filesystem must not make genimage copy from root/*.
+    assert 'label = "TX_TRANSFER"' in text
     vault_config = text.split("image cold-vault.vfat {", 1)[1].split("vfat {", 1)[0]
     assert "empty = true" in vault_config
     assert "partition boot" in text
     assert "partition vault" in text
+    assert "partition transfer" in text
+    assert 'partition-type-uuid = L' in text
+    assert 'partition-uuid = "42f6f5d4-9310-5ac3-b5d4-1540cbe7d6b4"' in text
+    assert "size = 512M" in text
     assert "read-only = true" in text
 
 
@@ -107,10 +111,11 @@ def test_image_generation_is_deterministic():
     image = (ROOT / "buildroot-external/board/usb-wallet/genimage.cfg").read_text()
     repro = (ROOT / "infra/reproducible.env").read_text()
     assert "BR2_REPRODUCIBLE=y" in defconfig
-    assert image.count('extraargs = "--invariant"') == 2
+    assert image.count('extraargs = "--invariant"') == 3
     assert 'disk-uuid = "f1448aa1-28cc-54bf-8fdd-3008514c0ab5"' in image
     assert 'partition-uuid = "e2bd6d1b-8de5-502d-a897-c53a8e60f46b"' in image
     assert 'partition-uuid = "18f1c36f-d5c0-5052-9cd2-03e9c2a48f00"' in image
+    assert 'partition-uuid = "42f6f5d4-9310-5ac3-b5d4-1540cbe7d6b4"' in image
     assert re.search(r"^SOURCE_DATE_EPOCH=[1-9][0-9]+$", repro, re.MULTILINE)
 
 
@@ -154,6 +159,8 @@ def test_boot_audit_covers_memory_swap_and_persistence_and_fails_closed():
     assert 'LOCKDOWN=/run/usb-wallet/lockdown' in init
     assert 'BOOT_PARENT_FILE=/run/usb-wallet/boot-parent' in init
     assert 'VAULT_DEVICE_FILE=/run/usb-wallet/vault-device' in init
+    assert 'TRANSFER_DEVICE_FILE=/run/usb-wallet/transfer-device' in init
+    assert "single-USB TX_TRANSFER partition bound to verified boot parent" in init
     assert "_security_locked" in appliance
     assert "wallet creation/signing is disabled" in appliance
 
@@ -223,3 +230,27 @@ def test_buildroot_device_manager_preserves_offline_kernel_policy():
     assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV" in validator
     assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y" in verifier
     assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_(MDEV|EUDEV)=y" in verifier
+
+
+def test_buildroot_includes_existing_offline_tk_gui_runtime():
+    config = (ROOT / "buildroot-external/configs/usb_wallet_x86_64_defconfig").read_text()
+    external = (ROOT / "buildroot-external/external.mk").read_text()
+    postbuild = (ROOT / "buildroot-external/board/usb-wallet/post-build.sh").read_text()
+    launcher = (
+        ROOT
+        / "buildroot-external/board/usb-wallet/rootfs-overlay/usr/bin/usb-wallet-gui-session"
+    ).read_text()
+    for symbol in (
+        "BR2_PACKAGE_XORG7=y",
+        "BR2_PACKAGE_XSERVER_XORG_SERVER=y",
+        "BR2_PACKAGE_XSERVER_XORG_SERVER_KDRIVE=y",
+        "BR2_PACKAGE_XAPP_XINIT=y",
+        "BR2_PACKAGE_TK=y",
+    ):
+        assert symbol in config
+    assert "filter-out --disable-tk" in external
+    assert "PYTHON3_DEPENDENCIES += tk" in external
+    assert "usb-wallet-gui-session" in postbuild
+    assert "_tkinter" in postbuild
+    assert "Xfbdev :0 -nolisten tcp" in launcher
+    assert "usb-cold-wallet-gui --lang zh-TW" in launcher
