@@ -337,3 +337,26 @@ def test_signed_usb_export_is_create_only_and_stays_under_transfer_dir(tmp_path)
     assert json.loads(target.read_text())["kind"] == "evm-signed"
     with pytest.raises(FileExistsError):
         app._write_transfer_signed(target)
+
+
+def test_actual_btc_gui_qr_import_review_policy_and_online_verification(tmp_path):
+    app = make_gui(tmp_path)
+    app.selected_kind = "btc-request"
+    original = btc_qr_request()
+    app.qr_reader = lambda: json.dumps(original)
+    qr_output = []
+    app.qr_presenter = qr_output.append
+    app._import_qr()
+    assert app.security.state == State.REVIEWING
+    assert app.session.plan.kind == "btc"
+    assert app.session.plan.amount_atomic == 60000
+    for index in range(len(app.session.plan.pages)):
+        app.session.acknowledge(index, app.session.plan.review_digest)
+    app.session.set_confirmation(app.session.plan.challenge, app.session.plan.review_digest)
+    app._sign()
+    assert app.security.state == State.SIGNED
+    app._present_signed_qr()
+    result = json.loads(qr_output[0])
+    assert verify_btc_response(original, result)["signature_count"] == 1
+    app._done()
+    assert app.wallet_root is None
