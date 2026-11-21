@@ -25,12 +25,19 @@ pnpm/yarn 的獨立 audit，沒有可用 npm lockfile 時會拒絕通過。
 ## Dependency Review 的失敗政策
 
 PR 變更依賴／workflow 時，`Dependency Review` 必須真正執行。
-`scripts/dependency_review_guard.py` 對 Dependency Graph API 200 放行
-並接續執行 pinned `actions/dependency-review-action`，403／404
-（Graph 未啟用或 Token 無權限）以及任何其他非 200 結果均
-**失敗（fail-closed）**。不以 `pip-audit` 或 `npm audit`
-代替 GitHub Actions／manifest 變更的差異審查；請在儲存庫
-Security/Code security 設定啟用 Dependency Graph 並確認存取權限。
+GitHub 已在 **2026-11-13 停用**舊的同步 SBOM API
+(`GET /dependency-graph/sbom`)，因此舊端點的 404 **不能直接證明
+Dependency Graph 未啟用**。CI 改呼叫
+`GET /dependency-graph/sbom/generate-report`（API 2026-03-10），
+只有 HTTP 201 且回傳同 repo 的有效 `sbom_url` 才放行 guard，
+接著強制執行 pinned `actions/dependency-review-action`。
+新的 API 若回覆 401／403／404、非 201、內容錯誤，或後續真正
+Dependency Review 失敗，皆 **fail-closed**。
+
+若新的 API 仍無權存取，需檢查儲存庫
+Settings → Advanced Security / Code security → Dependency Graph 及
+GitHub Actions token 權限。不以 `pip-audit` 或 `npm audit`
+替代 workflow Actions／manifest 依賴變更的差異審查。
 
 ## Lockfile 與受保護分支
 

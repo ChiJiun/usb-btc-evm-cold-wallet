@@ -230,12 +230,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          status="$(curl --silent --show-error --output /tmp/dependency-graph-sbom.json --write-out '%{http_code}' \
+          # The old synchronous /sbom endpoint was retired on 2026-11-13.
+          # Request the new asynchronous export; its HTTP 201 + sbom_url
+          # prove the Graph API can start a report. Dependency Review itself
+          # remains mandatory and will fail if its diff API is unavailable.
+          status="$(curl --silent --show-error --max-time 30 \
+            --output /tmp/dependency-graph-sbom-request.json --write-out '%{http_code}' \
             --header 'Accept: application/vnd.github+json' \
             --header "Authorization: Bearer $GH_TOKEN" \
-            --header 'X-GitHub-Api-Version: 2022-11-28' \
-            "${{ github.api_url }}/repos/${{ github.repository }}/dependency-graph/sbom")"
-          python3 scripts/dependency_review_guard.py "$status"
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "${{ github.api_url }}/repos/${{ github.repository }}/dependency-graph/sbom/generate-report")"
+          python3 scripts/dependency_review_guard.py "$status" \
+            /tmp/dependency-graph-sbom-request.json \
+            "${{ github.repository }}" "${{ github.api_url }}"
 
       - name: Review dependency changes (required)
         uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
