@@ -372,9 +372,12 @@ class PendingRequestStore(_Journal):
         trusted_time: int | None = None,
         allow_no_trusted_clock: bool = False,
     ) -> StateSnapshot:
+        current = self.get(request["requestId"])
+        expected_account = current.metadata.get("account") if current is not None else None
         verify_v2_response(
             request,
             response,
+            expected_account=expected_account,
             trusted_time=trusted_time,
             allow_no_trusted_clock=allow_no_trusted_clock,
         )
@@ -415,11 +418,13 @@ class ReplayLedger(_Journal):
         self,
         request: dict,
         *,
+        expected_account: str,
         trusted_time: int | None = None,
         allow_no_trusted_clock: bool = False,
     ) -> StateSnapshot:
         checked = verify_v2_request(
             request,
+            expected_account=expected_account,
             trusted_time=trusted_time,
             allow_no_trusted_clock=allow_no_trusted_clock,
         )
@@ -441,9 +446,13 @@ class ReplayLedger(_Journal):
         trusted_time: int | None = None,
         allow_no_trusted_clock: bool = False,
     ) -> StateSnapshot:
+        current = self.get(request["requestId"])
+        if current is None or current.state != "COLD_REVIEWED":
+            raise ValueError("Request must be cold-reviewed before signing")
         verify_v2_response(
             request,
             response,
+            expected_account=current.metadata.get("account"),
             trusted_time=trusted_time,
             allow_no_trusted_clock=allow_no_trusted_clock,
         )
