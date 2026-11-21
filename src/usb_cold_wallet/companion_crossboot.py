@@ -5,6 +5,8 @@ only persists public Companion state across Windows/process reboots.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import ctypes
 import hashlib
 import json
@@ -12,7 +14,8 @@ import os
 import re
 from pathlib import Path
 
-from .btc import _read_psbt
+from embit import psbt
+
 from .companion_core import canonical, pack_envelope, unpack_envelope
 
 STATE_FORMAT = "usb-cold-wallet-companion-state"
@@ -71,6 +74,23 @@ def _read_json(path: Path):
         return json.loads(raw.decode("ascii"))
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("Cross-boot state invalid JSON") from exc
+
+
+
+def _read_public_psbt(value: str):
+    """Parse canonical PSBT v0 without importing any offline signer module."""
+    if not isinstance(value, str) or not value or len(value) > 180_000:
+        raise ValueError("BTC PSBT size invalid")
+    try:
+        raw = base64.b64decode(value, validate=True)
+        parsed = psbt.PSBT.parse(raw)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError("BTC PSBT invalid") from exc
+    except Exception as exc:
+        raise ValueError("BTC PSBT cannot be parsed") from exc
+    if not raw.startswith(b"psbt\\xff") or parsed.version is not None or parsed.serialize() != raw:
+        raise ValueError("BTC PSBT must be canonical v0")
+    return parsed
 
 
 def _windows_volume_label(root: str) -> str:
@@ -178,7 +198,7 @@ class CrossBootManager:
         if p.get("stage") not in STAGES:
             raise ValueError("Invalid BTC pending stage")
         request_id = self._request_id(p)
-        unsigned = _read_psbt(p.get("psbt_base64"))
+        unsigned = _read_public_psbt(p.get("psbt_base64"))
         digest = hashlib.sha256(unsigned.serialize()).hexdigest()
         if digest != p.get("digest"):
             raise ValueError("BTC request digest mismatch")
@@ -255,7 +275,7 @@ class CrossBootManager:
         btc = doc["btc"]
         if btc is not None:
             b64 = unpack_envelope(btc["request"], "btc-request")
-            unsigned = _read_psbt(b64)
+            unsigned = _read_public_psbt(b64)
             digest = hashlib.sha256(unsigned.serialize()).hexdigest()
             if digest != btc.get("digest"):
                 raise ValueError("Restored BTC request binding mismatch")
