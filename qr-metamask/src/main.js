@@ -140,6 +140,10 @@ $('verify-address').addEventListener('click',()=>guarded(async()=>{
 }));
 $('scan-address').addEventListener('click',()=>guarded(async()=>{
   if(!publicInfo || active) throw Error('先匯入公開帳戶，並結束目前交易');
+  // Selecting a new MetaMask account must invalidate an earlier verification,
+  // even if this scan later fails, is stopped or gets denied camera access.
+  invalidateAddressConfirmation();
+  clearSession();
   const epoch=camera.begin();
   if(epoch===null) return;
   $('camera').hidden=false;

@@ -207,5 +207,22 @@ test('built browser bundle passes CSP and native QR pairing/request/signed respo
   assert.equal(await page.locator('#scan').isDisabled(), true,
     'Importing a new public file must reset account selection confirmation');
   assert.equal(await page.locator('#parse').isDisabled(), true);
+
+  // A previously verified user can parse, but changing the selected MetaMask
+  // account must revoke any pending unsigned download / signed response.
+  await page.locator('#metamask-address').fill(publicInfo.address);
+  await page.locator('#verify-address').click();
+  await page.getByText('MetaMask 所選地址與離線可簽地址完全相同', {exact:false}).waitFor();
+  await page.locator('#ur-input').fill(framesFromUr(request, 220, 10).join('\n'));
+  await page.locator('#parse').click();
+  assert.equal(await page.locator('#download').isEnabled(), true);
+  await page.locator('#metamask-address').fill(recipient);
+  assert.equal(await page.locator('#download').isDisabled(), true);
+  assert.equal(await page.locator('#signed-file').isDisabled(), true);
+  assert.equal(await page.locator('#reply').isDisabled(), true);
+  assert.equal(await page.locator('#parse').isDisabled(), true);
+  await page.locator('#verify-address').click();
+  await page.getByText('MetaMask 選取地址與離線可簽地址不同', {exact:false}).waitFor();
+  assert.equal(await page.locator('#download').isDisabled(), true);
   assert.deepEqual(errors, [], 'No console or uncaught browser runtime errors');
 });
