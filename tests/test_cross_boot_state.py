@@ -186,7 +186,7 @@ def test_online_state_survives_restarts_and_prevents_double_broadcast(tmp_path):
     store = PendingRequestStore(root)
     assert store.exported(request).state == "EXPORTED"
     store = PendingRequestStore(root)
-    assert store.import_verified(request, response).state == "IMPORTED_VERIFIED"
+    assert store.import_verified(request, response, trusted_time=100).state == "IMPORTED_VERIFIED"
     store = PendingRequestStore(root)
     assert store.broadcasted(request, signed["transaction_hash"]).state == "BROADCASTED"
     store = PendingRequestStore(root)
@@ -200,16 +200,16 @@ def test_cold_replay_ledger_survives_restart_and_blocks_id_and_transaction_repla
     request = evm_request("41" * 16)
     ledger = ReplayLedger(root)
     checked = verify_v2_request(request, trusted_time=100)
-    assert ledger.review_once(request, expiry_assurance=checked["expiryAssurance"]).state == "COLD_REVIEWED"
+    assert ledger.review_once(request, trusted_time=100).state == "COLD_REVIEWED"
     ledger = ReplayLedger(root)
     with pytest.raises(ValueError, match="Duplicate requestId"):
-        ledger.review_once(request, expiry_assurance="trusted-time")
+        ledger.review_once(request, trusted_time=100)
 
     same_tx_new_id = copy.deepcopy(request)
     same_tx_new_id["requestId"] = "42" * 16
     rehash(same_tx_new_id)
     with pytest.raises(ValueError, match="Transaction digest already reviewed"):
-        ledger.review_once(same_tx_new_id, expiry_assurance="trusted-time")
+        ledger.review_once(same_tx_new_id, trusted_time=100)
 
 
 def test_cold_signed_state_and_response_digest_survive_restart(tmp_path):
@@ -217,10 +217,10 @@ def test_cold_signed_state_and_response_digest_survive_restart(tmp_path):
     request = btc_request()
     checked = verify_v2_request(request, trusted_time=100)
     ledger = ReplayLedger(root)
-    ledger.review_once(request, expiry_assurance=checked["expiryAssurance"])
+    ledger.review_once(request, trusted_time=100)
     signed = sign_btc_psbt(ROOT, request["payload"], BTC_RECIPIENT, 60_000, 1500, 0)
     response = package_v2_response(request, signed, trusted_time=100)
-    ledger.mark_signed(request, response)
+    ledger.mark_signed(request, response, trusted_time=100)
     assert ReplayLedger(root).get(request["requestId"]).state == "SIGNED"
 
 
