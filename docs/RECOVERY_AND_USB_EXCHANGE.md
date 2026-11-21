@@ -184,8 +184,28 @@ transaction inclusion. No RPC or network backend is implemented.
   lacks this atomic operation, export fails closed. Abrupt USB removal can
   leave a staging file to inspect/remove; a directory fsync error after
   publish means persistence is uncertain, despite the file being complete.
-  Legacy CLI writes are still create-only and are not covered by this GUI
-  atomic-publish guarantee. Secure deletion is not promised.
+  The CLI's `exchange.write()`, recovery/Vault creation, and signed JSON
+  outputs routed through `save_vault()` now use the same atomic-publish
+  helper; other I/O paths must be checked individually (for example policy
+  snapshot handling is a separate writer). This is a Linux-only atomic
+  directory operation, not proof of durability after controller failure.
+  Secure deletion is not promised.
+
+  **Concurrent modification boundary:** The signer checks that the target
+  directory is owned by its effective UID and completely inaccessible to
+  group/other identities (mode `0700`) before creating any staging file.
+  The production VFAT mount must use
+  `uid/gid` owned by the signer and `dmask=0077` / `umask=0077`, with no
+  other process of the **same UID/root** allowed to write there while signing.
+  A FAT32 directory has no per-file permissions; malicious code running with
+  the signer's privileges can still rename/modify entries between kernel
+  operations, including the cleanup path. The open staging file descriptor
+  remains pinned through rename, with post-publish identity/size verification
+  to detect substitutions before reporting success. This is **not** a
+  guarantee against concurrent privileged malware or Windows modification
+  while the volume is mounted elsewhere. On identity mismatch, export fails
+  closed, but a suspicious final directory entry may require manual review
+  before removal/retry.
 - **Network confusion:** Every signing screen labels **BITCOIN TESTNET**
   or **ETHEREUM SEPOLIA (11155111)**. Mainnet signing is deliberately
   disabled. Do not assume the USB data originates from the chain claimed.
