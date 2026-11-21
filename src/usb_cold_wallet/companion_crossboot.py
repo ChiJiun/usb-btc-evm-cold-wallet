@@ -249,6 +249,9 @@ class CrossBootManager:
             btc_session.import_wallet(wallet)
 
         evm = doc["evm"]
+        btc = doc["btc"]
+        if (evm is not None or btc is not None) and wallet is None:
+            raise ValueError("Pending cross-boot request is missing watch-only account binding")
         if evm is not None:
             tx = unpack_envelope(evm["request"], "evm-request")
             digest = hashlib.sha256(canonical(tx)).hexdigest()
@@ -272,7 +275,6 @@ class CrossBootManager:
                     if key in evm:
                         session.pending[key] = evm[key]
 
-        btc = doc["btc"]
         if btc is not None:
             b64 = unpack_envelope(btc["request"], "btc-request")
             unsigned = _read_public_psbt(b64)
