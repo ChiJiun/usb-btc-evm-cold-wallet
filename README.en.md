@@ -44,7 +44,7 @@ Insert the USB in Windows and launch its **Portable Companion** directly to:
 
 The planned single-computer, single-USB flow:
 
-\`\`\`text
+```text
 Windows: launch Companion from USB
     │
     ├─ Choose BTC / EVM, recipient and amount
@@ -65,7 +65,7 @@ Reboot → return to Windows
     ├─ Companion imports the signed result
     ├─ Verifies the account, chain and fields against the request
     └─ Click "Broadcast" → show TxID / Tx Hash and status
-\`\`\`
+```
 
 For **Bitcoin**, the online side prepares a watch-only PSBT; the signer checks UTXOs, recipient, change and fees before signing. The online side finalizes and broadcasts.
 
@@ -77,11 +77,11 @@ The normal workflow does not require editing JSON, running CLI commands, or copy
 
 With a dedicated offline computer, the USB can remain attached to that computer. Transactions can move by QR without rebooting for each signature.
 
-\`\`\`text
+```text
 Online computer / Companion                  Offline computer / USB Signer
 Prepare BTC / EVM request      ── QR ──►    Scan, independently review
 Verify signature & broadcast   ◄─ QR ───    Explicitly approve and sign
-\`\`\`
+```
 
 Supported design paths include animated QR transport, a separate transfer USB when cameras are unavailable, and optional MetaMask integration using public accounts and a QR signing bridge.
 
@@ -96,7 +96,7 @@ Single-USB cross-boot mode prioritizes portability and a zero-install Windows ex
 - **Simple interfaces:** Windows Portable Companion and dedicated offline GUI, including Traditional Chinese.
 - **Verifiable images:** Buildroot Live USB, pinned dependencies, reproducible builds, and QEMU/OVMF boot checks.
 
-\`\`\`text
+```text
                      Cold-wallet USB
           ┌──────────────────────────┐
           │ UEFI / Buildroot Live OS │ → offline signing interface
@@ -104,7 +104,7 @@ Single-USB cross-boot mode prioritizes portability and a zero-install Windows ex
           │ Transaction Exchange     │ → unsigned / signed data
           │ Windows Portable App     │ → online wallet companion
           └──────────────────────────┘
-\`\`\`
+```
 
 Private-key signing and network broadcasting run in separate environments. An ordinary USB drive still depends on the integrity of the offline host and boot image. See the [threat model](docs/THREAT_MODEL.md).
 
@@ -112,7 +112,7 @@ Private-key signing and network broadcasting run in separate environments. An or
 
 This document presents the **planned fully integrated product experience**, not a claim that all components are currently available.
 
-The current \`main\` branch is a **v0.1.0 research prototype** with an offline CLI signing core for Bitcoin testnet PSBT v0 and Ethereum Sepolia EIP-1559 native transfers, an encrypted vault, public account export, and CI security checks. The bootable Live USB, Windows Portable Companion, signing GUI, QR transport, MetaMask integration, and cross-boot workflow are being integrated and verified in feature branches. Physical end-to-end validation is still pending.
+The current `main` branch is a **v0.1.0 research prototype** with an offline CLI signing core for Bitcoin testnet PSBT v0 and Ethereum Sepolia EIP-1559 native transfers, an encrypted vault, public account export, and CI security checks. The bootable Live USB, Windows Portable Companion, signing GUI, QR transport, MetaMask integration, and cross-boot workflow are being integrated and verified in feature branches. Physical end-to-end validation is still pending.
 
 Development currently targets **Bitcoin testnet and Ethereum Sepolia**. Mainnet or real-asset use requires separate security review and release acceptance.
 
@@ -122,13 +122,13 @@ Track progress: [Issues](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issu
 
 The current offline signing core requires Python 3.12+ for development.
 
-\`\`\`bash
+```bash
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e ".[dev]"
 pytest
 usb-cold-wallet --help
-\`\`\`
+```
 
 [USB setup and operation](docs/USB_SETUP.md) · [Security policy](SECURITY.md) · [Threat model](docs/THREAT_MODEL.md) · [CI and supply chain](docs/CI_SECURITY.md) · [Open-source references](docs/OPEN_SOURCE_REFERENCES.md)
 
