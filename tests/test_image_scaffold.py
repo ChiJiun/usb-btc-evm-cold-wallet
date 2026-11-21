@@ -48,6 +48,16 @@ def test_rootfs_device_management_does_not_force_kernel_networking():
     assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_(MDEV|EUDEV)=y$" in verifier
 
 
+def test_initramfs_mounts_devtmpfs_before_boot_audit():
+    init_dir = ROOT / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d"
+    early_mount = (init_dir / "S00devtmpfs").read_text()
+    audit = init_dir / "S01airgap"
+    assert "mount -t devtmpfs" in early_mount
+    assert "test -c /dev/console" in early_mount
+    assert "test -c /dev/ttyS0" not in early_mount  # physical PCs may lack a serial port
+    assert (init_dir / "S00devtmpfs").name < audit.name
+
+
 def test_image_verifier_audits_the_kernel_used_for_shipped_bzimage():
     verifier = (ROOT / "scripts/verify_image.sh").read_text()
     assert 'set -- "$OUT"/build/linux-*/.config' in verifier
