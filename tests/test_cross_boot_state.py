@@ -189,6 +189,15 @@ def test_online_state_survives_restarts_and_prevents_double_broadcast(tmp_path):
     store = PendingRequestStore(root)
     assert store.import_verified(request, response, trusted_time=100).state == "IMPORTED_VERIFIED"
     store = PendingRequestStore(root)
+    with pytest.raises(ValueError, match="durable pre-broadcast"):
+        store.broadcasted(request, signed["transaction_hash"])
+    assert store.broadcast_requested(request, signed["transaction_hash"]).state == "BROADCAST_REQUESTED"
+    store = PendingRequestStore(root)
+    assert store.get(request["requestId"]).state == "BROADCAST_REQUESTED"
+    with pytest.raises(ValueError, match="transition"):
+        store.broadcast_requested(request, signed["transaction_hash"])
+    with pytest.raises(ValueError, match="durable pre-broadcast"):
+        store.broadcasted(request, "0x" + "aa" * 32)
     assert store.broadcasted(request, signed["transaction_hash"]).state == "BROADCASTED"
     store = PendingRequestStore(root)
     assert store.get(request["requestId"]).state == "BROADCASTED"
@@ -196,10 +205,49 @@ def test_online_state_survives_restarts_and_prevents_double_broadcast(tmp_path):
         store.broadcasted(request, signed["transaction_hash"])
 
 
+def test_btc_valid_signature_with_modified_derivation_origin_is_rejected():
+    request = btc_request()
+    signed = sign_btc_psbt(ROOT, request["payload"], BTC_RECIPIENT, 60_000, 1500, 0)
+    changed = copy.deepcopy(signed)
+    parsed = psbt.PSBT.parse(base64.b64decode(changed["signed_psbt_base64"]))
+    pub = next(iter(parsed.inputs[0].bip32_derivations))
+    parsed.inputs[0].bip32_derivations[pub] = psbt.DerivationPath(
+        ROOT.my_fingerprint, bip32.parse_path("m/84h/1h/0h/0/99")
+    )
+    changed["signed_psbt_base64"] = base64.b64encode(parsed.serialize()).decode()
+    with pytest.raises(ValueError, match="unsigned metadata"):
+        package_v2_response(request, changed, trusted_time=100)
+
+
+def test_stale_online_instances_cannot_recreate_or_rebroadcast(tmp_path):
+    root = tmp_path / "state"
+    request = evm_request()
+    first = PendingRequestStore(root)
+    stale = PendingRequestStore(root)
+    first.create(request)
+    with pytest.raises(ValueError, match="transition"):
+        stale.create(request)
+
+
+def test_partial_journal_write_blocks_new_broadcast_attempt(tmp_path):
+    request = evm_request()
+    signed = sign_evm(ROOT, request["payload"], EVM_RECIPIENT, request["intent"]["amount"])
+    response = package_v2_response(request, signed, trusted_time=100)
+    root = tmp_path / "state"
+    store = PendingRequestStore(root)
+    store.create(request)
+    store.exported(request)
+    store.import_verified(request, response, trusted_time=100)
+    (root / ".crashed-write.partial").write_bytes(b"truncated")
+    with pytest.raises(StateCorruptionError, match="Unresolved journal"):
+        PendingRequestStore(root).broadcast_requested(request, signed["transaction_hash"])
+
+
 def test_cold_replay_ledger_survives_restart_and_blocks_id_and_transaction_replay(tmp_path):
     root = tmp_path / "cold-ledger"
     request = evm_request("41" * 16)
     ledger = ReplayLedger(root)
+    stale_ledger = ReplayLedger(root)
     checked = verify_v2_request(request, trusted_time=100)
     assert ledger.review_once(request, expected_account=request["account"], trusted_time=100).state == "COLD_REVIEWED"
     ledger = ReplayLedger(root)
@@ -209,8 +257,49 @@ def test_cold_replay_ledger_survives_restart_and_blocks_id_and_transaction_repla
     same_tx_new_id = copy.deepcopy(request)
     same_tx_new_id["requestId"] = "42" * 16
     rehash(same_tx_new_id)
+    # A second process with an earlier snapshot must reload under the lock.
     with pytest.raises(ValueError, match="Transaction digest already reviewed"):
         ledger.review_once(same_tx_new_id, expected_account=same_tx_new_id["account"], trusted_time=100)
+    with pytest.raises(ValueError, match="Transaction digest already reviewed"):
+        stale_ledger.review_once(same_tx_new_id, expected_account=same_tx_new_id["account"], trusted_time=100)
+
+
+def test_replay_ledger_rejects_same_evm_nonce_with_changed_unsigned_payload(tmp_path):
+    root = tmp_path / "cold-ledger"
+    first = evm_request("71" * 16, nonce=7)
+    ledger = ReplayLedger(root)
+    ledger.review_once(first, expected_account=EVM_ACCOUNT, trusted_time=100)
+
+    changed = evm_tx(nonce=7, value=123456790)
+    other = package_v2_request(
+        "evm-request", changed, request_id="72" * 16,
+        account=EVM_ACCOUNT, recipient=EVM_RECIPIENT, amount=changed["value"],
+        expiry={"mode": "trusted-time", "notAfter": 200},
+    )
+    assert first["transactionDigest"] != other["transactionDigest"]
+    with pytest.raises(ValueError, match="nonce already reserved"):
+        ReplayLedger(root).review_once(other, expected_account=EVM_ACCOUNT, trusted_time=100)
+
+
+def test_replay_ledger_rejects_same_btc_outpoint_with_changed_payment(tmp_path):
+    root = tmp_path / "cold-ledger"
+    first = btc_request("81" * 16)
+    ReplayLedger(root).review_once(
+        first, expected_account=ROOT.my_fingerprint.hex(), trusted_time=100
+    )
+    parsed = psbt.PSBT.parse(base64.b64decode(btc_psbt()))
+    parsed.tx.vout[0].value += 1
+    parsed.tx.vout[1].value -= 1
+    changed = package_v2_request(
+        "btc-request", parsed.to_base64(), request_id="82" * 16,
+        account=ROOT.my_fingerprint.hex(), recipient=BTC_RECIPIENT, amount=60_001,
+        expiry={"mode": "trusted-time", "notAfter": 200},
+    )
+    assert first["transactionDigest"] != changed["transactionDigest"]
+    with pytest.raises(ValueError, match="UTXO already reserved"):
+        ReplayLedger(root).review_once(
+            changed, expected_account=ROOT.my_fingerprint.hex(), trusted_time=100
+        )
 
 
 def test_cold_signed_state_and_response_digest_survive_restart(tmp_path):
@@ -323,3 +412,17 @@ def test_no_clock_cold_review_persists_unverified_assurance(tmp_path):
     ledger = ReplayLedger(tmp_path / "ledger")
     snap = ledger.review_once(request, expected_account=EVM_ACCOUNT, allow_no_trusted_clock=True)
     assert snap.metadata["expiryAssurance"] == "unverified"
+
+
+def test_online_journal_import_does_not_load_cold_signing_modules():
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; import usb_cold_wallet.transaction_state; "
+        "assert 'usb_cold_wallet.cross_boot' not in sys.modules; "
+        "assert 'usb_cold_wallet.btc' not in sys.modules; "
+        "assert 'usb_cold_wallet.evm' not in sys.modules; "
+        "assert 'usb_cold_wallet.vault' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
