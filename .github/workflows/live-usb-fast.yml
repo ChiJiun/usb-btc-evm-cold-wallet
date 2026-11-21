@@ -2,17 +2,9 @@ name: Live USB fast boot diagnostics
 
 # Optional developer feedback only. The existing two-clean-build workflow
 # remains the authoritative reproducibility and merge gate.
+# Optional, explicitly requested diagnostics. The full reproducibility workflow
+# runs automatically for relevant pull requests; avoid a redundant image build.
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/live-usb-fast.yml"
-      - "buildroot-external/**"
-      - "infra/**"
-      - "scripts/**"
-      - "src/**"
-      - "tests/**"
-      - "Makefile"
-      - "pyproject.toml"
   workflow_dispatch:
 
 permissions:
