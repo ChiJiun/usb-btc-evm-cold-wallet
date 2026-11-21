@@ -1,0 +1,34 @@
+{
+  "name": "@chijiun/usb-cold-metamask-qr",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Experimental MetaMask QR hardware wallet adapter, Keystone UR standards, Sepolia only",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:python": "node --test tests/python-integration.mjs",
+    "test:browser": "node --test tests/browser-smoke.mjs",
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1",
+    "check": "npm test && npm run build"
+  },
+  "dependencies": {
+    "@keystonehq/bc-ur-registry": "0.8.1",
+    "@keystonehq/bc-ur-registry-eth": "0.23.1",
+    "@ngraveio/bc-ur": "1.1.13",
+    "@zxing/browser": "0.1.5",
+    "buffer": "6.0.3",
+    "ethers": "6.17.0",
+    "qrcode": "1.5.4"
+  },
+  "devDependencies": {
+    "@metamask/eth-qr-keyring": "^3.0.2",
+    "buffer": "^6.0.3",
+    "playwright": "1.65.1",
+    "vite": "7.3.8",
+    "vite-plugin-node-polyfills": "0.28.0"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
+  }
+}

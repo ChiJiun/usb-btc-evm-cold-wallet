@@ -94,16 +94,17 @@ The app only binds `127.0.0.1`, uses an ephemeral local API token, rejects non-l
 1. Import `watch-only.json` using the browser's file picker.
 2. Click **更新餘額與預估費用**. The UI checks the RPC's `eth_chainId` and shows balance, pending nonce and gas estimates.
 3. Enter full recipient address, ETH amount, and optional max fee (Gwei); click **建立並核對交易**. The server prepares a type-2 **Sepolia** native transfer with `gas=21000`, no calldata or access list, shows recipient, amount, nonce, maximum fee, maximum spend and a SHA-256 digest. It rejects insufficient balance and implausible fee quotes.
-4. Download `evm-request` envelope (**#5 offline signer**) or **舊版 JSON** (current `main` signer). Copy the data file to transport USB-B. This version does **not** implement QR.
-5. On your **physically offline** Signer, independently check full recipient and amount, unlock, review, and sign. For #5 signer:
+4. Download the merged #11 `evm-request` envelope or the legacy JSON option. Copy the data file to transport USB-B. This version does **not** implement QR.
+5. On your **physically offline** Signer, independently check the full recipient, amount and independently stored policy hash, then unlock, review and sign:
    ```bash
    usb-cold-wallet --vault /offline/wallet.vault sign-evm \
      --request /transport/sepolia-unsigned-REQUEST_ID.json \
      --to 0xYOUR_INDEPENDENTLY_VERIFIED_RECIPIENT \
      --wei EXACT_AMOUNT_IN_WEI \
+     --expected-policy-sha256 INDEPENDENT_CURRENT_POLICY_SHA256 \
      --out /transport/sepolia-signed.json
    ```
-   For the current `main` signer use `--tx /transport/sepolia-legacy-REQUEST_ID.json` instead of `--request`. **Do not trust the online display as your only source for recipient/amount.** This CLI step remains until the future #19 offline GUI.
+   The legacy `--tx /transport/sepolia-legacy-REQUEST_ID.json` remains supported, but it requires the same offline policy and external SHA-256 anchor. **Do not trust the online display as your only source for recipient/amount.** This CLI step remains until the future #19 offline GUI.
 6. Copy signed output on USB-B to the online computer; choose **驗證離線簽章** in Companion. It supports the #5 `evm-signed` envelope **and** the legacy signed JSON. The Companion parses the raw EIP-1559 transaction, recovers the signer, and compares **chainId, sender, nonce, recipient, value, gas, both fee caps, calldata, access list, and tx hash** with the still-pending session. Only an exact match moves to `verified`.
 7. Explicitly click **確認廣播已驗證的交易**. It rechecks the network and pending nonce, submits the **unchanged** raw signed tx with `eth_sendRawTransaction` and checks the returned hash. It will never auto-sign, auto-fee-bump, or auto-resend on timeout.
 8. Click **查詢鏈上狀態**. This displays RPC-observed pending / included-success / reverted / not-found, with a warning on detected suspected reorg. Inclusion alone is not economic finality; do not confuse a single receipt with many confirmations.
@@ -115,17 +116,18 @@ The app only binds `127.0.0.1`, uses an ephemeral local API token, rejects non-l
 1. From the offline signer (updated source), export **public** watch-only data as shown in §1. The Bitcoin section now includes public `master_fingerprint`, required to generate correct BIP32 derivation paths. **Older exports without it remain read-only.** This fingerprint and the tpub do not prove their own authenticity; compare BTC receive addresses and fingerprint against the trusted offline machine.
 2. In Online Companion, choose **查詢 BTC 已確認餘額**. The configured Bitcoin testnet Esplora API queries confirmed UTXOs for the *exported* receiving address count and up to 20 internal change addresses. This is **limited discovery**, not a full wallet history synchronizer. Public Esplora sees your queried addresses.
 3. Enter a **Bitcoin testnet native SegWit P2WPKH address**, BTC amount, optional fee rate (sat/vB), and maximum absolute miner fee (sats). The Companion selects up to 20 confirmed UTXOs, fetches their **original raw transactions** and independently verifies outpoint TXID/index, input value and script. It uses a conservative fee estimate, detects previously used change addresses from Esplora's chain+mem pool counters, sets no RBF / no locktime and builds BIP174 PSBT v0 with witness and non-witness prevouts plus BIP84 master fingerprint/path.
-4. Download **BTC PSBT 交換檔** for the pending #5 CLI (`btc-request` envelope) or **舊版 PSBT** for current main CLI (`--psbt` argument). Copy only the data file to USB-B and take it to physically offline computer.
-5. Independently verify the complete recipient, amount, maximum miner fee and **actual change index** in the Offline Signer. Example (for #5's signer):
+4. Download the merged #11 **BTC PSBT exchange** (`btc-request` envelope) or legacy PSBT (`--psbt` argument). Copy only the data file to USB-B and take it to physically offline computer.
+5. Independently verify the complete recipient, amount, maximum miner fee, **actual change index**, and externally recorded policy SHA-256 on the Offline Signer:
    ```bash
    usb-cold-wallet --vault /offline/wallet.vault sign-btc \
      --request /transport/bitcoin-testnet-unsigned-REQUEST_ID.json \
      --to tb1qINDEPENDENTLY_VERIFIED_DESTINATION \
      --sats EXACT_SATOSHIS --max-fee-sats MAX_SATS \
      --change-index CHANGE_INDEX \
+     --expected-policy-sha256 INDEPENDENT_CURRENT_POLICY_SHA256 \
      --out /transport/bitcoin-testnet-signed.json
    ```
-   For legacy main signer use `--psbt /transport/bitcoin-testnet-legacy-REQUEST_ID.psbt` rather than `--request`. If no change output, **omit** `--change-index`. Both signers must review/sign independently, and the hardened #2 branch imposes stronger independent PSBT validation. Do not sign anything based only on the connected PC's display.
+   The legacy `--psbt /transport/bitcoin-testnet-legacy-REQUEST_ID.psbt` option remains supported and requires the same encrypted policy and independent anchor. If no change output, **omit** `--change-index`. Both signers must review/sign independently, and the hardened #2 branch imposes stronger independent PSBT validation. Do not sign anything based only on the connected PC's display.
 6. Bring the signed JSON / #5 `btc-signed` envelope back to Online Companion and choose **驗證簽署 PSBT**. The Companion independently verifies each ECDSA signature, its sighash type, **all** PSBT unsigned fields and metadata against the original, and finalizes only the expected P2WPKH witnesses. Optional hardened-signer `finalized_tx_hex` must match the locally built signed transaction exactly.
 7. **Explicitly** click **確認廣播 BTC Testnet** to submit the exact, already verified transaction to your configured Esplora. If transmission times out, treat it as ambiguous: **do not automatically resend**. Query the transaction ID and independently inspect the network before rebuilding.
 8. Use **查詢 BTC 交易狀態** for mempool / confirmed / possible reorganization status. A public explorer is not a trusted consensus source, and a reported confirmation does not mean irreversibility.

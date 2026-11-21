@@ -55,5 +55,11 @@ jobs:
       - name: Build browser Companion
         run: npm run build:companion
 
+      - name: Install Chromium for production Companion browser tests
+        run: npx playwright install --with-deps --only-shell chromium
+
+      - name: Test downloaded QR integrity and fail-closed browser UX
+        run: npm run test:browser
+
       - name: Reject high/critical runtime dependency advisories
         run: npm audit --omit=dev --audit-level=high

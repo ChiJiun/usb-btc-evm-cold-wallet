@@ -99,11 +99,23 @@ async function assertLiveIntent(item) {
   // RPC may be untrusted; Snap still independently validates the signed transaction.
 }
 function download(filename,content) {
+  if (!/^cold-sepolia-request-[0-9a-f]{32}\.json$/.test(filename)) {
+    throw Error('不合法的下載檔名');
+  }
   const file = new Blob([content],{type:'application/json'});
   const url = URL.createObjectURL(file);
   const anchor = document.createElement('a');
-  anchor.href = url; anchor.download = filename; anchor.click();
-  URL.revokeObjectURL(url);
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.hidden = true;
+  document.body.appendChild(anchor);
+  try {
+    anchor.click();
+  } finally {
+    anchor.remove();
+    // Keep the Blob alive until the browser has started the download.
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
 }
 $('connect').addEventListener('click',()=>guarded(async()=>{
   const rpc=provider();
@@ -133,6 +145,9 @@ $('export').addEventListener('click',()=>guarded(async()=>{
   }});
   if(typeof qr!=='string' || qr.length>MAX_FILE_BYTES) throw Error('不合法的 QR request');
   const requestId = JSON.parse(qr).request_id; // ID only; never parse Wei here.
+  if (typeof requestId !== 'string' || !/^[0-9a-f]{32}$/.test(requestId)) {
+    throw Error('不合法的 QR request ID');
+  }
   download('cold-sepolia-request-'+requestId+'.json',qr);
   status('請用 #18 QR transport 顯示此請求，在離線裝置獨立驗證交易後簽署。');
 }));

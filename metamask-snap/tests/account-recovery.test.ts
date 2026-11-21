@@ -74,6 +74,21 @@ test('delete save failure does not notify, emitted delete survives restart clean
   assert.equal(h.events.filter((e) => e === 'notify:accountDeleted').length,1);
 });
 
+test('create event delivered but cleanup fails: restart never resends without explicit recovery', async () => {
+  const h = harness();
+  let k = h.open();
+  h.failCleanup();
+  await assert.rejects(() => k.createAccount({address}), /cleanup failed/);
+  assert.equal(h.events.filter((e) => e === 'notify:accountCreated').length, 1);
+  k = h.open();
+  assert.deepEqual(k.listAccountEvents().map((e) => [e.kind,e.attempted]), [['created',true]]);
+  await assert.rejects(() => k.createAccount({address:'0x000000000000000000000000000000000000bEEF'}),/previous account notification/);
+  assert.equal(h.events.filter((e) => e === 'notify:accountCreated').length, 1);
+  await k.recoverAccountEvent('abandon');
+  assert.deepEqual(k.listAccountEvents(),[]);
+  assert.equal(h.events.filter((e) => e === 'notify:accountCreated').length, 1);
+});
+
 test('delete emit failure preserves event for restart, new account blocked until recovery', async () => {
   const h = harness();
   let k = h.open();
