@@ -177,3 +177,24 @@ def test_btc_bad_usb_rejected_before_unlock(tmp_path, monkeypatch):
             "--max-fee-sats", "1000", "--out", str(tmp_path / "signed.json"),
             "--expected-policy-sha256", "0" * 64]
     assert cli.main(argv) == 1
+
+
+def test_missing_independent_anchor_rejected_before_unlock(tmp_path, monkeypatch):
+    path = tmp_path / "unsigned.json"
+    path.write_text(json.dumps(TX), encoding="utf-8")
+    monkeypatch.setattr(cli, "_wallet_root",
+                        lambda _args: pytest.fail("Missing anchor must fail before wallet unlock"))
+    argv = ["--vault", str(tmp_path / "wallet.vault"), "sign-evm",
+            "--tx", str(path), "--to", RECIPIENT, "--wei", str(TX["value"]),
+            "--out", str(tmp_path / "signed.json")]
+    assert cli.main(argv) == 1
+    assert not (tmp_path / "signed.json").exists()
+
+
+def test_policy_cli_prints_exact_current_digest_for_independent_record(tmp_path, capsys):
+    policy = tmp_path / "wallet.vault.policy"
+    save_profile(policy, default_profile(ROOT), ROOT, PASSWORD)
+    cli._print_anchor_for_independent_record(policy)
+    printed = capsys.readouterr().out
+    assert hashlib.sha256(policy.read_bytes()).hexdigest() in printed
+    assert "record independently" in printed
