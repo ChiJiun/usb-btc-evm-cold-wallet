@@ -247,6 +247,7 @@ def test_cold_replay_ledger_survives_restart_and_blocks_id_and_transaction_repla
     root = tmp_path / "cold-ledger"
     request = evm_request("41" * 16)
     ledger = ReplayLedger(root)
+    stale_ledger = ReplayLedger(root)
     checked = verify_v2_request(request, trusted_time=100)
     assert ledger.review_once(request, expected_account=request["account"], trusted_time=100).state == "COLD_REVIEWED"
     ledger = ReplayLedger(root)
@@ -257,7 +258,6 @@ def test_cold_replay_ledger_survives_restart_and_blocks_id_and_transaction_repla
     same_tx_new_id["requestId"] = "42" * 16
     rehash(same_tx_new_id)
     # A second process with an earlier snapshot must reload under the lock.
-    stale_ledger = ReplayLedger(root)
     with pytest.raises(ValueError, match="Transaction digest already reviewed"):
         ledger.review_once(same_tx_new_id, expected_account=same_tx_new_id["account"], trusted_time=100)
     with pytest.raises(ValueError, match="Transaction digest already reviewed"):
@@ -374,3 +374,17 @@ def test_no_clock_cold_review_persists_unverified_assurance(tmp_path):
     ledger = ReplayLedger(tmp_path / "ledger")
     snap = ledger.review_once(request, expected_account=EVM_ACCOUNT, allow_no_trusted_clock=True)
     assert snap.metadata["expiryAssurance"] == "unverified"
+
+
+def test_online_journal_import_does_not_load_cold_signing_modules():
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; import usb_cold_wallet.transaction_state; "
+        "assert 'usb_cold_wallet.cross_boot' not in sys.modules; "
+        "assert 'usb_cold_wallet.btc' not in sys.modules; "
+        "assert 'usb_cold_wallet.evm' not in sys.modules; "
+        "assert 'usb_cold_wallet.vault' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
