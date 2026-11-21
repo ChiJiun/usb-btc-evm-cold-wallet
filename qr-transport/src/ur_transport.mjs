@@ -137,23 +137,29 @@ export class BoundedURScanner {
     if (!Number.isSafeInteger(maxDurationMs) || maxDurationMs < 1 || maxDurationMs > MAX_SCAN_MS)
       throw new Error("Invalid scan lifetime");
     this.#now = now;
-    this.#start = now();
+    this.#start = null;
     this.duration = maxDurationMs;
   }
   get progress() { return this.#finished ? 1 : this.#decoder.progress; }
   get count() { return this.#frames; }
   get done() { return this.#finished !== null; }
   get payload() { return this.#finished; }
+  // Start only on an explicit scan attempt or on the first received frame.
+  // A page can remain open for hours before its first scanning session.
+  start() {
+    if (this.#start === null) this.#start = this.#now();
+  }
   reset() {
     this.#decoder = new MultipartDecoder();
     this.#seen.clear();
     this.#type = null;
-    this.#start = this.#now();
+    this.#start = null;
     this.#frames = 0;
     this.#finished = null;
   }
   add(frame) {
     if (this.done) throw new Error("QR session already completed; reset before rescanning");
+    this.start();
     const time = this.#now() - this.#start;
     if (time < 0 || time > this.duration) throw new Error("QR scan timed out");
     if (typeof frame !== "string" || frame.length > MAX_FRAME_CHARS ||
