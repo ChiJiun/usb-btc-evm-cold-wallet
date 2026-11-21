@@ -19,7 +19,7 @@ import secrets
 import stat
 from pathlib import Path
 
-from embit import psbt
+from embit import networks, psbt
 from eth_utils import to_checksum_address
 
 from .companion_core import canonical, pack_envelope, unpack_envelope
@@ -229,9 +229,7 @@ def _btc_intent(payload: str, account: str, recipient: str, amount: int) -> dict
     hits = 0
     for out in parsed.tx.vout:
         try:
-            address = out.script_pubkey.address({"bech32": "tb", "p2pkh": 0x6f,
-                                                  "p2sh": 0xc4, "wif": 0xef,
-                                                  "xprv": 0x04358394, "xpub": 0x043587cf})
+            address = out.script_pubkey.address(networks.NETWORKS["test"])
         except Exception:
             continue
         if address == recipient and out.value == amount:
