@@ -77,7 +77,7 @@ test('SDK keyring RPC: durable account notifications, selection and concurrent c
   const signing = {id:'12345678-1234-4123-8123-123456789016',
     account:accounts[0].id,scope:'eip155:11155111',
     request:{method:'eth_signTransaction',params:[tx]}};
-  const submitted = await keyring('metamask','keyring_submitRequest',{request:signing}) as {pending:boolean};
+  const submitted = await keyring('metamask','keyring_submitRequest',signing) as {pending:boolean};
   assert.equal(submitted.pending,true);
   const exported = await rpc('usb_getQrRequest',{id:signing.id}) as string;
   assert.match(exported,/123456789012345678/);
@@ -97,7 +97,7 @@ test('SDK keyring RPC: durable account notifications, selection and concurrent c
   await rpc('usb_recoverTerminalEvent',{id:signing.id,action:'retry'});
   assert.deepEqual(await rpc('usb_listTerminalEvents'),[]);
   assert.deepEqual(await keyring(origin,'keyring_listRequests'),[]);
-  await assert.rejects(() => keyring('metamask','keyring_submitRequest',{request:signing}),
+  await assert.rejects(() => keyring('metamask','keyring_submitRequest',signing),
     /Duplicate|replayed/);
   assert.equal(notifications.length,2);
 });
