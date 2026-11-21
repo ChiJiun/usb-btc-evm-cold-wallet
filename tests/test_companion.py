@@ -15,6 +15,7 @@ from usb_cold_wallet.companion_core import (
 )
 from usb_cold_wallet.companion_web import create_server
 from usb_cold_wallet.keys import root_from_mnemonic, watch_only, evm_account
+from usb_cold_wallet.evm import decode_signed_eip1559, sign_evm
 
 PUBLIC_TEST_MNEMONIC = "abandon " * 11 + "about"  # publicly known and unusable for real funds
 TEST_ROOT = root_from_mnemonic(PUBLIC_TEST_MNEMONIC)
@@ -76,13 +77,18 @@ def sign_result(tx=None, account=None):
         raise AssertionError("Supply the requested transaction")
     account = account or evm_account(TEST_ROOT)
     signed = Account.sign_transaction(tx, account.key)
+    raw = "0x" + signed.raw_transaction.hex()
+    decoded = decode_signed_eip1559(raw)
     return {
         "chain_id": CHAIN_ID,
         "from": account.address,
         "to": tx["to"],
         "value_wei": tx["value"],
-        "transaction_hash": signed.hash.hex(),
-        "signed_raw_transaction": "0x" + signed.raw_transaction.hex(),
+        "max_fee_wei": tx["gas"] * tx["maxFeePerGas"],
+        "max_total_wei": tx["value"] + tx["gas"] * tx["maxFeePerGas"],
+        "decoded_transaction": decoded,
+        "transaction_hash": decoded["transaction_hash"],
+        "signed_raw_transaction": raw,
     }
 
 
@@ -443,3 +449,56 @@ def test_loopback_http_rejects_cross_origin_and_serves_ui_without_remote_resourc
         server.shutdown()
         server.server_close()
         thread.join(5)
+
+
+def test_real_offline_evm_signer_exchange_is_accepted_without_schema_loss():
+    app, rpc, _ = prepare_session()
+    tx = app.pending["tx"]
+    signed = sign_evm(TEST_ROOT, tx, TO, tx["value"])
+    assert set(signed) == set(sign_result(tx))
+    assert app.accept_signed(canonical(pack_envelope("evm-signed", signed)))["stage"] == "verified"
+    assert app.broadcast()["stage"] == "broadcasted"
+    assert len(rpc.sent) == 1
+
+
+def test_lossless_http_evm_download_preserves_wei_and_sha256():
+    rpc = FakeRpc()
+    rpc.balance = 10 ** 21
+    server, app, token = create_server(rpc, 0)
+    app.import_wallet(canonical(PUBLIC))
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        # 18-digit value used to lose precision in JavaScript Number.
+        amount = "0.123456789123456789"
+        prepared = app.prepare(TO, amount)
+        original = app.request_envelope()
+        port = server.server_port
+        def download(endpoint):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", endpoint, headers={
+                "Host": f"127.0.0.1:{port}", "X-Companion-Token": token
+            })
+            result = conn.getresponse()
+            status, payload = result.status, result.read()
+            conn.close()
+            assert status == 200
+            return payload
+
+        raw = download("/api/request-raw")
+        envelope = decode_json(raw)
+        assert envelope == original
+        assert envelope["sha256"] == hashlib.sha256(canonical({
+            key: envelope[key] for key in ("format", "version", "kind", "network", "payload")
+        })).hexdigest()
+        assert envelope["payload"]["value"] == 123456789123456789
+        legacy = decode_json(download("/api/request-legacy"))
+        assert legacy == original["payload"]
+        # The browser display path is now a decimal string, never a lossy Number.
+        result = download("/api/wallet")
+        pending = json.loads(result)["pending"]
+        assert pending["tx"]["value"] == "123456789123456789"
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(5)
