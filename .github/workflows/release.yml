@@ -145,9 +145,13 @@ jobs:
         run: |
           set -euo pipefail
           RAW="build/output/images/usb-cold-wallet.img"
+          RUN1="$(awk '$2 == "usb-cold-wallet.img" {print $1}' build/reproducibility/run-1.sha256)"
           RUN2="$(awk '$2 == "usb-cold-wallet.img" {print $1}' build/reproducibility/run-2.sha256)"
+          test -n "$RUN1"
           test -n "$RUN2"
+          test "$RUN1" = "$RUN2"
           test "$(sha256sum "$RAW" | awk '{print $1}')" = "$RUN2"
+          echo "RAW_IMAGE_SHA256=$RUN2" >> "$GITHUB_ENV"
 
           mkdir -p release
           XZ="build/output/host/bin/xz"
@@ -174,6 +178,12 @@ jobs:
           set -euo pipefail
           . infra/buildroot.env
           export BUILDROOT_VERSION BUILDROOT_SHA256 NODE_VERSION XZ_VERSION
+          dpkg-query -W -f='${Package}=${Version}\\n' \
+            build-essential make gcc g++ patch rsync perl tar cpio file bc gawk gzip \
+            bzip2 xz-utils python3 python3-venv python3-pip curl wget gnupg \
+            coreutils findutils diffutils unzip ca-certificates qemu-system-x86 ovmf \
+            | LC_ALL=C sort > release/build-host-packages.txt
+          test -s release/build-host-packages.txt
           python3 - <<'PY'
           import json
           import os
@@ -190,6 +200,10 @@ jobs:
               "node_version": os.environ["NODE_VERSION"],
               "xz_version": os.environ["XZ_VERSION"],
               "compression": "xz -6 --threads=1 --check=crc64 --no-sparse",
+              "raw_image_sha256": os.environ["RAW_IMAGE_SHA256"],
+              "reproducibility_runs": 2,
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
           }
           Path("release/release-metadata.json").write_text(
               json.dumps(data, indent=2, sort_keys=True) + "\n",
@@ -198,7 +212,7 @@ jobs:
           PY
           (
             cd release
-            sha256sum "$ASSET" SBOM.spdx.json release-metadata.json | LC_ALL=C sort -k2 > SHA256SUMS
+            sha256sum "$ASSET" SBOM.spdx.json release-metadata.json build-host-packages.txt | LC_ALL=C sort -k2 > SHA256SUMS
             sha256sum -c SHA256SUMS
           )
 
@@ -369,4 +383,4 @@ jobs:
           set -euo pipefail
           extra=()
           case "$TAG" in *-*) extra+=(--prerelease) ;; esac
-          gh release create "$TAG"             "release/$ASSET"             release/SHA256SUMS             release/SBOM.spdx.json             release/release-metadata.json             --repo "$GITHUB_REPOSITORY"             --verify-tag             --title "$TAG"             --notes "Release provenance candidate. Do not claim production safety without the #24/#43 acceptance evidence."             "${extra[@]}"
+          gh release create "$TAG"             "release/$ASSET"             release/SHA256SUMS             release/SBOM.spdx.json             release/release-metadata.json             release/build-host-packages.txt             --repo "$GITHUB_REPOSITORY"             --verify-tag             --title "$TAG"             --notes "Release provenance candidate. Do not claim production safety without the #24/#43 acceptance evidence."             "${extra[@]}"
