@@ -4,7 +4,9 @@
 
 **One USB drive, two operating environments.** Use the portable Windows Companion to view accounts, receive funds, and prepare transactions. When you want to send funds, reboot into the USB's dedicated offline operating system to review and sign. Return to Windows to verify and broadcast.
 
-This is an open-source, self-built **Bitcoin + EVM cold-wallet** project combining ordinary USB storage, a minimal Linux Live OS, and an air-gapped signing core. The goal is a practical daily workflow with no wallet installation on the everyday PC and no private-key signing in the online environment.
+This is an open-source project aimed at delivering a **practical, fully usable Bitcoin + EVM cold wallet** using ordinary USB storage, a minimal Linux Live OS, and an air-gapped signing core. The intended daily workflow requires no wallet installation on the everyday PC and never signs with private keys in the online environment.
+
+**Validation strategy:** End-to-end development and hardware acceptance testing use Bitcoin testnet and Ethereum Sepolia to avoid risking real funds. These networks are the testing environment, not the long-term product definition. Mainnet/real-asset release requires separate hardware, threat-model, supply-chain, and independent security review.
 
 > This README describes the intended experience once the full product is integrated. See [Project status](#project-status) for what is available today.
 
@@ -148,11 +150,13 @@ Single-USB cross-boot mode prioritizes portability and a zero-install Windows ex
 
 Private-key signing and network broadcasting run in separate environments. An ordinary USB drive still depends on the integrity of the offline host and boot image. See the [threat model](docs/THREAT_MODEL.md).
 
+**MetaMask, WalletConnect and dApp integrations are optional.** The first-party Windows Companion and offline USB signing interface must independently cover balance and address viewing, transaction creation, clear review, signing, broadcasting, and status tracking. The essential wallet workflow cannot depend on installing MetaMask or using a CLI/hand-edited JSON.
+
 ## Project status
 
 This document presents the **planned fully integrated product experience**, not a claim that all components are currently available.
 
-The current `main` branch is a **v0.1.0 research prototype** with an offline CLI signing core for Bitcoin testnet PSBT v0 and Ethereum Sepolia EIP-1559 native transfers, an encrypted vault, public account export, and CI security checks. The bootable Live USB, Windows Portable Companion, signing GUI, QR transport, MetaMask integration, and cross-boot workflow are being integrated and verified in feature branches. Physical end-to-end validation is still pending.
+The current `main` branch is a **v0.1.0 development version that has not passed full product release acceptance** with an offline CLI signing core for Bitcoin testnet PSBT v0 and Ethereum Sepolia EIP-1559 native transfers, an encrypted vault, public account export, and CI security checks. The bootable Live USB, Windows Portable Companion, signing GUI, QR transport, MetaMask integration, and cross-boot workflow are being integrated and verified in feature branches. Physical end-to-end validation is still pending.
 
 The [PR #9 Live USB development image](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/9) still uses a **signer USB plus a separate transaction-transfer USB**; the setup instructions above explain this distinction from the planned single-USB product.
 
