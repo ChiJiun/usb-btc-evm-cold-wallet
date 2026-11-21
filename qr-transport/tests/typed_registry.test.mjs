@@ -4,6 +4,8 @@ import {createHash} from "node:crypto";
 import {spawnSync} from "node:child_process";
 import {readFileSync} from "node:fs";
 import {UR} from "@blockchaincommons/uniform-resources";
+import {encodeBytewords} from "@blockchaincommons/uniform-resources/bytewords";
+import {encodeFountainPart} from "@blockchaincommons/uniform-resources/fountain";
 import {encodeCbor,cbor} from "@blockchaincommons/dcbor";
 import {makeTypedUR,parseTypedUR,encodeTypedFrames,TypedURScanner,bindTypedToPending} from "../src/typed_registry.mjs";
 const rid="1234567890abcdef1234567890abcdef";
@@ -209,4 +211,41 @@ test("synchronous signed response guard rejects repeated submissions",()=>{
  bindTypedToPending(sig,p,{now:2000,verifySignature:verify});
  assert.throws(()=>bindTypedToPending(sig,p,{now:2000,verifySignature:verify}),/closed/);
  assert.equal(calls,1);
+});
+
+// A small visible outer header must never be allowed to hide a hostile inner
+// fountain-part seqLen, messageLen, padding or inconsistent checksum.
+test("malicious inner fountain headers fail before upstream decoder allocation",()=>{
+ const payload=(outer,part)=>"ur:crypto-psbt/"+outer+"/"+
+   encodeBytewords(encodeFountainPart(part),"minimal");
+ const base={seqNum:1,seqLen:2,messageLen:16,checksum:0x12345678,
+   data:Uint8Array.from({length:8},()=>0)};
+ const bad=[
+   ["1-2",{...base,seqLen:1000000}],
+   ["1-2",{...base,seqNum:9999999}],
+   ["1-2",{...base,messageLen:1000000}],
+   ["1-2",{...base,messageLen:17}],
+   ["1-2",{...base,messageLen:8}],
+   ["1-2",{...base,data:new Uint8Array(481)}],
+   ["2-2",{...base,seqNum:1}],
+ ];
+ for (const [header,part] of bad) {
+   const scanner=new TypedURScanner();
+   assert.throws(()=>scanner.add(payload(header,part)),/inner fountain|bounds/i);
+   assert.equal(scanner.done,false);
+ }
+ const validFirst=payload("1-2",base);
+ const other=payload("2-2",{...base,seqNum:2,checksum:0xabcdef01});
+ const scanner=new TypedURScanner();
+ scanner.add(validFirst);
+ assert.throws(()=>scanner.add(other),/Inconsistent inner fountain/);
+});
+test("malicious deeply nested single-part CBOR is rejected before recursive materialization",()=>{
+ const raw=Uint8Array.from([...Array(20).fill(0x81),0xf4]);
+ const frame="ur:crypto-psbt/"+encodeBytewords(raw,"minimal");
+ assert.throws(()=>new TypedURScanner().add(frame),/nesting|container/i);
+ const oversized=Uint8Array.from([0x5a,0xff,0xff,0xff,0xff]);
+ assert.throws(()=>new TypedURScanner().add(
+   "ur:crypto-psbt/"+encodeBytewords(oversized,"minimal")
+ ),/Oversized|Invalid|length/i);
 });

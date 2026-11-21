@@ -5,8 +5,10 @@
  * The caller MUST match a verified, immutable session and independently check
  * signed transaction / PSBT before broadcasting.
  */
-import { UR, MultipartEncoder, MultipartDecoder } from "@blockchaincommons/uniform-resources";
-import { cbor, extractCbor, taggedValue, MajorType } from "@blockchaincommons/dcbor";
+import { UR, MultipartEncoder } from "@blockchaincommons/uniform-resources";
+import { decodeBytewords } from "@blockchaincommons/uniform-resources/bytewords";
+import { FountainDecoder, decodeFountainPart } from "@blockchaincommons/uniform-resources/fountain";
+import { cbor, decodeCbor, extractCbor, taggedValue, MajorType } from "@blockchaincommons/dcbor";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { MAX_PAYLOAD, MAX_FRAME_CHARS, MAX_FRAGMENT_LENGTH, MAX_FRAGMENTS, MAX_SCAN_MS } from "./ur_transport.mjs";
@@ -302,8 +304,90 @@ export function bindTypedToPending(parsed,pending,{
   }
   return parsed;
 }
+
+/**
+ * Bound untrusted *encoded* CBOR before calling the recursive dCBOR decoder.
+ * This deliberately supports only definite-length primitive/map/array/tag
+ * shapes required by the strict typed-UR registries. No indefinite lengths,
+ * floats, nested 13+ levels, or oversized arrays/maps/text values.
+ */
+const MAX_CBOR_BYTES = MAX_PAYLOAD + 2048;
+function preflightCbor(input) {
+  if (!(input instanceof Uint8Array) || input.length === 0 || input.length > MAX_CBOR_BYTES)
+    throw Error("Typed CBOR exceeds byte limit");
+  let at = 0, nodes = 0;
+  const stack = [{left:1,depth:0}];
+  const take = n => {
+    if (!Number.isSafeInteger(n) || n < 0 || at + n > input.length)
+      throw Error("Invalid or oversized typed CBOR length");
+    const p = at;at += n;return p;
+  };
+  while (stack.length) {
+    const top=stack[stack.length-1];
+    if (top.left === 0) {stack.pop();continue;}
+    top.left--;
+    if (++nodes > 256 || top.depth > 12)
+      throw Error("Excessive CBOR nesting/container");
+    const header=input[take(1)];
+    const major=header>>>5, ai=header&31;
+    if (major === 7) {
+      if (ai !== 20 && ai !== 21) throw Error("Unsupported CBOR simple/float value");
+      continue;
+    }
+    let value;
+    if (ai < 24) value=ai;
+    else if (ai >= 24 && ai <= 27) {
+      const width=2**(ai-24), start=take(width);
+      value=0;
+      for (let i=0;i<width;i++) value=value*256+input[start+i];
+      if (!Number.isSafeInteger(value)) throw Error("Unsupported CBOR integer size");
+      if ((ai===24&&value<24)||(ai===25&&value<=255)||
+          (ai===26&&value<=65535)||(ai===27&&value<=4294967295))
+        throw Error("Noncanonical CBOR length/integer");
+    } else throw Error("Indefinite or unsupported typed CBOR");
+    if (major===0 || major===1) continue;
+    if (major===2 || major===3) {
+      if (value > (major===3?128:MAX_PAYLOAD)) throw Error("Oversized typed CBOR string");
+      take(value);continue;
+    }
+    let count;
+    if (major===4) {if(value>32)throw Error("Excessive CBOR array entries");count=value;}
+    else if (major===5) {if(value>16)throw Error("Excessive CBOR map entries");count=value*2;}
+    else if (major===6) count=1;
+    else throw Error("Unsupported typed CBOR major type");
+    if (count) stack.push({left:count,depth:top.depth+1});
+  }
+  if (at!==input.length) throw Error("Trailing bytes in typed CBOR");
+}
+function preflightFountainPart(encoded, outerSeq, outerLen, firstPart) {
+  // Bytewords payload is strictly capped by MAX_FRAME_CHARS before decode.
+  // Check the *inner* CBOR fountain header before invoking FountainDecoder:
+  // upstream uses inner seqLen for allocation; the outer UR header is informational.
+  const wire=decodeBytewords(encoded, "minimal");
+  const part=decodeFountainPart(wire);
+  if (!Number.isSafeInteger(part.seqNum)||part.seqNum!==outerSeq ||
+      !Number.isSafeInteger(part.seqLen)||part.seqLen!==outerLen ||
+      part.seqNum<1 || part.seqNum>MAX_FRAGMENTS*32 ||
+      part.seqLen<1 || part.seqLen>MAX_FRAGMENTS ||
+      !Number.isSafeInteger(part.messageLen)||part.messageLen<1 ||
+      part.messageLen>MAX_CBOR_BYTES ||
+      !(part.data instanceof Uint8Array) ||
+      part.data.length<1 || part.data.length>MAX_FRAGMENT_LENGTH ||
+      part.seqLen*part.data.length > MAX_CBOR_BYTES+MAX_FRAGMENT_LENGTH ||
+      part.messageLen <= (part.seqLen-1)*part.data.length ||
+      part.messageLen > part.seqLen*part.data.length)
+    throw Error("Untrusted inner fountain part exceeds QR bounds");
+  if (firstPart !== null &&
+      (part.messageLen!==firstPart.messageLen ||
+       part.checksum!==firstPart.checksum ||
+       part.data.length!==firstPart.dataLength ||
+       part.seqLen!==firstPart.seqLen))
+    throw Error("Inconsistent inner fountain message context");
+  return part;
+}
+
 export class TypedURScanner {
-  #decoder=new MultipartDecoder();#seen=new Set();#first=null;#mode=null;#type=null;#count=0;#done=null;#totalChars=0;#declared=null;
+  #decoder=new FountainDecoder();#seen=new Set();#first=null;#mode=null;#type=null;#count=0;#done=null;#totalChars=0;#declared=null;#fountainMeta=null;
   constructor({now=()=>Date.now(),maxDurationMs=MAX_SCAN_MS,expectedType=null}={}) {
     if(!Number.isSafeInteger(maxDurationMs)||maxDurationMs<1||maxDurationMs>MAX_SCAN_MS||
        (expectedType!==null&&!TYPES.has(expectedType))) throw Error("Invalid scanner settings");
@@ -311,7 +395,7 @@ export class TypedURScanner {
   }
   get done(){return this.#done!==null;} get payload(){return this.#done;}
   get progress(){return this.done?1:this.#decoder.progress;}
-  reset(){this.#decoder=new MultipartDecoder();this.#seen.clear();this.#first=null;this.#mode=null;this.#type=null;this.#count=0;this.#done=null;this.#totalChars=0;this.#declared=null;}
+  reset(){this.#decoder=new FountainDecoder();this.#seen.clear();this.#first=null;this.#mode=null;this.#type=null;this.#count=0;this.#done=null;this.#totalChars=0;this.#declared=null;this.#fountainMeta=null;}
   add(frame) {
     if(this.done)throw Error("Scan already completed");
     if(this.#first===null)this.#first=this.now();
@@ -337,9 +421,23 @@ export class TypedURScanner {
     if(this.#totalChars>MAX_PAYLOAD*6)throw Error("Typed QR aggregate budget exceeded");
     this.#seen.add(s);
     try {
-      const ur=parts.length===2?UR.parse(s):(this.#decoder.add(s),this.#decoder.done?this.#decoder.result:null);
-      if(!ur)return {done:false,duplicate:false,progress:this.progress};
-      if(!ur.isType(m[1]))throw Error("Typed UR mismatch");
+      let raw;
+      if (parts.length===2) {
+        raw=decodeBytewords(parts[1],"minimal");
+      } else {
+        const header=parts[1].split("-").map(Number);
+        const part=preflightFountainPart(parts[2],header[0],header[1],this.#fountainMeta);
+        this.#fountainMeta??={
+          seqLen:part.seqLen,messageLen:part.messageLen,
+          checksum:part.checksum,dataLength:part.data.length
+        };
+        this.#decoder.add(part);
+        if (!this.#decoder.done) return {done:false,duplicate:false,progress:this.progress};
+        raw=this.#decoder.result;
+      }
+      // Enforce exact on-wire CBOR resource bounds *before* dCBOR materialization.
+      preflightCbor(raw);
+      const ur=UR.from(m[1],decodeCbor(raw));
       this.#done=parseTypedUR(ur);
       return {done:true,duplicate:false,progress:1};
     }catch(err){this.reset();throw Error("Typed UR rejected: "+err.message);}

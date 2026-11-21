@@ -231,3 +231,6 @@ script validation; prefer Bitcoin Core validation before broadcast.
    PRs merge, then run combined CI, QEMU/UEFI and hardware tests.
 5. No automatic broadcast, approval or network use is implemented. Never
    enable mainnet until independent security review and operational testing.
+
+
+Typed QR security note: the scanner now validates bytewords, inner fountain-part header and raw CBOR depth/length before upstream FountainDecoder and dCBOR recursive materialization. No camera/GUI integration is enabled.
