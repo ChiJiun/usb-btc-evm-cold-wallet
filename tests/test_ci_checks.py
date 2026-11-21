@@ -70,7 +70,7 @@ def test_git_diff_files_are_classified(monkeypatch):
     monkeypatch.setattr(ci_checks.subprocess, "run", fake_run)
     monkeypatch.setattr(ci_checks.subprocess, "check_output", fake_diff)
     assert ci_checks.select_scope("pull_request", pr_base_sha=sha) == ci_checks.Scope(
-        False, False, True
+        False, False, True, False
     )
     assert seen[0][2] == "-e"
     assert seen[1][1:4] == ["diff", "--name-only", "-z"]
