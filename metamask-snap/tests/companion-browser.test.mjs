@@ -7,7 +7,7 @@ import { chromium } from 'playwright';
 
 const ROOT = resolve('dist-companion');
 const ID = '1'.repeat(32);
-const ACCOUNT_ID = '12345678-1234-5123-8123-123456789012';
+const ACCOUNT_ID = '12345678-1234-4123-8123-123456789012';
 const ADDRESS = '0x000000000000000000000000000000000000dEaD';
 const RECIPIENT = '0x000000000000000000000000000000000000bEEF';
 const WEI = '123456789012345678';
@@ -16,7 +16,7 @@ const TX = {
   value:'0x'+BigInt(WEI).toString(16), gasLimit:'0x5208', maxFeePerGas:'0x12a05f200',
   maxPriorityFeePerGas:'0x3b9aca00', data:'0x', accessList:[],
 };
-const REQUEST = {id:'metamask-req-1', scope:'eip155:11155111', account:ACCOUNT_ID,
+const REQUEST = {id:'12345678-1234-4123-8123-123456789013', origin:'https://example.test', scope:'eip155:11155111', account:ACCOUNT_ID,
   request:{method:'eth_signTransaction', params:[TX]}};
 const ACCOUNT = {id:ACCOUNT_ID,address:ADDRESS,type:'eip155:eoa',
   methods:['eth_signTransaction'],scopes:['eip155:eoa'],options:{coldSigner:true,network:'eip155:11155111'}};
