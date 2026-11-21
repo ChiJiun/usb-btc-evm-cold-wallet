@@ -264,6 +264,44 @@ def test_cold_replay_ledger_survives_restart_and_blocks_id_and_transaction_repla
         stale_ledger.review_once(same_tx_new_id, expected_account=same_tx_new_id["account"], trusted_time=100)
 
 
+def test_replay_ledger_rejects_same_evm_nonce_with_changed_unsigned_payload(tmp_path):
+    root = tmp_path / "cold-ledger"
+    first = evm_request("71" * 16, nonce=7)
+    ledger = ReplayLedger(root)
+    ledger.review_once(first, expected_account=EVM_ACCOUNT, trusted_time=100)
+
+    changed = evm_tx(nonce=7, value=123456790)
+    other = package_v2_request(
+        "evm-request", changed, request_id="72" * 16,
+        account=EVM_ACCOUNT, recipient=EVM_RECIPIENT, amount=changed["value"],
+        expiry={"mode": "trusted-time", "notAfter": 200},
+    )
+    assert first["transactionDigest"] != other["transactionDigest"]
+    with pytest.raises(ValueError, match="nonce already reserved"):
+        ReplayLedger(root).review_once(other, expected_account=EVM_ACCOUNT, trusted_time=100)
+
+
+def test_replay_ledger_rejects_same_btc_outpoint_with_changed_payment(tmp_path):
+    root = tmp_path / "cold-ledger"
+    first = btc_request("81" * 16)
+    ReplayLedger(root).review_once(
+        first, expected_account=ROOT.my_fingerprint.hex(), trusted_time=100
+    )
+    parsed = psbt.PSBT.parse(base64.b64decode(btc_psbt()))
+    parsed.tx.vout[0].value += 1
+    parsed.tx.vout[1].value -= 1
+    changed = package_v2_request(
+        "btc-request", parsed.to_base64(), request_id="82" * 16,
+        account=ROOT.my_fingerprint.hex(), recipient=BTC_RECIPIENT, amount=60_001,
+        expiry={"mode": "trusted-time", "notAfter": 200},
+    )
+    assert first["transactionDigest"] != changed["transactionDigest"]
+    with pytest.raises(ValueError, match="UTXO already reserved"):
+        ReplayLedger(root).review_once(
+            changed, expected_account=ROOT.my_fingerprint.hex(), trusted_time=100
+        )
+
+
 def test_cold_signed_state_and_response_digest_survive_restart(tmp_path):
     root = tmp_path / "cold-ledger"
     request = btc_request()
