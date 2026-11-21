@@ -65,6 +65,49 @@ In addition to 250 reproducible bit mutations, Hypothesis exercises the fee
 boundary and 300 arbitrary binary parser inputs per run. Parser failures must
 be normalized to `ValueError`.
 
+## Additional independent signature validation and bounded fuzzing (#2)
+
+`tests/test_btc_independent_bip143.py` re-computes the native P2WPKH
+BIP143 `SIGHASH_ALL` preimage with Python `hashlib` and verifies the DER
+signature using `cryptography`'s independent secp256k1 ECDSA implementation.
+It independently binds the signed PSBT's non-witness transaction TXID and
+indexed prevout to the spending outpoint, requires identical witness UTXO value
+and script, validates P2WPKH ScriptPubKey = `0x0014 || HASH160(witness_pubkey)`,
+and requires exact signed-PSBT partial-signature bytes to match the finalized
+witness. It checks the 1000-satoshi fee and rejects changed prevout values,
+recipient amounts, scripts, public keys, and substituted witness/PSBT signatures. This is a **locally generated public-mnemonic** vector, not
+a Bitcoin Core/Sparrow independently generated fixture.
+
+The coverage-guided `tools/fuzz_btc_psbt.py` mutates a public PSBT seed with
+byte flips, splices, inserts/deletions and hostile CompactSize-like bytes.
+It retains inputs exposing previously unseen Python lines in `btc.py` and
+exercises `_read_psbt` plus the wallet-specific offline review policy. Every
+campaign **first executes the unmodified public valid PSBT** and fails if its
+full offline review is rejected. Additional parse-valid policy-denial seeds
+exercise unsupported `SIGHASH` types and unexpected input metadata. The JSON report separately
+counts `parser_accepted`, `parser_rejected`, `policy_accepted`, and
+`policy_rejected`; `baseline_policy_accepted` is an explicit success gate.
+The `cases` count includes initial seeds. Trace state is restored after every
+case, including unexpected exceptions. The corpus and input buffers are bounded,
+uncaught exceptions cause non-zero exit, and seed/cases/covered lines/crashes
+are included in the report.
+
+Reproduce a local short run (only public test keys):
+
+```bash
+python tools/fuzz_btc_psbt.py --seconds 30 --seed 20261121 --max-cases 20000
+```
+
+`.github/workflows/btc-psbt-fuzz.yml` defines a **separate optional weekly
+and manually dispatched** GitHub-hosted 180-second campaign. It uses pinned
+hash-locked dependencies, records the Actions run ID as deterministic seed,
+and uploads logs/crash inputs (if any) for triage. Its scheduled execution
+starts only after the workflow is merged to the default branch. This is
+coverage-guided mutation by Python tracing, not LLVM/AFL edge coverage; it
+cannot substantiate claims of exhaustive security fuzzing or stable RSS across
+platforms. Keep reproducible crash samples with a regression test before
+claiming the Issue's long-running fuzz acceptance is complete.
+
 ## Limitations / next security work
 
 - The external fixtures validate parser interoperability and fail-closed

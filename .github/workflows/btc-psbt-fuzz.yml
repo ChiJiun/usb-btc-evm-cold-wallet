@@ -1,0 +1,57 @@
+name: Bitcoin PSBT coverage-guided fuzz
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "40 3 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: btc-psbt-fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  psbt_fuzz:
+    name: Bitcoin PSBT / bounded coverage fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install hash-locked Python dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements/ci.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+
+      - name: Fuzz raw PSBT parser and wallet policy with coverage feedback
+        shell: bash
+        env:
+          FUZZ_SEED: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python tools/fuzz_btc_psbt.py \
+            --seconds 180 \
+            --max-cases 50000 \
+            --seed "$FUZZ_SEED" \
+            --artifact-dir btc-psbt-crashes | tee btc-psbt-fuzz-result.json
+
+      - name: Upload fuzz result and failing inputs for triage
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: btc-psbt-fuzz-${{ github.run_id }}
+          path: |
+            btc-psbt-fuzz-result.json
+            btc-psbt-crashes/*.psbt
+          if-no-files-found: ignore
+          retention-days: 30
