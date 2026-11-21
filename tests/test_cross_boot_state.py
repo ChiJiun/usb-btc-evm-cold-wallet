@@ -352,6 +352,18 @@ def test_corrupt_published_state_fails_closed(tmp_path):
         PendingRequestStore(root)
 
 
+def test_running_journal_detects_removed_previously_observed_record(tmp_path):
+    request = evm_request()
+    root = tmp_path / "state"
+    store = PendingRequestStore(root)
+    store.create(request)
+    store.exported(request)
+    latest = sorted(root.glob("*.json"))[-1]
+    latest.unlink()
+    with pytest.raises(RollbackDetected, match="Previously observed"):
+        store.exported(request)
+
+
 def test_external_tip_anchor_detects_whole_store_rollback(tmp_path):
     root = tmp_path / "online-state"
     request = evm_request()
