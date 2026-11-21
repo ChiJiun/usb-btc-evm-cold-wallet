@@ -166,7 +166,9 @@ def main(argv=None):
             envelope = read_envelope(args.input)
             print(json.dumps({"kind": envelope["kind"], "network": envelope["network"],
                               "sha256": envelope["sha256"], "payload_type": type(envelope["payload"]).__name__,
-                              "integrity_only_not_authenticated": True}, indent=2))
+                              "integrity_only_not_authenticated": True,
+                              "standalone_check_does_not_authorize_broadcast": True,
+                              "btc_change_not_bound_to_approved_request": envelope["kind"] == "btc-signed"}, indent=2))
             return 0
 
         if args.command == "show-watch-only":
