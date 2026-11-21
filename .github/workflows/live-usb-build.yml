@@ -87,9 +87,13 @@ jobs:
           cp "$src/usb-cold-wallet.img" "$stage/usb-cold-wallet.img"
           cp "$src/usb-cold-wallet.img.sha256" "$stage/usb-cold-wallet.img.sha256"
           (cd "$stage" && sha256sum --check --status usb-cold-wallet.img.sha256)
-          printf '%s\\n' 'TESTNET ONLY / NOT A RELEASE' \\
-            'Requires independently verified full workflow success and physical USB acceptance (#43/#66).' \\
-            'Never use mainnet assets or real secrets.' > "$stage/TESTNET-ONLY-NOT-A-RELEASE.txt"
+          cat > "$stage/TESTNET-ONLY-NOT-A-RELEASE.txt" <<EOF
+          TESTNET ONLY / NOT A RELEASE
+          Source commit: ${GITHUB_SHA}
+          Workflow run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          Requires successful full reproducibility and UEFI/QEMU audit plus separate physical acceptance (#43/#66).
+          Never use mainnet assets or real secrets.
+          EOF
 
       - name: Upload verified testnet-only flashable image (NOT A RELEASE)
         if: success()
