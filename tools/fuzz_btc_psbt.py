@@ -19,8 +19,12 @@ import random
 import signal
 import sys
 import time
-import resource
 from pathlib import Path
+
+try:
+    import resource  # POSIX only; Windows smoke tests remain portable.
+except ImportError:
+    resource = None
 
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT / "tests"))
@@ -119,13 +123,12 @@ def main() -> int:
             or not 1 <= args.case_timeout_ms <= 60_000):
         parser.error("seconds/max-cases outside supported bounds")
 
-    if not hasattr(signal, "setitimer"):
-        parser.error("Per-case timeout needs POSIX setitimer; run this campaign on Linux")
+    has_timer = hasattr(signal, "setitimer")
 
     def alarm_handler(_signum, _frame):
         raise TimeoutError("PSBT parser/policy exceeded per-case wall-time bound")
 
-    original_alarm_handler = signal.getsignal(signal.SIGALRM)
+    original_alarm_handler = signal.getsignal(signal.SIGALRM) if has_timer else None
     rng = random.Random(args.seed)
     corpus = initial_corpus()
     explored: set[int] = set()
@@ -142,8 +145,9 @@ def main() -> int:
         cases += 1
         if len(case) > MAX_CASE_BYTES:
             raise ValueError("Fuzzer case exceeds payload bound")
-        signal.signal(signal.SIGALRM, alarm_handler)
-        signal.setitimer(signal.ITIMER_REAL, args.case_timeout_ms / 1000)
+        if has_timer:
+            signal.signal(signal.SIGALRM, alarm_handler)
+            signal.setitimer(signal.ITIMER_REAL, args.case_timeout_ms / 1000)
         try:
             result = execute(case)
         except Exception as exc:
@@ -156,8 +160,9 @@ def main() -> int:
                               "message": str(exc)[:200]}), file=sys.stderr)
             return None
         finally:
-            signal.setitimer(signal.ITIMER_REAL, 0)
-            signal.signal(signal.SIGALRM, original_alarm_handler)
+            if has_timer:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, original_alarm_handler)
 
         if result.parser_accepted:
             metrics["parser_accepted"] += 1
@@ -217,7 +222,9 @@ def main() -> int:
         "baseline_policy_accepted": baseline.policy_accepted,
         "max_case_bytes": MAX_CASE_BYTES, "case_timeout_ms": args.case_timeout_ms,
         "replayed": replayed, "replay_failures": replay_failures,
-        "max_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+        "max_rss_kib": (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                        if resource is not None and sys.platform != "darwin" else None),
+        "case_timeout_enforced": has_timer,
         **metrics,
     }, sort_keys=True))
     return 1 if crashes or replay_failures else 0
