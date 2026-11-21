@@ -13,7 +13,7 @@ Release workflow 只能由 `workflow_dispatch` **直接選擇要發布的 signed
 - attest：只有此 job 取得 `id-token: write`、`attestations: write`，另提供目前 `actions/attest` 寫入 artifact metadata 所需的 `artifact-metadata: write`；沒有 `contents: write`。
 - publish：只有 gate 成功且使用者明確設定 `publish=true` 才取得 `contents: write`；另以 `issues: read` 確認 #24 與 #43 均已關閉。既有 Release 一律拒絕覆寫。
 
-所有 `uses:` 都釘選完整 40-hex action commit。Buildroot 版本、來源 SHA-256、簽章與 release key 已由 `infra/buildroot.env` 固定；target wheelhouse 由 `infra/wheelhouse-requirements.txt` 與 `infra/wheelhouse.sha256` 固定；Node release runtime 固定為 `24.22.3` 並用各 app 的 `package-lock.json` 執行 `npm ci`。SBOM action 固定 commit，Syft 固定為 `v1.54.0`。
+所有 `uses:` 都釘選完整 40-hex action commit。Buildroot 版本、來源 SHA-256、簽章與 release key 已由 `infra/buildroot.env` 固定；target wheelhouse 由 `infra/wheelhouse-requirements.txt` 與 `infra/wheelhouse.sha256` 固定；Node release runtime 固定為 `24.22.3` 並用各 app 的 `package-lock.json` 執行 `npm ci`。SBOM action 固定 commit，Syft 固定為 `v1.54.0`。GitHub-hosted `ubuntu-24.04` 與 apt repository 本身不是不可變快照，因此 workflow 另外保存 `build-host-packages.txt` 的實際套件版本；兩次 clean build 的 raw image digest 仍是發行必要條件，第三方 rebuild 才能補足跨主機重現性證據。
 
 ## 建置、attestation 與 publish 順序
 
@@ -21,13 +21,21 @@ Release workflow 只能由 `workflow_dispatch` **直接選擇要發布的 signed
 
 1. signed tag → exact source SHA 驗證。
 2. 同一來源做兩次 clean Buildroot image build，`scripts/check_reproducible.sh` 比對 raw `usb-cold-wallet.img` SHA-256。
-3. 對第二次 raw image 再確認 digest，使用該 Buildroot 版本所固定的 host `xz`，以 `-6 --threads=1 --check=crc64 --no-sparse` 壓縮兩次並 byte-for-byte 比對。
-4. 由最後 root filesystem 產生 SPDX JSON SBOM；建立 `release-metadata.json` 與 `SHA256SUMS`。manifest 只涵蓋最後預定發布的 image、SBOM、metadata。
-5. 將這批 candidate bytes 上傳成同一次 workflow 的 immutable Actions artifact；attest job 下載原 bytes 後建立 SLSA Build Provenance，另建立 SBOM attestation。
-6. verify job 重新下載同一 candidate artifact，沿用 `verify_release_assets.py --local-dir` 驗證 repository、tag source ref、source SHA、release workflow identity、signer digest、subject digest、manifest 與 metadata。
+3. 對兩次 raw image 的 SHA-256 再做顯式相等檢查，將共同 digest 寫入 `release-metadata.json`；使用該 Buildroot 版本所固定的 host `xz`，以 `-6 --threads=1 --check=crc64 --no-sparse` 壓縮兩次並 byte-for-byte 比對。
+4. 由最後 root filesystem 產生 SPDX JSON SBOM；保存 `build-host-packages.txt`、`release-metadata.json` 與 `SHA256SUMS`。manifest 精確涵蓋最後 image、SBOM、metadata、host dependency evidence。
+5. 將這批 candidate bytes 上傳成同一次 workflow 的 immutable Actions artifact；attest job 對 image、SBOM、metadata、host dependency evidence 建立同一 source identity 的 SLSA Build Provenance，並另外對 `SHA256SUMS` 建立 provenance、對 image 建立 SBOM attestation。
+6. verify job 重新下載同一 candidate artifact，沿用 `verify_release_assets.py --local-dir` 驗證 repository、tag source ref、source SHA、release workflow identity、signer digest、每個發布檔案的 subject digest、manifest、SPDX identity 與 metadata。
 7. required gate 把 build / attest / verify 的 `skipped`、`cancelled`、`failure` 全部視為失敗。
 8. publish job 只下載已通過驗證的 artifact，再做 checksum；**沒有 build、重新壓縮或修改 bytes 的步驟**，接著才建立 GitHub Release。
 
+## 發行等級與可宣稱範圍
+
+- **測試映像 / candidate artifact**：只存在 GitHub Actions artifact，可供 CI、QEMU 或實體 testnet 驗收；不得建立公開 Release，也不得宣稱 production-safe。
+- **Beta (`vX.Y.Z-beta.N`)**：至少 #24 與 #43 的該版本實體 USB/testnet gate 已完成，仍標示 testnet-only、實驗性、未正式安全稽核。
+- **RC (`vX.Y.Z-rc.N`)**：Beta gate 全部保留，另完成預定 v1.0 功能矩陣、回歸與 release checklist；未通過主網安全 gate 仍不得開放真實資產。
+- **v1.0**：除了 #24/#43，還必須完成 #48 的 BTC/Ethereum mainnet 隔離與最小金額 E2E、獨立安全審查及明確 release decision。CI、QEMU、attestation 或關閉 Issue 本身都不能替代這些證據。
+
+目前 #24、#43 都仍為 open，因此此 workflow 只能產生 candidate evidence，`publish=true` 仍必須 fail closed。
 ## 獨立驗證已發布 Release
 
 前置條件：
@@ -43,7 +51,7 @@ python3 scripts/verify_release_assets.py \
   --asset usb-cold-wallet-v0.1.0-beta.1.img.xz
 ~~~
 
-驗證器固定 repository，不接受 URL；它從 GitHub Release 下載 `SHA256SUMS` 與指定 image，重算 SHA-256，再要求 Immutable Release integrity、Release Asset Attestation，以及 `.github/workflows/release.yml` 對相同 tag/source SHA/subject digest 的 SLSA Build Provenance。任一缺失或不一致均 nonzero exit。
+驗證器固定 repository，不接受 URL；它從 GitHub Release 下載 `SHA256SUMS`、指定 image、SPDX SBOM、release metadata 與 host dependency evidence，要求 manifest 精確覆蓋全部 payload 並逐一重算 SHA-256，再對每個檔案要求 Immutable Release asset integrity 與 `.github/workflows/release.yml` 對相同 tag/source SHA/subject digest 的 SLSA Build Provenance。任一缺失或不一致均 nonzero exit。
 
 `SHA256SUMS` 只能證明 bytes 與 manifest 一致；其本身仍需 GitHub 的 Release integrity / asset verification。signed tag、Immutable Release、Build Provenance 各自提供不同保證，不能互相替代。
 
