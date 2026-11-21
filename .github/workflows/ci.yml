@@ -220,30 +220,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Check out source for verified guard
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Require usable Dependency Graph
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          # The old synchronous /sbom endpoint was retired on 2026-11-13.
-          # Request the new asynchronous export; its HTTP 201 + sbom_url
-          # prove the Graph API can start a report. Dependency Review itself
-          # remains mandatory and will fail if its diff API is unavailable.
-          status="$(curl --silent --show-error --max-time 30 \
-            --output /tmp/dependency-graph-sbom-request.json --write-out '%{http_code}' \
-            --header 'Accept: application/vnd.github+json' \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            --header 'X-GitHub-Api-Version: 2026-03-10' \
-            "${{ github.api_url }}/repos/${{ github.repository }}/dependency-graph/sbom/generate-report")"
-          python3 scripts/dependency_review_guard.py "$status" \
-            /tmp/dependency-graph-sbom-request.json \
-            "${{ github.repository }}" "${{ github.api_url }}"
-
+      # Dependency Review uses the dependency-graph/compare endpoint, not
+      # the unrelated SBOM export API. A failed/404 review action is a failed
+      # job, and CI / Required refuses to merge the PR.
       - name: Review dependency changes (required)
         uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
         with:

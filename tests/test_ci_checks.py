@@ -318,66 +318,18 @@ def test_qr_js_and_python_bridge_changes_must_run_qr_integration(path):
     assert ci_checks.gate_errors(env) == []
 
 
-@pytest.mark.parametrize(("status", "expected_ok"), [
-    ("201", True), ("200", False), ("202", False),
-    ("403", False), ("404", False), ("401", False),
-    ("429", False), ("500", False),
-])
-def test_dependency_review_guard_http_status(status, expected_ok):
-    import json
-    from scripts.dependency_review_guard import dependency_graph_status_error
-
-    report = json.dumps({
-        "sbom_url": "https://api.github.com/repos/ChiJiun/usb-btc-evm-cold-wallet/"
-                    "dependency-graph/sbom/fetch-report/4bab1a7e-da63-4828-9488-44e0e01a7c1b"
-    })
-    assert (
-        dependency_graph_status_error(
-            status, report, "ChiJiun/usb-btc-evm-cold-wallet", "https://api.github.com"
-        ) is None
-    ) is expected_ok
-
-
-@pytest.mark.parametrize("sbom_url", [
-    "",
-    "https://attacker.example/repos/ChiJiun/usb-btc-evm-cold-wallet/"
-    "dependency-graph/sbom/fetch-report/4bab1a7e-da63-4828-9488-44e0e01a7c1b",
-    "https://api.github.com/repos/other/repo/dependency-graph/sbom/fetch-report/"
-    "4bab1a7e-da63-4828-9488-44e0e01a7c1b",
-    "https://api.github.com/repos/ChiJiun/usb-btc-evm-cold-wallet/"
-    "dependency-graph/sbom/fetch-report/../../admin",
-    "https://api.github.com/repos/ChiJiun/usb-btc-evm-cold-wallet/"
-    "dependency-graph/sbom/fetch-report/4bab1a7e-da63-4828-9488-44e0e01a7c1b?redirect=true",
-])
-def test_dependency_review_guard_rejects_untrusted_report_url(sbom_url):
-    import json
-    from scripts.dependency_review_guard import dependency_graph_status_error
-
-    response = json.dumps({"sbom_url": sbom_url})
-    assert dependency_graph_status_error(
-        "201", response, "ChiJiun/usb-btc-evm-cold-wallet", "https://api.github.com"
-    ) is not None
-
-
-@pytest.mark.parametrize("response", ["", "[]", "{}", "invalid", '{"sbom_url": 2}'])
-def test_dependency_review_guard_rejects_invalid_success_body(response):
-    from scripts.dependency_review_guard import dependency_graph_status_error
-
-    assert dependency_graph_status_error(
-        "201", response, "ChiJiun/usb-btc-evm-cold-wallet", "https://api.github.com"
-    ) is not None
-
-
-def test_dependency_review_uses_non_deprecated_async_api():
+def test_dependency_review_calls_the_actual_diff_action_without_sbom_preflight():
     from pathlib import Path
 
     content = (
         Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
     ).read_text(encoding="utf-8")
-    assert "/dependency-graph/sbom/generate-report" in content
-    assert 'X-GitHub-Api-Version: 2026-03-10' in content
-    assert "/tmp/dependency-graph-sbom-request.json" in content
+    assert "uses: actions/dependency-review-action@" in content
     assert "Review dependency changes (required)" in content
+    assert "fail-on-severity: moderate" in content
+    assert "dependency-graph/sbom" not in content
+    assert "dependency_review_guard.py" not in content
+    assert "if: steps.dependency-graph.outputs.available" not in content
 
 
 def test_required_security_review_must_not_accept_skipped_on_dependency_change():
@@ -402,5 +354,6 @@ def test_required_workflow_wires_real_qr_gate_and_unconditional_dependency_revie
     assert "npm run build" in content
     assert "npm audit --audit-level=high" in content
     assert "QR_TRANSPORT: ${{ needs.qr_transport.result }}" in content
-    assert "python3 scripts/dependency_review_guard.py" in content
+    assert "uses: actions/dependency-review-action@" in content
+    assert "dependency-graph/sbom" not in content
     assert "if: steps.dependency-graph.outputs.available" not in content
