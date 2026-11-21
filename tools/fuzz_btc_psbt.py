@@ -16,8 +16,10 @@ from dataclasses import dataclass
 import hashlib
 import json
 import random
+import signal
 import sys
 import time
+import resource
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -110,10 +112,20 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=20261121)
     parser.add_argument("--max-cases", type=int, default=20000)
     parser.add_argument("--artifact-dir", type=Path)
+    parser.add_argument("--replay-dir", type=Path, help="Replay saved *.psbt crashes before mutation")
+    parser.add_argument("--case-timeout-ms", type=int, default=250, help="POSIX per-case CPU/wall timer")
     args = parser.parse_args()
-    if not 0 < args.seconds <= 3600 or not 1 <= args.max_cases <= 1_000_000:
+    if (not 0 < args.seconds <= 3600 or not 1 <= args.max_cases <= 1_000_000
+            or not 1 <= args.case_timeout_ms <= 60_000):
         parser.error("seconds/max-cases outside supported bounds")
 
+    if not hasattr(signal, "setitimer"):
+        parser.error("Per-case timeout needs POSIX setitimer; run this campaign on Linux")
+
+    def alarm_handler(_signum, _frame):
+        raise TimeoutError("PSBT parser/policy exceeded per-case wall-time bound")
+
+    original_alarm_handler = signal.getsignal(signal.SIGALRM)
     rng = random.Random(args.seed)
     corpus = initial_corpus()
     explored: set[int] = set()
@@ -128,6 +140,10 @@ def main() -> int:
     def run_case(case: bytes, retain_novel: bool) -> Observation | None:
         nonlocal crashes, cases
         cases += 1
+        if len(case) > MAX_CASE_BYTES:
+            raise ValueError("Fuzzer case exceeds payload bound")
+        signal.signal(signal.SIGALRM, alarm_handler)
+        signal.setitimer(signal.ITIMER_REAL, args.case_timeout_ms / 1000)
         try:
             result = execute(case)
         except Exception as exc:
@@ -139,6 +155,9 @@ def main() -> int:
             print(json.dumps({"crash_sha256": digest, "type": type(exc).__name__,
                               "message": str(exc)[:200]}), file=sys.stderr)
             return None
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, original_alarm_handler)
 
         if result.parser_accepted:
             metrics["parser_accepted"] += 1
@@ -166,6 +185,23 @@ def main() -> int:
         print("Baseline public PSBT did not pass the offline review", file=sys.stderr)
         return 2
 
+    # Regression corpus is replayed verbatim before any mutation. A previously
+    # crashing sample must no longer produce an uncontrolled exception.
+    replayed = 0
+    replay_failures = 0
+    if args.replay_dir is not None:
+        for path in sorted(args.replay_dir.glob("*.psbt")):
+            if time.monotonic() >= deadline:
+                replay_failures += 1  # incomplete replay is never success
+                break
+            raw = path.read_bytes()
+            if len(raw) > MAX_CASE_BYTES:
+                replay_failures += 1
+                continue
+            replayed += 1
+            if run_case(raw, retain_novel=False) is None:
+                replay_failures += 1
+
     for seed in corpus[1:args.max_cases]:
         if time.monotonic() >= deadline:
             break
@@ -178,9 +214,13 @@ def main() -> int:
     print(json.dumps({
         "seed": args.seed, "cases": cases, "coverage_lines": len(explored),
         "corpus_size": len(corpus), "crashes": crashes,
-        "baseline_policy_accepted": baseline.policy_accepted, **metrics,
+        "baseline_policy_accepted": baseline.policy_accepted,
+        "max_case_bytes": MAX_CASE_BYTES, "case_timeout_ms": args.case_timeout_ms,
+        "replayed": replayed, "replay_failures": replay_failures,
+        "max_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+        **metrics,
     }, sort_keys=True))
-    return 1 if crashes else 0
+    return 1 if crashes or replay_failures else 0
 
 
 if __name__ == "__main__":
