@@ -75,10 +75,13 @@ export function normalizeUnsigned(input: unknown, sender: string): Normalized {
     value:hex(value), gas:'0x5208', maxFeePerGas:hex(maxFee), maxPriorityFeePerGas:hex(priority),
     data:'0x', accessList:[] };
 }
-export function makeQrRequest(id: string, accountId: string, account: string, tx: Normalized, now: number): Pending {
+export function makeQrRequest(id: string, accountId: string, account: string, tx: Normalized, now: number, sequence = 0): Pending {
   if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(id)) throw new Error('Invalid MetaMask request ID');
   if (!Number.isSafeInteger(now) || now < 0) throw new Error('Invalid timestamp');
-  const requestId = sha256(toUtf8Bytes('usb-snap-v1:' + id)).slice(2, 34);
+  if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error('Invalid request sequence');
+  // A persisted sequence prevents request_id re-use after the bounded
+  // closedIds cache evicts an older MetaMask ID. Do not derive solely from id.
+  const requestId = sha256(toUtf8Bytes('usb-snap-v1:' + id + ':' + sequence)).slice(2, 34);
   const transaction = {
     type: 2, chainId: 11155111, nonce: BigInt(tx.nonce), to:tx.to,
     value:BigInt(tx.value), gas:21000, maxFeePerGas:BigInt(tx.maxFeePerGas),
