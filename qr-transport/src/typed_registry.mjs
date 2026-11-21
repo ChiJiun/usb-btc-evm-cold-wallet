@@ -16,6 +16,7 @@ const network = "sepolia";
 const ETH_CHAIN = 11155111;
 const hex = (bytes) => bytesToHex(bytes);
 const bytes = (s, len, label) => {
+  if (label === "EVM address" && typeof s === "string" && s.startsWith("0x")) s = s.slice(2);
   if (typeof s !== "string" || !/^(?:[a-fA-F0-9]{2})*$/.test(s) ||
       (len !== undefined && s.length !== len * 2)) throw Error("Invalid " + label);
   return Uint8Array.from(s.match(/../g) ?? [], b => parseInt(b, 16));
@@ -98,19 +99,20 @@ export function makeTypedUR(type, data) {
   return UR.from(type,body);
 }
 export function parseTypedUR(ur) {
-  if (!TYPES.has(ur.type)) throw Error("Unsupported typed UR");
-  if (ur.type === "crypto-psbt") {
+  const type = ur.type.name;
+  if (!TYPES.has(type)) throw Error("Unsupported typed UR");
+  if (type === "crypto-psbt") {
     const raw = expectBytes(ur.cbor, 6, MAX_PAYLOAD, "PSBT");
     if (hex(raw.subarray(0,5)) !== "70736274ff") throw Error("Wrong PSBT magic");
-    return {type:ur.type, psbtHex:hex(raw)};
+    return {type, psbtHex:hex(raw)};
   }
-  const m=ur.type==="eth-sign-request"?
+  const m=type==="eth-sign-request"?
     getMap(ur.cbor,[1,2,3,4,5,6],[1,2,3,4,5,6,7]):getMap(ur.cbor,[1,2],[1,2,3]);
   const requestId=readUuid(m.getOrThrow(1));
-  if (ur.type==="eth-signature") {
+  if (type==="eth-signature") {
     const sig=expectBytes(m.getOrThrow(2),65,65,"signature");
     if (![0,1,27,28].includes(sig[64])) throw Error("Invalid recovery byte");
-    return {type:ur.type,requestId,signatureHex:hex(sig)};
+    return {type,requestId,signatureHex:hex(sig)};
   }
   const raw=expectBytes(m.getOrThrow(2),3,MAX_PAYLOAD,"EIP-2718 tx");
   const chain=field(m,4), dataType=field(m,3);
@@ -121,7 +123,7 @@ export function parseTypedUR(ur) {
     const origin=field(m,7);
     if (typeof origin!=="string" || origin.length>128 || /[^\x20-\x7e]/.test(origin)) throw Error("Invalid origin");
   }
-  return {type:ur.type,requestId, unsignedTxHex:hex(raw), dataType,chainId:chain,
+  return {type,requestId, unsignedTxHex:hex(raw), dataType,chainId:chain,
     network, address:"0x"+hex(signer), ...kp};
 }
 export function encodeTypedFrames(type, data, {fragmentBytes=220,maxFrames=MAX_FRAGMENTS}={}) {
