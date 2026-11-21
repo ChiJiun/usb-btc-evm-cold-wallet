@@ -31,6 +31,8 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+          # Test exact PR HEAD, not GitHub's synthetic pull-request merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Show resource budget
         run: |
@@ -76,6 +78,8 @@ jobs:
       - name: Stage verified testnet image and SHA-256 (NOT A RELEASE)
         if: success()
         shell: bash
+        env:
+          SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           src=build/output/images
@@ -89,7 +93,7 @@ jobs:
           (cd "$stage" && sha256sum --check --status usb-cold-wallet.img.sha256)
           cat > "$stage/TESTNET-ONLY-NOT-A-RELEASE.txt" <<EOF
           TESTNET ONLY / NOT A RELEASE
-          Source commit: ${GITHUB_SHA}
+          Source commit: ${SOURCE_COMMIT}
           Workflow run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
           Requires successful full reproducibility and UEFI/QEMU audit plus separate physical acceptance (#43/#66).
           Never use mainnet assets or real secrets.
