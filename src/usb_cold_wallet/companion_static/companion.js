@@ -210,6 +210,7 @@ $("sendForm").addEventListener("submit",(event)=>{
     });
     evmConfirmedKey=null;
     renderPending(data.pending);
+    await refreshCrossboot();
     $("evmAcknowledge").checked=false;
     $("confirmRequestBtn").disabled=true;
     message("請檢查收款地址、金額及最高費用，確認後開放下載交換檔。");
@@ -249,6 +250,7 @@ $("cancelBtn").addEventListener("click",()=>action(async()=>{
   evmConfirmedKey=null;
   renderPending(null);
   $("prepareBtn").disabled=!walletLoaded;
+  await refreshCrossboot();
   message("已清除本機 Session。鏈上交易不會被撤回。");
 }));
 action(async()=>{const data=await api("/api/wallet");renderWallet(data);if(data.loaded)await refreshBtc();});
@@ -346,6 +348,7 @@ $("btcSendForm").addEventListener("submit",(event)=>{
     btcExchange=data.envelope;
     btcConfirmedKey=null;
     renderBtc(data.pending);
+    await refreshCrossboot();
     $("btcAcknowledge").checked=false;
     $("btcConfirmRequestBtn").disabled=true;
     message("已建立 BTC Testnet PSBT，請下載後在離線 Signer 上逐項核對。");
@@ -394,6 +397,7 @@ $("btcCancelBtn").addEventListener("click",()=>action(async()=>{
   btcExchange=null;
   btcConfirmedKey=null;
   renderBtc(null);
+  await refreshCrossboot();
   message("已清除本機 BTC 工作階段。");
 }));
 
