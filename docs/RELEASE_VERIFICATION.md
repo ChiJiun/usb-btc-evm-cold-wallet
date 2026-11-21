@@ -35,7 +35,7 @@ Release workflow 只能由 `workflow_dispatch` **直接選擇要發布的 signed
 - **RC (`vX.Y.Z-rc.N`)**：Beta gate 全部保留，另完成預定 v1.0 功能矩陣、回歸與 release checklist；未通過主網安全 gate 仍不得開放真實資產。
 - **v1.0**：除了 #24/#43，還必須完成 #48 的 BTC/Ethereum mainnet 隔離與最小金額 E2E、獨立安全審查及明確 release decision。CI、QEMU、attestation 或關閉 Issue 本身都不能替代這些證據。
 
-目前 #24、#43 都仍為 open，因此此 workflow 只能產生 candidate evidence，`publish=true` 仍必須 fail closed。
+目前 #24、#43 都仍為 open，因此此 workflow 只能產生 candidate evidence，`publish=true` 仍必須 fail closed。所有公開 Beta/RC 都至少要求 #24/#43 closed；沒有 prerelease suffix 的 stable tag 另外要求 #48 closed，避免在主網驗收完成前發布 v1.0/stable 資產。
 ## 獨立驗證已發布 Release
 
 前置條件：
