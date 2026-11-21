@@ -106,7 +106,10 @@ test('built browser bundle passes CSP and native QR pairing/request/signed respo
     })),
   });
   await page.locator('#reply').click();
-  await page.getByText('簽章符合本次 MetaMask request', {exact:false}).waitFor();
+  await page.waitForTimeout(1500);
+  const replyStatus = await page.locator('#status').textContent();
+  assert.match(replyStatus, /簽章符合本次 MetaMask request/,
+    'Browser signing status: ' + replyStatus + '; errors: ' + errors.join('; '));
   assert.match(await page.locator('#qr-type').textContent(), /eth-signature/);
   assert.match(await page.locator('#qr').getAttribute('src'), /^data:image\/png;base64,/);
 
