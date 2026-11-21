@@ -76,7 +76,7 @@ def read_gpt(
     return disk_id, partitions
 
 
-def fat_label(partition: Path) -> str:
+def fat_label(partition: Path, *, require_fat32: bool = False) -> str:
     """Read the fixed FAT12/16/FAT32 volume label directly from its boot sector."""
     if partition.is_symlink():
         raise ValueError("partition device path must not be a symlink")
@@ -89,6 +89,8 @@ def fat_label(partition: Path) -> str:
     fat_type = sector[82:90] if sector[82:90] == b"FAT32   " else sector[54:62]
     if fat_type not in (b"FAT12   ", b"FAT16   ", b"FAT32   "):
         raise ValueError("unsupported FAT filesystem")
+    if require_fat32 and fat_type != b"FAT32   ":
+        raise ValueError("TX_TRANSFER must use FAT32")
     raw = sector[71:82] if fat_type == b"FAT32   " else sector[43:54]
     return raw.decode("ascii").rstrip(" ")
 
@@ -209,7 +211,7 @@ def identify(
             if fat_label(boot) != "USBCOLD_EFI" or fat_label(vault) != "COLD_VAULT":
                 unsafe_duplicate = True
                 continue
-            if transfer is not None and fat_label(transfer) != "TX_TRANSFER":
+            if transfer is not None and fat_label(transfer, require_fat32=True) != "TX_TRANSFER":
                 unsafe_duplicate = True
                 continue
         except (OSError, ValueError, UnicodeDecodeError):
