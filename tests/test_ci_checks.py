@@ -473,3 +473,27 @@ def test_windows_portable_reusable_job_is_in_required_gate():
             WINDOWS_PORTABLE=status
         )
         assert any("WINDOWS_PORTABLE" in error for error in ci_checks.gate_errors(env))
+
+def test_required_job_skips_superseded_runs_without_masking_real_failures():
+    """Cancelling an entire run must not emit an extra red Required check."""
+    from pathlib import Path
+
+    workflow = (
+        Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
+    ).read_text(encoding="utf-8")
+    required = workflow.split("\n  required:", 1)[1]
+    assert "cancel-in-progress: true" in workflow
+    assert "if: ${{ always() && !cancelled() }}" in required
+    assert "if: always()" not in required
+    # The GitHub job-level cancellation guard must not weaken the gate
+    # when a live workflow has a failed or unexpectedly cancelled job.
+    env = required_env(
+        EVENT_NAME="push", CODE="true", TESTS="success",
+        REPRODUCIBLE_BUILD="success", QR_TRANSPORT="success",
+        WINDOWS_PORTABLE="cancelled",
+    )
+    assert any("WINDOWS_PORTABLE" in error for error in ci_checks.gate_errors(env))
+    env["WINDOWS_PORTABLE"] = "failure"
+    assert any("WINDOWS_PORTABLE" in error for error in ci_checks.gate_errors(env))
+    env["WINDOWS_PORTABLE"] = "success"
+    assert ci_checks.gate_errors(env) == []
