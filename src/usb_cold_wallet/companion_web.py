@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .companion_core import CompanionSession, JsonRpc, MAX_EXCHANGE_BYTES, _quantity
 from .companion_btc import BitcoinCompanion, TestnetEsplora
+from .companion_crossboot import CrossBootManager
 
 STATIC = Path(__file__).parent / "companion_static"
 POST_LIMIT = MAX_EXCHANGE_BYTES + 65_536
@@ -84,7 +85,8 @@ def lookup_public_transaction(session: CompanionSession, btc_session: BitcoinCom
     raise ValueError("Unsupported network; mainnet is disabled")
 
 
-def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token: str):
+def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token: str,
+                crossboot: CrossBootManager | None = None):
     class CompanionHandler(BaseHTTPRequestHandler):
         server_version = "USBCompanion/0.1"
         sys_version = ""
@@ -159,6 +161,10 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                 self._send((STATIC / self.path.lstrip("/")).read_bytes(), mime)
             elif self.path == "/api/wallet" and self._authorized():
                 self._json(session.public_view())
+            elif self.path == "/api/crossboot" and self._authorized():
+                self._json(crossboot.status(session, btc_session) if crossboot else {
+                    "available": False, "error": "Cross-boot manager disabled",
+                    "can_export": False, "can_resume": False})
             elif self.path in ("/api/request-raw", "/api/request-legacy") and self._authorized():
                 try:
                     raw = session.request_raw_json(legacy=self.path == "/api/request-legacy")
@@ -233,6 +239,14 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                     if data:
                         raise ValueError("Cancel does not accept overrides")
                     result = session.cancel()
+                elif self.path == "/api/crossboot/export":
+                    if data or crossboot is None:
+                        raise ValueError("Cross-boot export requires TX_TRANSFER and accepts no overrides")
+                    result = crossboot.export_current(session, btc_session)
+                elif self.path == "/api/crossboot/resume":
+                    if data or crossboot is None:
+                        raise ValueError("Cross-boot resume requires TX_TRANSFER and accepts no overrides")
+                    result = crossboot.resume_response(session, btc_session)
                 elif self.path == "/api/lookup":
                     if set(data) != {"asset", "txid"}:
                         raise ValueError("Only public asset and transaction hash allowed")
@@ -258,8 +272,15 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                 else:
                     self._json({"error": "Unknown endpoint"}, 404)
                     return
+                if (crossboot is not None and crossboot.available
+                        and self.path not in ("/api/crossboot/export", "/api/crossboot/resume")
+                        and self.path in {
+                            "/api/import", "/api/prepare", "/api/accept", "/api/broadcast", "/api/status", "/api/cancel",
+                            "/api/btc/prepare", "/api/btc/accept", "/api/btc/broadcast", "/api/btc/status", "/api/btc/cancel",
+                        }):
+                    crossboot.save(session, btc_session)
                 self._json(result)
-            except (UnicodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            except (UnicodeError, ValueError, TypeError, json.JSONDecodeError, OSError) as exc:
                 self._json({"error": str(exc)}, 400)
 
         @staticmethod
@@ -274,13 +295,22 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
     return CompanionHandler
 
 
-def create_server(rpc: JsonRpc, port: int = 8765, esplora: TestnetEsplora | None = None):
+def create_server(rpc: JsonRpc, port: int = 8765, esplora: TestnetEsplora | None = None,
+                  crossboot: CrossBootManager | None = None):
     if not 0 <= port <= 65535:
         raise ValueError("Invalid port")
     session = CompanionSession(rpc)
     btc_session = BitcoinCompanion(esplora if esplora is not None else TestnetEsplora())
     token = secrets.token_urlsafe(32)
-    server = ThreadingHTTPServer(("127.0.0.1", port), handler_for(session, btc_session, token))
+    if crossboot is not None and crossboot.available:
+        crossboot.restore(session, btc_session)
+        try:
+            crossboot.resume_response(session, btc_session)
+        except ValueError:
+            # Missing/ambiguous/tampered response remains a user-visible recovery state.
+            # Never auto-broadcast or synthesize a replacement request.
+            pass
+    server = ThreadingHTTPServer(("127.0.0.1", port), handler_for(session, btc_session, token, crossboot))
     server.daemon_threads = True
     return server, session, token
 
@@ -295,10 +325,13 @@ def main(argv=None):
                         help="HTTPS Bitcoin testnet Esplora API (or local HTTP).")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--open-browser", action="store_true")
+    parser.add_argument("--exchange-root", default=None,
+                        help="Test/development TX_TRANSFER override; Windows portable mode auto-detects it")
     args = parser.parse_args(argv)
     try:
+        crossboot = CrossBootManager.auto(args.exchange_root)
         server, _session, _token = create_server(JsonRpc(args.rpc_url), args.port,
-                                                 TestnetEsplora(args.btc_esplora))
+                                                 TestnetEsplora(args.btc_esplora), crossboot)
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
     url = f"http://127.0.0.1:{server.server_port}"
