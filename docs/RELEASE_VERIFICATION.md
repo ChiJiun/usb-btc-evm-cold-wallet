@@ -8,7 +8,8 @@ Release workflow 只能由 `workflow_dispatch` 從 `main` 啟動，輸入既有�
 
 權限分離如下：
 
-- validate / build / verify / gate：`contents: read`；build 沒有 OIDC、attestation 或 release write。
+- validate / build / gate：`contents: read`；build 沒有 OIDC、attestation 或 release write。
+- verify：`contents: read` + `attestations: read`，只能讀取並驗證既有 provenance，沒有 write/OIDC。
 - attest：只有此 job 取得 `id-token: write`、`attestations: write`，另提供目前 `actions/attest` 寫入 artifact metadata 所需的 `artifact-metadata: write`；沒有 `contents: write`。
 - publish：只有 gate 成功且使用者明確設定 `publish=true` 才取得 `contents: write`；另以 `issues: read` 確認 #24 與 #43 均已關閉。既有 Release 一律拒絕覆寫。
 
