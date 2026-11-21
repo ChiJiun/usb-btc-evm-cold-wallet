@@ -13,7 +13,11 @@ export class QrFrameDisplay {
   #onError;
   #delay;
 
-  constructor({ encode, image, label, schedule = setTimeout, unschedule = clearTimeout,
+  constructor({ encode, image, label,
+    // Browser timers must retain their window receiver; passing bare
+    // setTimeout/clearTimeout as methods throws "Illegal invocation".
+    schedule = (callback, delay) => setTimeout(callback, delay),
+    unschedule = (timer) => clearTimeout(timer),
     onError = () => {}, delay = 400 }) {
     this.#encode = encode;
     this.#image = image;

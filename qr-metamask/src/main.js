@@ -18,10 +18,7 @@ const collected = [];
 const decoder = new BrowserQRCodeReader();
 
 async function guarded(fn) {
-  try { await fn(); } catch (err) {
-    console.warn('QR caught error stack:', err?.stack || err);
-    setStatus('拒絕／錯誤：' + (err?.message || String(err)));
-  }
+  try { await fn(); } catch (err) { setStatus('拒絕／錯誤：' + (err?.message || String(err))); }
 }
 async function boundedText(file, max = 120_000) {
   if (!file || file.size <= 0 || file.size > max) throw Error('只接受大小有限的 JSON 檔案');
@@ -147,11 +144,9 @@ $('reply').addEventListener('click',()=>guarded(async()=>{
   if(!active || used) throw Error('請先掃描新的 MetaMask request');
   const pendingRequest = active;
   const signed=JSON.parse(await boundedText($('signed-file').files?.[0]));
-  console.warn('QR diagnostics: signed JSON parsed');
   // Cancel or account change during File.text() must invalidate the response.
   if (active !== pendingRequest || used) return;
   const response=makeSignedResponseUr(pendingRequest,signed);
-  console.warn('QR diagnostics: signed UR constructed');
   used=true;
   $('reply').disabled=true;$('download').disabled=true;
   if (await displayUr(response)) {
