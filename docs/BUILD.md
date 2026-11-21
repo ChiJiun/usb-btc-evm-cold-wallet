@@ -97,10 +97,11 @@ Checks include:
 
 - generated image SHA-256;
 - protective MBR + GPT header;
-- exactly two GPT partitions;
+- exactly three GPT partitions for the single-USB image;
 - deterministic GPT disk and partition UUIDs;
 - first partition is an EFI System Partition and is marked GPT read-only;
-- second partition is the writable FAT `COLD_VAULT` with the expected deterministic PARTUUID;
+- second partition is the writable FAT `COLD_VAULT`, but uses the Linux filesystem GPT type so normal Windows Explorer does not treat it as the shared data volume;
+- third partition is the writable FAT32 `TX_TRANSFER` with deterministic PARTUUID and is the only Microsoft Basic Data partition intended for Windows;
 - Linux final config has `CONFIG_NET` disabled;
 - USB storage + VFAT are enabled;
 - ATA/NVMe/MMC/VirtIO block are not enabled;
@@ -150,3 +151,27 @@ Any failure creates `/run/usb-wallet/lockdown`. The appliance console then disab
 The Devspace VM is ARM64 and intentionally lacks the normal Buildroot host compiler toolchain, so it is used for unit/static tests, source/hash verification and cross-platform wheelhouse validation only. The repository also includes an x86_64 GitHub Actions workflow that performs the authoritative full Buildroot image build, two-clean-build reproducibility comparison and OVMF/QEMU UEFI boot smoke test.
 
 The automated UEFI smoke test validates firmware → bootloader → kernel/initramfs → startup-audit execution for the generated image. It is still not a substitute for physically booting a removable USB on representative hardware before any future real-asset release.
+
+
+## Single-USB development image
+
+The current single-USB branch builds a deterministic GPT layout:
+
+| Partition | Size | GPT type | FAT label | Purpose |
+| --- | ---: | --- | --- | --- |
+| 1 | 64 MiB | EFI System | `USBCOLD_EFI` | UEFI/GRUB/kernel; GPT read-only intent |
+| 2 | 64 MiB | Linux filesystem | `COLD_VAULT` | app-level encrypted vault/policy only |
+| 3 | 512 MiB | Microsoft Basic Data | `TX_TRANSFER` | Windows/Linux transaction exchange and Portable Companion |
+
+The Portable Companion integration path is fixed at
+`TX_TRANSFER:/COMPANION/usb-cold-companion.exe`; transaction files live below
+`TX_TRANSFER:/TRANSACTIONS/`. This branch deliberately does not copy a Windows
+binary from an unverified build. After the portable packaging artifact and PR
+#68 image-artifact pipeline are merged, the integration job must insert the
+already-verified EXE before final image hashing/reproducibility verification.
+
+A normal USB has no hardware write protection. The Linux GPT type merely keeps
+`COLD_VAULT` out of ordinary Windows drive-letter mounting; an administrator,
+malware, firmware, or raw-disk tool can still modify any USB sector. This
+testnet development image therefore does not claim Secure Boot, authenticated
+boot, anti-rollback, or resistance to an already-compromised Windows host.
