@@ -171,6 +171,8 @@ def _attest_args(image: Path, tag: str, commit: str) -> list[str]:
         commit,
         "--signer-workflow",
         RELEASE_WORKFLOW,
+        "--signer-digest",
+        commit,
         "--predicate-type",
         "https://slsa.dev/provenance/v1",
         "--deny-self-hosted-runners",
