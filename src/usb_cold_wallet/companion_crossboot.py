@@ -510,7 +510,13 @@ class CrossBootManager:
                 active.append(request_id)
             elif snap.state in ACTIVE_STATES:
                 active.append(request_id)
-            elif snap.state in {"BROADCASTED", "FAILED"}:
+            elif snap.state == "FAILED":
+                reason = snap.metadata.get("reason", "")
+                if "broadcast outcome unknown" in reason and self._response_path(request_id).is_file():
+                    active.append(request_id)
+                else:
+                    self._cleanup_files(request_id)
+            elif snap.state == "BROADCASTED":
                 self._cleanup_files(request_id)
             else:
                 raise ValueError("Unsupported persisted online state")
@@ -533,12 +539,16 @@ class CrossBootManager:
         request = self._load_request(request_id, expected)
         owner = self._reconstruct(request, session, btc_session)
         snap = self._store().get(request_id)
-        if snap.state == "IMPORTED_VERIFIED":
+        if snap.state in {"IMPORTED_VERIFIED", "FAILED"}:
             response = _read_json(self._response_path(request_id))
             payload = _verify_response_public(
                 request, response, expected_account=expected, allow_no_trusted_clock=True
             )
             owner.accept_signed(canonical(payload))
+            if snap.state == "FAILED":
+                if "broadcast outcome unknown" not in snap.metadata.get("reason", ""):
+                    raise ValueError("Failed request is not recoverable")
+                owner.pending["stage"] = "broadcast_unknown"
         return True
 
     def export_current(self, session, btc_session) -> dict:
@@ -594,8 +604,10 @@ class CrossBootManager:
             return
         snap = self._store().get(request["requestId"])
         if snap is not None and snap.state in {"DRAFT", "EXPORTED", "IMPORTED_VERIFIED"}:
-            self._store().failed(request, reason[:256] or "failed")
-            self._cleanup_files(request["requestId"])
+            text = reason[:256] or "failed"
+            self._store().failed(request, text)
+            if "broadcast outcome unknown" not in text:
+                self._cleanup_files(request["requestId"])
 
     def cancel(self, session, btc_session, request_id: str | None) -> None:
         if not request_id or REQUEST_ID_RE.fullmatch(request_id) is None:
