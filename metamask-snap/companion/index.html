@@ -27,5 +27,11 @@
 <button id="approve">核對鏈／帳戶／Nonce 後交回 MetaMask</button>
 <button id="reject" class="danger">取消本次請求</button>
 <p class="muted">Snap 會重新解析 raw type-2 transaction，驗證 sender、chainId、nonce、recipient、value、gas、fees、data、access list 以及 request ID/digest；驗證失敗絕不通知 MetaMask 核准。不自動重簽、加價或廣播。</p></section>
+<section><h2>5. 失敗後的事件恢復</h2>
+<p class="muted">如果 MetaMask 核准／拒絕事件傳送失敗，Snap 會保存已驗證的原始結果並停止新請求。重試只會重新通知同一筆請求，不會再次簽章。若 MetaMask 已完成或已在其中取消該請求，可確認後清除尚未結束的事件。</p>
+<label for="terminal">待恢復事件</label><select id="terminal"></select>
+<button id="retry-terminal">重送相同事件</button>
+<button id="abandon-terminal" class="danger">確認 MetaMask 已完成／取消後清除</button>
+</section>
 <footer><small>Research POC · #22 · 本機 Companion · MetaMask Account Management Snap</small></footer>
 </main><script type="module" src="./main.js"></script></body></html>
