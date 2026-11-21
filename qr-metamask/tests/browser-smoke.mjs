@@ -119,5 +119,35 @@ test('built browser bundle passes CSP and native QR pairing/request/signed respo
   await page.locator('#cancel').click();
   assert.equal(await page.locator('#qr').isHidden(), true);
   assert.equal(await page.locator('#qr').getAttribute('src'), null);
+
+  // Browser-level regression for the delayed File.text() race: a previous
+  // malformed account import must not overwrite a newer successful import.
+  await page.evaluate(() => {
+    const original = File.prototype.text;
+    File.prototype.text = function () {
+      if (this.name === 'stale-import.json') {
+        return new Promise((resolve) => {
+          window.__resolveStaleImport = () => resolve('not-valid-json');
+        });
+      }
+      return original.call(this);
+    };
+  });
+  await page.locator('#public-file').setInputFiles({
+    name:'stale-import.json',mimeType:'application/json',
+    buffer:Buffer.from('not-valid-json'),
+  });
+  await page.waitForFunction(() => typeof window.__resolveStaleImport === 'function');
+  await page.locator('#public-file').setInputFiles({
+    name:'current-public.json',mimeType:'application/json',
+    buffer:Buffer.from(JSON.stringify(publicInfo)),
+  });
+  await page.getByText('公開帳戶已讀取', {exact:false}).waitFor();
+  await page.evaluate(() => window.__resolveStaleImport());
+  await page.waitForTimeout(80);
+  assert.match(await page.locator('#account').textContent(),
+    new RegExp(publicInfo.address, 'i'));
+  assert.match(await page.locator('#status').textContent(), /公開帳戶已讀取/);
+  assert.equal(await page.locator('#pair').isEnabled(), true);
   assert.deepEqual(errors, [], 'No console or uncaught browser runtime errors');
 });
