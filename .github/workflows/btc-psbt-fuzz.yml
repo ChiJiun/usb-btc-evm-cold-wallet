@@ -39,11 +39,17 @@ jobs:
           FUZZ_SEED: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          python tools/fuzz_btc_psbt.py \
-            --seconds 180 \
-            --max-cases 50000 \
-            --seed "$FUZZ_SEED" \
-            --artifact-dir btc-psbt-crashes | tee btc-psbt-fuzz-result.json
+          # Linux virtual-address-space bound (768 MiB); overall job and per-case
+          # time are bounded independently. Exit code propagates through pipefail.
+          ulimit -v 786432
+          timeout --signal=TERM --kill-after=5s 240s \\
+            python tools/fuzz_btc_psbt.py \\
+              --seconds 180 \\
+              --max-cases 50000 \\
+              --case-timeout-ms 250 \\
+              --replay-dir tests/fixtures/btc_psbt_crashes \\
+              --seed "$FUZZ_SEED" \\
+              --artifact-dir btc-psbt-crashes | tee btc-psbt-fuzz-result.json
 
       - name: Upload fuzz result and failing inputs for triage
         if: always()
