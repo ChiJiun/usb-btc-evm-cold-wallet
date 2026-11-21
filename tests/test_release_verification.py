@@ -24,6 +24,33 @@ COMMIT = "a" * 40
 ASSET = f"usb-cold-wallet-{TAG}.img.xz"
 BINARY = b"fake image bytes, not a real wallet image"
 DIGEST = hashlib.sha256(BINARY).hexdigest()
+SBOM = (json.dumps(
+    {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "dataLicense": "CC0-1.0"},
+    sort_keys=True,
+) + "\n").encode()
+HOST_PACKAGES = b"gcc=1.0\nmake=1.0\n"
+
+
+def _metadata_bytes(*, tag: str = TAG, commit: str = COMMIT, asset: str = ASSET) -> bytes:
+    return (json.dumps(
+        {
+            "repository": REPOSITORY,
+            "tag": tag,
+            "source_sha": commit,
+            "workflow": ".github/workflows/release.yml",
+            "asset": asset,
+            "buildroot_version": "2026.08.2",
+            "buildroot_sha256": "1" * 64,
+            "node_version": "24.22.3",
+            "xz_version": "5.8.1",
+            "compression": "xz -6 --threads=1 --check=crc64 --no-sparse",
+            "raw_image_sha256": "2" * 64,
+            "reproducibility_runs": 2,
+            "workflow_run_id": "12345",
+            "workflow_run_attempt": "1",
+        },
+        sort_keys=True,
+    ) + "\n").encode()
 
 
 class FakeGitHub:
@@ -57,12 +84,25 @@ class FakeGitHub:
         if args[:2] == ["release", "download"]:
             target_dir = Path(args[args.index("--dir") + 1])
             name = args[args.index("--pattern") + 1]
+            metadata = _metadata_bytes()
+            payloads = {
+                ASSET: self.binary,
+                "SBOM.spdx.json": SBOM,
+                "release-metadata.json": metadata,
+                "build-host-packages.txt": HOST_PACKAGES,
+            }
             if name == "SHA256SUMS":
-                (target_dir / name).write_text(
-                    f"{self.manifest_digest}  {ASSET}\n", encoding="ascii"
-                )
-            elif name == ASSET:
-                (target_dir / name).write_bytes(self.binary)
+                lines = []
+                for filename in sorted(payloads):
+                    digest = (
+                        self.manifest_digest
+                        if filename == ASSET
+                        else hashlib.sha256(payloads[filename]).hexdigest()
+                    )
+                    lines.append(f"{digest}  {filename}")
+                (target_dir / name).write_text("\n".join(lines) + "\n", encoding="ascii")
+            elif name in payloads:
+                (target_dir / name).write_bytes(payloads[name])
             return ""
         if args[:2] in (
             ["release", "verify"],
@@ -82,26 +122,12 @@ def _write_local_release(
 ) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     (directory / asset).write_bytes(BINARY)
-    (directory / "SBOM.spdx.json").write_text(
-        json.dumps({"spdxVersion": "SPDX-2.3"}), encoding="utf-8"
+    (directory / "SBOM.spdx.json").write_bytes(SBOM)
+    (directory / "release-metadata.json").write_bytes(
+        _metadata_bytes(tag=tag, commit=commit, asset=asset)
     )
-    (directory / "release-metadata.json").write_text(
-        json.dumps(
-            {
-                "repository": REPOSITORY,
-                "tag": tag,
-                "source_sha": commit,
-                "workflow": ".github/workflows/release.yml",
-                "asset": asset,
-                "node_version": "24.22.3",
-                "compression": "xz -6 --threads=1 --check=crc64 --no-sparse",
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    files = [asset, "SBOM.spdx.json", "release-metadata.json"]
+    (directory / "build-host-packages.txt").write_bytes(HOST_PACKAGES)
+    files = [asset, "SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt"]
     lines = [
         f"{hashlib.sha256((directory / name).read_bytes()).hexdigest()}  {name}"
         for name in sorted(files)
@@ -119,7 +145,8 @@ def test_good_release_verifies_pinned_tag_and_build_provenance():
     assert attest[attest.index("--signer-workflow") + 1] == RELEASE_WORKFLOW
     assert attest[attest.index("--signer-digest") + 1] == COMMIT
     assert attest[attest.index("--predicate-type") + 1] == "https://slsa.dev/provenance/v1"
-    assert sum(a[:2] == ["release", "verify-asset"] for a in fake.calls) == 2
+    assert sum(a[:2] == ["release", "verify-asset"] for a in fake.calls) == 5
+    assert sum(a[:2] == ["attestation", "verify"] for a in fake.calls) == 5
 
 
 def test_source_only_accepts_signed_annotated_tag_bound_to_exact_commit():
@@ -134,7 +161,10 @@ def test_staged_final_bytes_verify_before_publish(tmp_path):
     _write_local_release(tmp_path)
     assert verify_local_artifacts(TAG, COMMIT, ASSET, tmp_path, run=fake) == DIGEST
     assert not any(a[:2] == ["release", "view"] for a in fake.calls)
-    attest = next(a for a in fake.calls if a[:2] == ["attestation", "verify"])
+    attest = next(
+        a for a in fake.calls
+        if a[:2] == ["attestation", "verify"] and Path(a[2]).name == ASSET
+    )
     assert Path(attest[2]).read_bytes() == BINARY
     assert attest[attest.index("--source-digest") + 1] == COMMIT
 
@@ -243,7 +273,7 @@ def test_checksums_are_not_themselves_claimed_to_authenticate_release():
         verify_release(TAG, COMMIT, ASSET, run=fake)
 
 
-@pytest.mark.parametrize("mutation", ["asset", "sha", "metadata_commit", "extra_file"])
+@pytest.mark.parametrize("mutation", ["asset", "sha", "metadata_commit", "sbom", "extra_file"])
 def test_staged_asset_substitution_wrong_sha_source_or_manifest_fails_closed(
     tmp_path, mutation
 ):
@@ -265,8 +295,17 @@ def test_staged_asset_substitution_wrong_sha_source_or_manifest_fails_closed(
         (tmp_path / "release-metadata.json").write_text(
             json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
         )
+        names = [ASSET, "SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt"]
         lines = []
-        for name in sorted([ASSET, "SBOM.spdx.json", "release-metadata.json"]):
+        for name in sorted(names):
+            digest = hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+            lines.append(f"{digest}  {name}")
+        (tmp_path / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="ascii")
+    elif mutation == "sbom":
+        (tmp_path / "SBOM.spdx.json").write_text("{}", encoding="utf-8")
+        names = [ASSET, "SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt"]
+        lines = []
+        for name in sorted(names):
             digest = hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
             lines.append(f"{digest}  {name}")
         (tmp_path / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="ascii")
@@ -344,3 +383,7 @@ def test_release_workflow_has_pinned_actions_and_separated_permissions():
     assert "startsWith(github.ref, 'refs/tags/')" in publish
     assert "needs.gate.result == 'success'" in publish
     assert "--clobber" not in publish
+    assert 'test "$RUN1" = "$RUN2"' in build
+    assert 'RAW_IMAGE_SHA256' in build
+    assert 'build-host-packages.txt' in build
+    assert 'release/build-host-packages.txt' in publish
