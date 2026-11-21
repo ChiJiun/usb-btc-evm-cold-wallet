@@ -319,6 +319,7 @@ def test_release_workflow_has_pinned_actions_and_separated_permissions():
 
     build = workflow.split("\n  build:\n", 1)[1].split("\n  attest:\n", 1)[0]
     attest = workflow.split("\n  attest:\n", 1)[1].split("\n  verify:\n", 1)[0]
+    verify = workflow.split("\n  verify:\n", 1)[1].split("\n  gate:\n", 1)[0]
     publish = workflow.split("\n  publish:\n", 1)[1]
 
     assert "contents: read" in build
@@ -329,6 +330,11 @@ def test_release_workflow_has_pinned_actions_and_separated_permissions():
     assert "id-token: write" in attest
     assert "attestations: write" in attest
     assert "contents: write" not in attest
+
+    assert "attestations: read" in verify
+    assert "attestations: write" not in verify
+    assert "id-token: write" not in verify
+    assert "contents: write" not in verify
 
     assert "contents: write" in publish
     assert "needs: gate" in publish
