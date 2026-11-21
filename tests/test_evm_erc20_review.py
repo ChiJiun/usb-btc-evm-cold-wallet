@@ -48,6 +48,7 @@ def review(payload, method="transfer", party=RECIPIENT, amount=123, **kwargs):
     ("approve", SPENDER, 55),
     ("transfer", RECIPIENT, 1),
     ("transfer", RECIPIENT, UINT256_MAX),
+    ("approve", SPENDER, 0),  # explicit allowance revocation is permitted
 ])
 def test_eth_abi_reference_vectors_and_exact_review(method, party, amount):
     raw = independent_calldata(method, party, amount)
@@ -86,10 +87,12 @@ def test_malformed_or_untrusted_calldata_denied(mutated):
         parse_erc20_calldata(mutated)
 
 
-def test_canonical_erc20_approve_unlimited_and_zero_denied():
-    for amount in (0, UINT256_MAX):
-        with pytest.raises(ValueError):
-            parse_erc20_calldata(independent_calldata("approve", SPENDER, amount))
+def test_canonical_erc20_approve_unlimited_denied_but_zero_revocation_allowed():
+    assert parse_erc20_calldata(independent_calldata("approve", SPENDER, 0))["allowance"] == 0
+    with pytest.raises(ValueError):
+        parse_erc20_calldata(independent_calldata("approve", SPENDER, UINT256_MAX))
+    with pytest.raises(ValueError):
+        parse_erc20_calldata(independent_calldata("transfer", RECIPIENT, 0))
 
 
 @pytest.mark.parametrize("field,value", [
@@ -145,7 +148,7 @@ def test_unknown_metadata_and_uint256_overflow_denied():
     p["tokenSymbol"] = "SCAM"
     with pytest.raises(ValueError):
         review(p)
-    for val in (0, UINT256_MAX):
+    for val in (UINT256_MAX,):
         with pytest.raises(ValueError):
             parse_erc20_calldata(independent_calldata("approve", SPENDER, val))
     p = tx()

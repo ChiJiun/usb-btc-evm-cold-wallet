@@ -133,6 +133,7 @@ def test_replay_uses_independently_maintained_nonce_and_deadline():
 
 def test_explicit_approval_cap_and_schema_allowlist():
     data = typed("WalletApprovalIntent")
+    assert review(typed("WalletApprovalIntent", 0), expected_amount=0)["allowance"] == 0
     with pytest.raises(ValueError, match="Infinite"):
         review(typed("WalletApprovalIntent", UINT256_MAX), expected_amount=UINT256_MAX)
     with pytest.raises(ValueError, match="counterparty"):

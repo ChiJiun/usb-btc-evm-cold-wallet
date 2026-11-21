@@ -72,7 +72,7 @@ def parse_erc20_calldata(data: object) -> dict:
     label, counterparty_label, amount_label = method
     counterparty = checked_address("0x" + raw[16:36].hex(), counterparty_label)
     value = int.from_bytes(raw[36:68], "big")
-    checked_uint(value, amount_label, minimum=1)
+    checked_uint(value, amount_label, minimum=1 if label == "transfer" else 0)
     if label == "approve" and value == UINT256_MAX:
         raise ValueError("Unlimited ERC-20 approval forbidden")
     return {
@@ -110,7 +110,9 @@ def review_erc20_transaction(
     checked_contracts(trusted_contracts, contract)
 
     expected_party = checked_address(expected_counterparty, "expected recipient/spender")
-    expected_qty = checked_uint(expected_amount, "expected token amount", minimum=1)
+    decoded = parse_erc20_calldata(payload["data"])
+    expected_qty = checked_uint(expected_amount, "expected token amount",
+                                minimum=1 if decoded["method"] == "transfer" else 0)
     nonce = checked_uint(payload["nonce"], "nonce")
     gas = checked_uint(payload["gas"], "gas", minimum=21_000)
     gas_ceiling = checked_uint(max_gas, "independently verified gas limit", minimum=21_000)
@@ -127,7 +129,6 @@ def review_erc20_transaction(
     if actual_fee_cap > fee_cap or actual_fee_cap > UINT256_MAX:
         raise ValueError("Transaction maximum fee exceeds trusted offline limit")
 
-    decoded = parse_erc20_calldata(payload["data"])
     party_field = "recipient" if decoded["method"] == "transfer" else "spender"
     qty_field = "amount" if decoded["method"] == "transfer" else "allowance"
     if decoded[party_field] != expected_party or decoded[qty_field] != expected_qty:

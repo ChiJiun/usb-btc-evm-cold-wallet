@@ -115,8 +115,9 @@ def review_eip712_intent(
     counterparty = checked_address(message[party_field], party_field)
     if counterparty != checked_address(expected_counterparty, "expected counterparty"):
         raise ValueError("EIP-712 counterparty mismatch")
-    amount = checked_uint(message[amount_field], amount_field, minimum=1)
-    if amount != checked_uint(expected_amount, "expected amount", minimum=1):
+    minimum_amount = 1 if amount_field == "amount" else 0  # approve(0) revokes.
+    amount = checked_uint(message[amount_field], amount_field, minimum=minimum_amount)
+    if amount != checked_uint(expected_amount, "expected amount", minimum=minimum_amount):
         raise ValueError("EIP-712 amount/allowance mismatch")
     if amount_field == "allowance" and amount == UINT256_MAX:
         raise ValueError("Infinite typed-data allowance forbidden")
