@@ -8,6 +8,12 @@ const status = (message) => { $('status').textContent = message; };
 let client = null;
 let pending = [];
 let accounts = [];
+let terminalEvents = [];
+async function snapRecovery(method, params = undefined) {
+  return provider().request({method:'wallet_invokeSnap', params:{
+    snapId:SNAP_ID, request:{method, ...(params ? {params} : {})},
+  }});
+}
 const provider = () => {
   if (!window.ethereum?.request) throw Error('未偵測到 MetaMask provider，請使用 MetaMask 的開發／Flask 版本。');
   return window.ethereum;
@@ -28,6 +34,16 @@ function selected() {
 async function refresh() {
   accounts = await requireClient().listAccounts();
   pending = await requireClient().listRequests();
+  terminalEvents = await snapRecovery('usb_listTerminalEvents');
+  if (!Array.isArray(terminalEvents)) throw Error('Snap 未回傳合法的恢復狀態');
+  $('terminal').replaceChildren();
+  for (const item of terminalEvents) {
+    const option = document.createElement('option');
+    option.value = item.id;
+    option.textContent = item.id + ' · ' + item.kind +
+      (item.attempted ? '（通知結果可能已送達）' : '（尚未嘗試通知）');
+    $('terminal').appendChild(option);
+  }
   $('accounts').textContent = accounts.length ? accounts.map((a)=>a.address + '  [' + a.id + ']').join('\n') : '尚無 USB 冷錢包帳戶';
   $('requests').replaceChildren();
   for (const p of pending) {
@@ -126,4 +142,21 @@ $('reject').addEventListener('click',()=>guarded(async()=>{
   const item=selected();
   await requireClient().rejectRequest(item.id);
   await refresh();status('已拒絕此請求；同一 Request ID 不可重播。');
+}));
+
+$('retry-terminal').addEventListener('click',()=>guarded(async()=>{
+  const item = terminalEvents.find((event)=>event.id === $('terminal').value);
+  if(!item) throw Error('沒有待恢復事件');
+  if (!window.confirm('重新通知 MetaMask 相同的已驗證結果？如果先前送達但保存失敗，MetaMask 可能收到重複通知。')) return;
+  await snapRecovery('usb_recoverTerminalEvent',{id:item.id,action:'retry'});
+  await refresh();
+  status('已嘗試重送原本的事件。請在 MetaMask 確認結果，不會建立新簽章。');
+}));
+$('abandon-terminal').addEventListener('click',()=>guarded(async()=>{
+  const item = terminalEvents.find((event)=>event.id === $('terminal').value);
+  if(!item) throw Error('沒有待恢復事件');
+  if (!window.confirm('請先確認 MetaMask 已完成或取消該筆請求。確定要清除 Snap 內保留的通知狀態？此操作不會傳送交易或簽章。')) return;
+  await snapRecovery('usb_recoverTerminalEvent',{id:item.id,action:'abandon'});
+  await refresh();
+  status('已清除該筆不確定通知狀態。原請求 ID 仍保留重播保護。');
 }));
