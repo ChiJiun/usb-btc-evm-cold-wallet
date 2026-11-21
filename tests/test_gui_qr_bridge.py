@@ -522,4 +522,8 @@ def test_usb_gui_rejects_hidden_partial_exchange_and_non_json_paths(tmp_path):
     for name in (".hidden.json", "signed.partial", "signed.tmp"):
         with pytest.raises(ValueError, match="visible .json"):
             signed._write_transfer_signed(tmp_path / name)
-    assert not list(tmp_path.glob(".*.partial"))
+    # The adversarial hidden file created above must remain untouched; the
+    # rejected imports/exports must not create any additional stage files.
+    expected = tmp_path / ".usbwallet-incomplete.partial"
+    assert expected.read_text(encoding="utf-8") == "{}"
+    assert set(tmp_path.glob(".*.partial")) == {expected}
