@@ -400,3 +400,27 @@ $("btcConfirmRequestBtn").addEventListener("click",()=>{
   renderBtc(btcPending);
   message("已核對 BTC 交易。離線裝置仍必須獨立審核。");
 });
+
+$("lookupForm").addEventListener("submit",(event)=>{
+  event.preventDefault();
+  action(async()=>{
+    const asset=$("lookupAsset").value;
+    const txid=$("lookupHash").value.trim();
+    const valid=asset==="sepolia"?/^0x[0-9a-fA-F]{64}$/.test(txid):
+      asset==="bitcoin-testnet"&&/^[0-9a-fA-F]{64}$/.test(txid);
+    if(!valid)throw new Error("請輸入與測試網相符的完整 Tx Hash／TXID");
+    $("lookupResult").textContent="正在唯讀查詢；結果僅供交叉確認。";
+    try{
+      const result=await api("/api/lookup",{asset,txid});
+      if(result.asset!==asset||result.txid.toLowerCase()!==txid.toLowerCase()||result.untrusted_rpc!==true)
+        throw new Error("RPC 查詢結果未通過鏈別／交易識別驗證");
+      $("lookupResult").textContent="測試網："+result.asset+
+        "\n交易："+result.txid+"\n狀態："+statusMeaning(null,result.result)+
+        "\n來源：不可信 RPC／Explorer。此查詢不會允許重播、簽署或廣播。";
+      message("已完成唯讀狀態查詢，未送出任何交易。");
+    }catch(err){
+      $("lookupResult").textContent="查詢失敗或結果不明；不可推論交易未廣播。";
+      throw err;
+    }
+  });
+});
