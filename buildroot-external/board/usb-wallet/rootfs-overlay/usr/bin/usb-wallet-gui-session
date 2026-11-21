@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+export HOME=/root
+export HISTFILE=/dev/null
+export TMPDIR=/tmp
+umask 077
+
+# Never bypass the boot/runtime audit. On a failed boot, remain in the text
+# appliance so the operator can read LOCKDOWN diagnostics and power off.
+if [ -e /run/usb-wallet/lockdown ]; then
+    exec /usr/bin/usb-wallet-console
+fi
+
+# KDrive/TinyX has no TCP listener and uses the kernel framebuffer/input stack.
+# The GUI itself runs runtime_audit() before creating a Tk window.
+if [ -x /usr/bin/xinit ] && [ -x /usr/bin/Xfbdev ] && [ -x /usr/bin/usb-cold-wallet-gui ]; then
+    /usr/bin/xinit /usr/bin/usb-cold-wallet-gui --lang zh-TW --         /usr/bin/Xfbdev :0 -nolisten tcp -noreset
+fi
+
+# Fail safely to the existing appliance rather than exposing a shell.
+exec /usr/bin/usb-wallet-console
