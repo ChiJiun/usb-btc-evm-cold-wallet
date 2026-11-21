@@ -1,0 +1,257 @@
+"""Post-merge GUI/QR/USB integration: public compromised test vectors only.
+
+These tests exercise OfflineReviewApp's actual entrypoint methods without a
+Tk display or a physical camera. Hardware/optical acceptance remains separate.
+"""
+from __future__ import annotations
+
+import copy
+import json
+import os
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from embit import bip32, psbt, script, transaction
+
+from usb_cold_wallet import gui
+from usb_cold_wallet.exchange import package
+from usb_cold_wallet.gui import OfflineReviewApp
+from usb_cold_wallet.gui_qr_bridge import (
+    parse_qr_input, bind_qr_to_review, signed_qr_text,
+)
+from usb_cold_wallet.keys import btc_address, btc_key, evm_account, root_from_mnemonic
+from usb_cold_wallet.policy import default_profile
+from usb_cold_wallet.qr_workflow import (
+    prepare_evm_qr, prepare_btc_qr, verify_evm_response, verify_btc_response,
+)
+from usb_cold_wallet.qr_session import make_request
+from usb_cold_wallet.review import ReviewSession, build_review_plan
+from usb_cold_wallet.signer_session import SignerSession, State
+
+
+ROOT = root_from_mnemonic("abandon " * 11 + "about")  # public, compromised BIP39 vector
+RECIPIENT = "0x000000000000000000000000000000000000dEaD"
+WEI = 10**16  # > JS Number.MAX_SAFE_INTEGER, must remain exact
+
+
+def evm_transaction():
+    return {
+        "type": 2, "chainId": 11155111, "nonce": 7,
+        "to": RECIPIENT, "value": WEI, "gas": 21000,
+        "maxFeePerGas": 2_000_000_000, "maxPriorityFeePerGas": 1_000_000_000,
+        "data": "0x",
+    }
+
+
+def btc_qr_request():
+    key = btc_key(ROOT, 0, 0)
+    destination = btc_address(ROOT, 0, 1)
+    prev_tx = transaction.Transaction(
+        vin=[transaction.TransactionInput(bytes.fromhex("11" * 32), 0)],
+        vout=[transaction.TransactionOutput(120000, script.p2wpkh(key.key))],
+    )
+    tx = transaction.Transaction(
+        vin=[transaction.TransactionInput(prev_tx.txid(), 0)],
+        vout=[
+            transaction.TransactionOutput(
+                60000, script.address_to_scriptpubkey(destination)),
+            transaction.TransactionOutput(
+                58800, script.p2wpkh(btc_key(ROOT, 1, 0).key)),
+        ],
+    )
+    signed = psbt.PSBT(tx)
+    signed.inputs[0].witness_utxo = prev_tx.vout[0]
+    signed.inputs[0].non_witness_utxo = prev_tx
+    signed.inputs[0].bip32_derivations[key.key.get_public_key()] = psbt.DerivationPath(
+        ROOT.my_fingerprint, bip32.parse_path("m/84h/1h/0h/0/0"))
+    return prepare_btc_qr(
+        signed.to_base64(), ROOT.my_fingerprint.hex(),
+        destination, 60000, 1500, 0,
+    )
+
+
+def reviewed_session(envelope):
+    plan = build_review_plan(envelope, ROOT)
+    session = ReviewSession(plan)
+    for index in range(len(plan.pages)):
+        session.acknowledge(index, plan.review_digest)
+    session.set_confirmation(plan.challenge, plan.review_digest)
+    return session
+
+
+def test_evm_qr_v1_to_gui_review_sign_and_correlated_online_response():
+    request = prepare_evm_qr(evm_transaction(), evm_account(ROOT).address, RECIPIENT, WEI)
+    envelope, original = parse_qr_input(json.dumps(request), "evm-request")
+    bind_qr_to_review(original, reviewed_session(envelope).plan, ROOT)
+    session = reviewed_session(envelope)
+    signed = session.sign(ROOT, default_profile(ROOT), extra_confirmation="UNVERIFIED RECIPIENT")
+    response = json.loads(signed_qr_text(original, signed, "evm-signed"))
+    checked = verify_evm_response(request, response)
+    assert checked["chain_id"] == 11155111
+    assert checked["value_wei"] == WEI
+    assert response["request_id"] == request["request_id"]
+    assert response["request_digest"]
+    assert "signed_raw_transaction" in checked
+
+
+def test_btc_qr_v1_to_gui_review_sign_and_correlated_online_response():
+    request = btc_qr_request()
+    envelope, original = parse_qr_input(json.dumps(request), "btc-request")
+    session = reviewed_session(envelope)
+    bind_qr_to_review(original, session.plan, ROOT)
+    signed = session.sign(ROOT, default_profile(ROOT), extra_confirmation="UNVERIFIED RECIPIENT")
+    response = json.loads(signed_qr_text(original, signed, "btc-signed"))
+    checked = verify_btc_response(request, response)
+    assert checked["signature_count"] == 1
+    assert response["request_id"] == request["request_id"]
+
+
+def test_gui_qr_rejects_wrong_network_and_sender_and_metadata_without_unlock():
+    request = prepare_evm_qr(evm_transaction(), evm_account(ROOT).address, RECIPIENT, WEI)
+    with pytest.raises(ValueError):
+        parse_qr_input(json.dumps(request), "btc-request")
+    envelope, original = parse_qr_input(json.dumps(request), "evm-request")
+    plan = build_review_plan(envelope, ROOT)
+    bad_sender = make_request("sepolia", "0x0000000000000000000000000000000000000001", request["payload"])
+    with pytest.raises(ValueError, match="account"):
+        bind_qr_to_review(bad_sender, plan, ROOT)
+    bad_payload = copy.deepcopy(request["payload"])
+    bad_payload["amount_wei"] += 1
+    bad_request = make_request("sepolia", request["account"], bad_payload)
+    bad_env, bad_original = parse_qr_input(json.dumps(bad_request), "evm-request")
+    with pytest.raises(ValueError, match="amount"):
+        bind_qr_to_review(bad_original, build_review_plan(bad_env, ROOT), ROOT)
+    malformed = json.dumps(request).replace('"version": 1', '"version": 1, "version": 1', 1)
+    with pytest.raises(ValueError, match="Duplicate"):
+        parse_qr_input(malformed, "evm-request")
+    with pytest.raises(ValueError):
+        parse_qr_input(json.dumps({"unexpected": True}), "evm-request")
+
+
+class _Messages:
+    def __init__(self):
+        self.errors = []
+
+    def showerror(self, *args, **kwargs):
+        self.errors.append(args)
+
+    def showwarning(self, *args, **kwargs):
+        self.errors.append(args)
+
+
+def make_gui(tmp_path):
+    app = OfflineReviewApp.__new__(OfflineReviewApp)
+    app.language = "zh-TW"
+    app.transfer_dir = tmp_path
+    app.development_mode = False
+    app.wallet_root = None
+    app.policy_profile = None
+    app.session = None
+    app.selected_kind = "evm-request"
+    app._active_usb_file = None
+    app._active_usb_identity = None
+    app._active_usb_digest = None
+    app._active_qr_request = None
+    app._signed_qr_text = None
+    app.page_index = 0
+    app.status_message = ""
+    app.root = object()
+    app.messagebox = _Messages()
+    app.simpledialog = SimpleNamespace(askstring=lambda *a, **kw: "UNVERIFIED RECIPIENT")
+    app.rendered = []
+    app._render_review = lambda: app.rendered.append("review")
+    app._render_signed = lambda: app.rendered.append("signed")
+    app._render_home = lambda: app.rendered.append("home")
+    app.security = SignerSession(
+        audit=lambda: True, on_lock=app._drop_wallet_references,
+        clock=lambda: 100.0,
+    )
+
+    def unlock():
+        assert app.wallet_root is None and app.security.state == State.LOCKED
+        app.security.begin_unlock()
+        app.security.unlock_succeeded()
+        app.wallet_root = ROOT
+        app.policy_profile = default_profile(ROOT)
+        return True
+
+    app._unlock = unlock
+    return app
+
+
+def test_actual_gui_import_qr_sign_present_and_correlate(tmp_path):
+    app = make_gui(tmp_path)
+    request = prepare_evm_qr(evm_transaction(), evm_account(ROOT).address, RECIPIENT, WEI)
+    snapshots = []
+
+    def scanned_text():
+        snapshots.append((app.wallet_root, app.security.state))
+        return json.dumps(request)
+
+    app.qr_reader = scanned_text
+    emitted = []
+    app.qr_presenter = emitted.append
+    app._import_qr()
+    assert snapshots == [(None, State.LOCKED)]  # camera remains locked
+    assert app.security.state == State.REVIEWING
+    assert app.rendered == ["review"]
+    assert app.session.plan.amount_atomic == WEI
+    for index in range(len(app.session.plan.pages)):
+        app.session.acknowledge(index, app.session.plan.review_digest)
+    app.session.set_confirmation(app.session.plan.challenge, app.session.plan.review_digest)
+    app._sign()
+    assert app.rendered == ["review", "signed"]
+    assert app.security.state == State.SIGNED
+    app._present_signed_qr()
+    response = json.loads(emitted[0])
+    assert verify_evm_response(request, response)["value_wei"] == WEI
+    assert response["request_digest"]
+    app._done()
+    assert app.wallet_root is None
+    assert app._signed_qr_text is None
+
+
+def test_real_gui_preunlock_rejects_bad_qr(tmp_path):
+    app = make_gui(tmp_path)
+    app.qr_reader = lambda: json.dumps({"version": 99, "direction": "unsigned"})
+    app._unlock = lambda: (_ for _ in ()).throw(AssertionError("Must reject before unlock"))
+    app._import_qr()
+    assert app.wallet_root is None and app.security.state == State.LOCKED
+    assert app.messagebox.errors
+
+
+def test_real_gui_usb_path_guards_nested_symlinks_for_import_and_export(tmp_path):
+    transfer = tmp_path / "transfer"
+    outside = tmp_path / "outside"
+    transfer.mkdir()
+    outside.mkdir()
+    (outside / "request.json").write_text('{"forbidden": true}')
+    (transfer / "alias").symlink_to(outside, target_is_directory=True)
+    app = make_gui(transfer)
+    escaped = transfer / "alias" / "request.json"
+    escaped_output = transfer / "alias" / "signed.json"
+    assert not app._path_allowed(escaped)
+    assert not app._path_allowed(escaped_output)
+    with pytest.raises((OSError, ValueError)):
+        app._read_transfer_snapshot(escaped)
+    with pytest.raises((OSError, ValueError)):
+        app._open_transfer_fd(escaped_output, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    assert not (outside / "signed.json").exists()
+
+    # An entirely internal symlink is prohibited too (fail closed).
+    (transfer / "nested").mkdir()
+    (transfer / "internal").symlink_to(transfer / "nested", target_is_directory=True)
+    assert not app._path_allowed(transfer / "internal" / "request.json")
+    good = transfer / "request.json"
+    good.write_bytes(b"safe")
+    raw, (dev, inode) = app._read_transfer_snapshot(good)
+    assert raw == b"safe"
+    assert (dev, inode) == (good.stat().st_dev, good.stat().st_ino)
+
+
+def test_usb_v1_envelope_remains_compatible_with_gui_qr_input():
+    original = package("evm-request", evm_transaction())
+    normalized, qr = parse_qr_input(json.dumps(original), "evm-request")
+    assert normalized == original
+    assert qr is None
