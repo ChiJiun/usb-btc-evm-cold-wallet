@@ -1,16 +1,18 @@
-"""Bounded, coverage-guided Bitcoin PSBT parser fuzzer (test-only public seeds).
+"""Bounded line-coverage-guided Bitcoin PSBT parser/policy fuzzer (public seeds).
 
 Run:
   python tools/fuzz_btc_psbt.py --seconds 30 --seed 20261121
 
-Uses the stdlib tracer to retain mutations that exercise previously unseen
-lines in src/usb_cold_wallet/btc.py. It is slower than a native AFL/Atheris
-harness, but requires no additional dependencies or secret material.
+Uses stdlib tracing to retain inputs with previously unseen lines of btc.py.
+Every campaign first proves the unmodified valid fixture passes both parsing and
+wallet review. Separate parser/policy counters prevent line coverage from being
+mistaken for successful security-policy execution.
 """
 from __future__ import annotations
 
 import argparse
 import base64
+from dataclasses import dataclass
 import hashlib
 import json
 import random
@@ -27,6 +29,13 @@ from usb_cold_wallet.btc import _read_psbt, review_btc_psbt  # noqa: E402
 
 MAX_CASE_BYTES = 200_001
 MAX_CORPUS = 256
+
+
+@dataclass(frozen=True)
+class Observation:
+    coverage: frozenset[int]
+    parser_accepted: bool
+    policy_accepted: bool
 
 
 def mutate(data: bytes, rng: random.Random) -> bytes:
@@ -50,7 +59,8 @@ def mutate(data: bytes, rng: random.Random) -> bytes:
     return bytes(buf[:MAX_CASE_BYTES])
 
 
-def execute(raw: bytes) -> frozenset[int]:
+def execute(raw: bytes) -> Observation:
+    """Trace parser and policy separately; normalize only deliberate ValueError denials."""
     coverage: set[int] = set()
 
     def tracer(frame, event, arg):
@@ -58,18 +68,40 @@ def execute(raw: bytes) -> frozenset[int]:
             coverage.add(frame.f_lineno)
         return tracer
 
+    previous_trace = sys.gettrace()
     sys.settrace(tracer)
     try:
         payload = base64.b64encode(raw).decode("ascii")
         try:
             _read_psbt(payload)
-            # Exercise the wallet-specific policy as well as the raw parser.
+        except ValueError:
+            return Observation(frozenset(coverage), False, False)
+        try:
+            # This must complete for a policy acceptance; reaching one line is
+            # insufficient evidence of a successful offline review.
             review_btc_psbt(ROOT, payload, DEST, 60_000, 1_500, 0)
         except ValueError:
-            pass  # Expected denial, never a crash.
+            return Observation(frozenset(coverage), True, False)
+        return Observation(frozenset(coverage), True, True)
     finally:
-        sys.settrace(None)
-    return frozenset(coverage)
+        sys.settrace(previous_trace)
+
+
+def initial_corpus() -> list[bytes]:
+    """One valid policy seed, two valid-PSBT policy denials, and malformed bytes."""
+    allowed = vector().serialize()
+    wrong_recipient_amount = vector()
+    wrong_recipient_amount.tx.vout[0].value += 1
+    excessive_fee = vector()
+    excessive_fee.tx.vout[1].value -= 2_000
+    return [
+        allowed,
+        wrong_recipient_amount.serialize(),
+        excessive_fee.serialize(),
+        allowed[:5],
+        b"",
+        b"psbt\xff" + b"\xff" * 8,
+    ]
 
 
 def main() -> int:
@@ -83,18 +115,21 @@ def main() -> int:
         parser.error("seconds/max-cases outside supported bounds")
 
     rng = random.Random(args.seed)
-    seed = vector().serialize()
-    corpus = [seed, seed[:5], b"", b"psbt\xff" + b"\xff" * 8]
+    corpus = initial_corpus()
     explored: set[int] = set()
     crashes = 0
     cases = 0
+    metrics = {
+        "parser_accepted": 0, "parser_rejected": 0,
+        "policy_accepted": 0, "policy_rejected": 0,
+    }
     deadline = time.monotonic() + args.seconds
-    while cases < args.max_cases and time.monotonic() < deadline:
-        parent = rng.choice(corpus)
-        case = mutate(parent, rng)
+
+    def run_case(case: bytes, retain_novel: bool) -> Observation | None:
+        nonlocal crashes, cases
         cases += 1
         try:
-            visited = execute(case)
+            result = execute(case)
         except Exception as exc:
             crashes += 1
             digest = hashlib.sha256(case).hexdigest()
@@ -103,17 +138,48 @@ def main() -> int:
                 (args.artifact_dir / (digest + ".psbt")).write_bytes(case)
             print(json.dumps({"crash_sha256": digest, "type": type(exc).__name__,
                               "message": str(exc)[:200]}), file=sys.stderr)
-            continue
-        novel = visited - explored
+            return None
+
+        if result.parser_accepted:
+            metrics["parser_accepted"] += 1
+            if result.policy_accepted:
+                metrics["policy_accepted"] += 1
+            else:
+                metrics["policy_rejected"] += 1
+        else:
+            metrics["parser_rejected"] += 1
+
+        novel = result.coverage - explored
         if novel:
             explored.update(novel)
-            if len(corpus) < MAX_CORPUS:
-                corpus.append(case)
-            else:
-                corpus[rng.randrange(4, len(corpus))] = case
+            if retain_novel:
+                if len(corpus) < MAX_CORPUS:
+                    corpus.append(case)
+                else:
+                    corpus[rng.randrange(6, len(corpus))] = case
+        return result
 
-    print(json.dumps({"seed": args.seed, "cases": cases, "coverage_lines": len(explored),
-                      "corpus_size": len(corpus), "crashes": crashes}, sort_keys=True))
+    # This is deliberately the first executed case, not merely a mutation
+    # parent. Fail the campaign if the known-good seed ceases to pass policy.
+    baseline = run_case(corpus[0], retain_novel=False)
+    if baseline is None or not baseline.policy_accepted:
+        print("Baseline public PSBT did not pass the offline review", file=sys.stderr)
+        return 2
+
+    for seed in corpus[1:args.max_cases]:
+        if time.monotonic() >= deadline:
+            break
+        run_case(seed, retain_novel=False)
+
+    while cases < args.max_cases and time.monotonic() < deadline:
+        case = mutate(rng.choice(corpus), rng)
+        run_case(case, retain_novel=True)
+
+    print(json.dumps({
+        "seed": args.seed, "cases": cases, "coverage_lines": len(explored),
+        "corpus_size": len(corpus), "crashes": crashes,
+        "baseline_policy_accepted": baseline.policy_accepted, **metrics,
+    }, sort_keys=True))
     return 1 if crashes else 0
 
 
