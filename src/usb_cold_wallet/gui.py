@@ -781,6 +781,8 @@ class OfflineReviewApp:
                 os.close(parent)
 
     def _read_transfer_snapshot(self, path: Path) -> tuple[bytes, tuple[int, int]]:
+        if path.suffix.lower() != ".json" or path.name.startswith("."):
+            raise ValueError("Only completed .json USB exchange files may be imported")
         fd = self._open_transfer_fd(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
         try:
             info = os.fstat(fd)
@@ -796,6 +798,8 @@ class OfflineReviewApp:
 
     def _write_transfer_signed(self, path: Path) -> None:
         """Publish complete signed JSON via the pinned TX_TRANSFER directory."""
+        if path.suffix.lower() != ".json" or path.name.startswith("."):
+            raise ValueError("Signed USB export requires a visible .json filename")
         if self.session is None or not self.session.signed:
             raise ValueError("No signed response to export")
         text = self.session.signed_envelope_text()

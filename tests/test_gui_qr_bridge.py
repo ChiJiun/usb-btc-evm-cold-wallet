@@ -508,3 +508,18 @@ def test_signed_export_rejects_final_symlink(tmp_path):
         app._write_transfer_signed(target)
     assert outside.read_bytes() == b"untouched"
     assert not list(tmp_path.glob(".*.partial"))
+
+
+def test_usb_gui_rejects_hidden_partial_exchange_and_non_json_paths(tmp_path):
+    app = make_gui(tmp_path)
+    for name in (".usbwallet-incomplete.partial", ".hidden.json", "request.tmp"):
+        path = tmp_path / name
+        path.write_text("{}", encoding="utf-8")
+        with pytest.raises(ValueError, match="completed .json"):
+            app._read_transfer_snapshot(path)
+
+    signed = _signed_test_gui(tmp_path)
+    for name in (".hidden.json", "signed.partial", "signed.tmp"):
+        with pytest.raises(ValueError, match="visible .json"):
+            signed._write_transfer_signed(tmp_path / name)
+    assert not list(tmp_path.glob(".*.partial"))
