@@ -46,7 +46,7 @@ function noSecrets(value, depth = 0) {
     const entries = Object.entries(value);
     if (entries.length > 256) throw new Error("QR object too large");
     for (const [key, item] of entries) {
-      if (key.length > 128 || /[^\\x00-\\x7f]/.test(key)) {
+      if (key.length > 128 || [...key].some(ch => ch.codePointAt(0) > 127)) {
         throw new Error("Invalid QR object key");
       }
       if (/(mnemonic|passphrase|private|seed|secret|xprv|password|vault)/i.test(key)) {
@@ -55,7 +55,7 @@ function noSecrets(value, depth = 0) {
       noSecrets(item, depth + 1);
     }
   } else if (typeof value === "string" &&
-             (value.length > MAX_PAYLOAD || /[^\\x00-\\x7f]/.test(value))) {
+             (value.length > MAX_PAYLOAD || [...value].some(ch => ch.codePointAt(0) > 127))) {
     throw new Error("QR protocol payload only accepts bounded ASCII text");
   }
 }
