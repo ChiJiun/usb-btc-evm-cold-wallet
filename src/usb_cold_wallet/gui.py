@@ -21,11 +21,12 @@ from typing import Callable
 
 from .exchange import read_bounded, verify, _unique_object, MAX_BYTES
 from .keys import btc_address, evm_account, root_from_mnemonic
-from .review import (ReviewPlan, ReviewSession, build_review_plan, load_review_qr,
+from .review import (ReviewPlan, ReviewSession, build_review_plan,
                      review_policy_decision)
+from .gui_qr_bridge import parse_qr_input, bind_qr_to_review, signed_qr_text
 from .signer_session import SignerSession, State, DEFAULT_IDLE_SECONDS
 from .policy import read_policy_snapshot, load_policy_snapshot
-from .vault import load_vault
+from .vault import load_vault, atomic_create_at
 
 DEFAULT_VAULT = Path("/mnt/cold-vault/wallet.vault")
 DEFAULT_TRANSFER = Path("/mnt/transfer")
@@ -438,6 +439,8 @@ class OfflineReviewApp:
         self._active_usb_file = None
         self._active_usb_identity = None
         self._active_usb_digest = None
+        self._active_qr_request = None
+        self._signed_qr_text = None
         self.policy_profile = None
         self.last_activity = time.monotonic()
         self.security = SignerSession(
@@ -493,8 +496,9 @@ class OfflineReviewApp:
                 return False
             if self._active_usb_digest is None:
                 return False
-            raw = read_bounded(self._active_usb_file)
-            return hmac.compare_digest(hashlib.sha256(raw).digest(), self._active_usb_digest)
+            raw, identity = self._read_transfer_snapshot(self._active_usb_file)
+            return (identity == self._active_usb_identity and
+                    hmac.compare_digest(hashlib.sha256(raw).digest(), self._active_usb_digest))
         except (OSError, ValueError):
             return False
 
@@ -504,6 +508,9 @@ class OfflineReviewApp:
         self._active_usb_file = None
         self._active_usb_identity = None
         self._active_usb_digest = None
+        self._active_qr_request = None
+        if self.session and not self.session.signed:
+            self._signed_qr_text = None
         if self.session and not self.session.signed:
             self.session.cancel()
             self.session = None
@@ -700,10 +707,89 @@ class OfflineReviewApp:
         if self.development_mode:
             return True
         try:
-            common = os.path.commonpath([str(path.absolute()), str(self.transfer_dir.absolute())])
-        except ValueError:
+            base = self.transfer_dir.absolute()
+            parts = path.absolute().relative_to(base).parts
+            if not parts or any(part in (".", "..") for part in parts):
+                return False
+            if base.is_symlink():
+                return False
+            current = base
+            for part in parts:
+                current = current / part
+                if current.is_symlink():
+                    return False
+            return path.resolve(strict=False).is_relative_to(base.resolve(strict=True))
+        except (OSError, ValueError):
             return False
-        return common == str(self.transfer_dir.absolute())
+
+    def _transfer_parent_fd(self, path: Path) -> tuple[int, str]:
+        """Pin the checked transfer directory chain; reject swapped symlinks."""
+        if not self._path_allowed(path):
+            raise ValueError("Path must be beneath TX_TRANSFER without symlinks")
+        pieces = path.absolute().relative_to(self.transfer_dir.absolute()).parts
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        directory = os.O_RDONLY | os.O_DIRECTORY | nofollow
+        parent = os.open(self.transfer_dir, directory)
+        try:
+            for part in pieces[:-1]:
+                nested = os.open(part, directory, dir_fd=parent)
+                os.close(parent)
+                parent = nested
+            return parent, pieces[-1]
+        except BaseException:
+            os.close(parent)
+            raise
+
+    def _open_transfer_fd(self, path: Path, flags: int) -> int:
+        """Open beneath the actual USB mount via dirfd and O_NOFOLLOW."""
+        if self.development_mode:
+            if not self._path_allowed(path):
+                raise ValueError("Path must be beneath TX_TRANSFER")
+            return os.open(path, flags | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        parent, name = self._transfer_parent_fd(path)
+        try:
+            return os.open(name, flags | getattr(os, "O_NOFOLLOW", 0),
+                           0o600, dir_fd=parent)
+        finally:
+            os.close(parent)
+
+    def _read_transfer_snapshot(self, path: Path) -> tuple[bytes, tuple[int, int]]:
+        if path.suffix.lower() != ".json" or path.name.startswith("."):
+            raise ValueError("Only completed .json USB exchange files may be imported")
+        fd = self._open_transfer_fd(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("Transfer request is not a regular file")
+            with os.fdopen(fd, "rb", closefd=False) as source:
+                raw = source.read(MAX_BYTES + 1)
+            if len(raw) > MAX_BYTES:
+                raise ValueError("Transfer request exceeds maximum size")
+            return raw, (info.st_dev, info.st_ino)
+        finally:
+            os.close(fd)
+
+    def _write_transfer_signed(self, path: Path) -> None:
+        """Publish complete signed JSON via the pinned TX_TRANSFER directory."""
+        if path.suffix.lower() != ".json" or path.name.startswith("."):
+            raise ValueError("Signed USB export requires a visible .json filename")
+        if self.session is None or not self.session.signed:
+            raise ValueError("No signed response to export")
+        text = self.session.signed_envelope_text()
+        verify(json.loads(text), self.session.plan.signed_kind)
+        data = text.encode("ascii")
+        if self.development_mode:
+            if not self._path_allowed(path):
+                raise ValueError("Path must be beneath TX_TRANSFER")
+            parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY |
+                             getattr(os, "O_NOFOLLOW", 0))
+            name = path.name
+        else:
+            parent, name = self._transfer_parent_fd(path)
+        try:
+            atomic_create_at(parent, name, data)
+        finally:
+            os.close(parent)
 
     def _import_usb(self):
         kind = self.selected_kind
@@ -726,12 +812,8 @@ class OfflineReviewApp:
         try:
             # One bounded read supplies both reviewed snapshot and its file hash.
             # No attacker-controlled second read after vault unlock.
-            raw = read_bounded(path)
+            raw, identity = self._read_transfer_snapshot(path)
             envelope = _decode_envelope_text(raw.decode("utf-8"), kind)
-            info = path.lstat()
-            if not stat.S_ISREG(info.st_mode):
-                raise ValueError("Transfer request is not a regular file")
-            identity = (info.st_dev, info.st_ino)
             digest = hashlib.sha256(raw).digest()
         except (ValueError, OSError, KeyError, TypeError, OverflowError, UnicodeError) as exc:
             self._lock_wallet(self.t("locked"))
@@ -747,6 +829,8 @@ class OfflineReviewApp:
             self._active_usb_file = path
             self._active_usb_identity = identity
             self._active_usb_digest = digest
+            self._active_qr_request = None
+            self._signed_qr_text = None
             if not self._transport_available():
                 raise ValueError("USB request changed during unlock")
         except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
@@ -770,7 +854,7 @@ class OfflineReviewApp:
             text = self.qr_reader()
             if not text:
                 raise CameraUnavailable("empty QR capture")
-            _decode_envelope_text(text, requested_kind)  # Validate before unlock.
+            envelope, native_request = parse_qr_input(text, requested_kind)  # Validate before unlock.
         except CameraUnavailable:
             self._lock_wallet(self.t("locked"))
             self.messagebox.showwarning(self.t("error"), self.t("camera_failed"), parent=self.root)
@@ -785,7 +869,9 @@ class OfflineReviewApp:
             self._render_home()
             return
         try:
-            plan = load_review_qr(text, self.wallet_root, requested_kind)
+            plan = build_review_plan(envelope, self.wallet_root, requested_kind)
+            if native_request is not None:
+                bind_qr_to_review(native_request, plan, self.wallet_root)
         except (ValueError, OSError, KeyError, TypeError, OverflowError):
             self._lock_wallet(self.t("locked"))
             self.messagebox.showerror(self.t("error"), self.t("camera_failed"), parent=self.root)
@@ -795,6 +881,8 @@ class OfflineReviewApp:
         self._active_usb_file = None
         self._active_usb_identity = None
         self._active_usb_digest = None
+        self._active_qr_request = native_request
+        self._signed_qr_text = None
         self._start_review(plan)
 
     def _start_review(self, plan: ReviewPlan):
@@ -962,8 +1050,11 @@ class OfflineReviewApp:
                 extra_confirmation = answer
             self.security.approve(digest)
             self.security.signing(digest)
-            self.session.sign(self.wallet_root, self.policy_profile,
-                              extra_confirmation=extra_confirmation)
+            signed = self.session.sign(self.wallet_root, self.policy_profile,
+                                       extra_confirmation=extra_confirmation)
+            if getattr(self, "_active_qr_request", None) is not None:
+                self._signed_qr_text = signed_qr_text(
+                    self._active_qr_request, signed, self.session.plan.signed_kind)
             self.security.signed(digest)
         except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
             self._lock_wallet(self.t("locked"))
@@ -1012,7 +1103,7 @@ class OfflineReviewApp:
             self.messagebox.showerror(self.t("error"), "Signed response must be written to TX_TRANSFER.", parent=self.root)
             return
         try:
-            self.session.export_signed(path)
+            self._write_transfer_signed(path)
         except FileExistsError:
             self.messagebox.showerror(self.t("error"), self.t("output_exists"), parent=self.root)
         except (ValueError, OSError, KeyError, TypeError) as exc:
@@ -1024,7 +1115,7 @@ class OfflineReviewApp:
         if not self.session or self.qr_presenter is None:
             return
         try:
-            self.qr_presenter(self.session.signed_envelope_text())
+            self.qr_presenter(self._signed_qr_text or self.session.signed_envelope_text())
         except Exception:
             self._lock_wallet(self.t("locked"))
             self.messagebox.showwarning(self.t("error"), self.t("qr_output_unavailable"), parent=self.root)
@@ -1042,6 +1133,8 @@ class OfflineReviewApp:
 
     def _lock_wallet(self, message: str = ""):
         self.security.lock("manual_or_failure")
+        self._active_qr_request = None
+        self._signed_qr_text = None
         self.session = None
         self.selected_kind = None
         self.page_index = 0
@@ -1052,6 +1145,8 @@ class OfflineReviewApp:
             self._lock_wallet(self.t("locked"))
         else:
             self.session = None
+            self._active_qr_request = None
+            self._signed_qr_text = None
             self.selected_kind = None
             self.page_index = 0
             self.status_message = "Next transaction needs a new full review and typed confirmation."

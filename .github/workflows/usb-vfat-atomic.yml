@@ -1,0 +1,79 @@
+name: USB FAT32 atomic export verification
+
+on:
+  pull_request:
+    paths:
+      - 'src/usb_cold_wallet/vault.py'
+      - 'src/usb_cold_wallet/gui.py'
+      - 'scripts/verify_usb_vfat_atomic.py'
+      - '.github/workflows/usb-vfat-atomic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mounted-vfat:
+    name: Mounted FAT32 / renameat2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install hash-locked dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements/ci.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+
+      - name: Create real VFAT/FAT32 filesystem, mount, exercise and remount
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$(mktemp -d)"
+          image="$scratch/transfer-fat32.img"
+          mountdir="$scratch/mounted-usb"
+          mkdir "$mountdir"
+          cleanup() {
+            if mountpoint -q "$mountdir"; then sudo umount "$mountdir"; fi
+            rm -f "$image"
+            rmdir "$mountdir" "$scratch"
+          }
+          trap cleanup EXIT
+
+          if command -v mkfs.vfat >/dev/null; then
+            mkfs=mkfs.vfat
+          elif command -v mkfs.fat >/dev/null; then
+            mkfs=mkfs.fat
+          else
+            echo "::error::dosfstools is missing from GitHub-hosted runner; FAT32 integration MUST NOT be skipped"
+            exit 1
+          fi
+
+          truncate -s 128M "$image"
+          "$mkfs" -F 32 -n TX_TRANSFER "$image"
+          sudo mount -t vfat -o loop,uid="$(id -u)",gid="$(id -g)",umask=0077 "$image" "$mountdir"
+          test "$(findmnt -n -o FSTYPE --target "$mountdir")" = vfat
+          python scripts/verify_usb_vfat_atomic.py "$mountdir"
+
+          sync
+          sudo umount "$mountdir"
+          sudo mount -t vfat -o loop,uid="$(id -u)",gid="$(id -g)",umask=0077 "$image" "$mountdir"
+          test "$(findmnt -n -o FSTYPE --target "$mountdir")" = vfat
+          python scripts/verify_usb_vfat_atomic.py "$mountdir" --after-remount
+
+          # Actual VFAT mount with unsafe directory masks: the cold writer must
+          # fail closed before creating any staging or final .json entry.
+          sudo umount "$mountdir"
+          sudo mount -t vfat -o loop,uid="$(id -u)",gid="$(id -g)",umask=0022 "$image" "$mountdir"
+          test "$(findmnt -n -o FSTYPE --target "$mountdir")" = vfat
+          python scripts/verify_usb_vfat_atomic.py "$mountdir" --reject-insecure-mount
+
+          echo "PASS: mounted Linux kernel FAT32, atomic publish/collision, fault recovery, remount integrity and unsafe-mask rejection."

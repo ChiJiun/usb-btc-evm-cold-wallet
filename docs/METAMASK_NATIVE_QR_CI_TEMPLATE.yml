@@ -1,0 +1,46 @@
+# Historical standalone CI design reference.
+# The maintained implementation is now in .github/workflows/ci.yml under
+# metamask_native_qr and gated by CI / Required. Do not activate a duplicate.
+# This file is documentation only, not an executable workflow.
+name: MetaMask Native QR Compatibility
+on:
+  pull_request:
+    paths:
+      - 'qr-metamask/**'
+      - 'src/usb_cold_wallet/keystone_public.py'
+      - 'src/usb_cold_wallet/cli.py'
+      - 'tests/test_keystone_public.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-qr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: qr-metamask/package-lock.json
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Install test-only dependencies
+        run: |
+          python -m pip install -e '.[dev]'
+          cd qr-metamask
+          npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run Python and MetaMask QR Keyring compatibility tests
+        run: |
+          python -m pytest -q tests/test_keystone_public.py
+          cd qr-metamask
+          npm test
+          PYTHON_BIN=python npm run test:python
+      - name: Build static offline QR bridge
+        run: npm run build --prefix qr-metamask
+      - name: Reject high/critical dependency advisories
+        run: npm audit --prefix qr-metamask --omit=dev --audit-level=high
