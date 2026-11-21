@@ -45,7 +45,9 @@ jobs:
       - name: Verify host prerequisites
         run: sh scripts/check_host.sh
 
-      # This is an early single-build feedback job, not a shorter total CI run.\n      # The full two-clean-build PR gate runs independently and remains mandatory.\n      # Cache source inputs only, never compiler output, rootfs, or images.
+      # This is an early single-build feedback job, not a shorter total CI run.
+      # The full two-clean-build PR gate runs independently and remains mandatory.
+      # Cache source inputs only, never compiler output, rootfs, or images.
       # fetch_buildroot.sh rechecks the signed release manifest and archive;
       # fetch_wheelhouse.sh rechecks every wheel against pinned SHA-256.
       - name: Restore verified source downloads
@@ -66,7 +68,8 @@ jobs:
       - name: Boot generated USB image and require security audit
         run: sh scripts/verify_uefi_boot.sh
 
-      # This artifact exists only after verify_uefi_boot.sh starts. Earlier\n      # source/build failures are diagnosed from their corresponding step logs.\n      - name: Upload bounded UEFI-only failure diagnostics
+      # This artifact exists only after verify_uefi_boot.sh starts. Earlier
+      # source/build failures are diagnosed from their corresponding step logs.\n      - name: Upload bounded UEFI-only failure diagnostics
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
