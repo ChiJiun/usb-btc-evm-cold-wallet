@@ -61,12 +61,12 @@ def test_read_only_lookup_status_and_recovery_never_broadcast():
     assert result == {"asset": "sepolia", "txid": EVM_TX, "result": "pending", "untrusted_rpc": True}
     rpc.found = False
     assert lookup_public_transaction(eth, btc, "sepolia", EVM_TX)["result"] == "not_found"
-    rpc.receipt = {"transactionHash": EVM_TX, "status": "0x1"}
+    rpc.receipt = {"transactionHash": EVM_TX, "status": "0x1", "blockNumber": "0x10", "blockHash": "0x" + "a" * 64}
     assert lookup_public_transaction(eth, btc, "sepolia", EVM_TX)["result"] == "confirmed"
     rpc.receipt["status"] = "0x0"
     assert lookup_public_transaction(eth, btc, "sepolia", EVM_TX)["result"] == "reverted"
     assert lookup_public_transaction(eth, btc, "bitcoin-testnet", BTC_TX)["result"] == "pending"
-    explorer.response = {"confirmed": True}
+    explorer.response = {"confirmed": True, "block_hash": "a" * 64}
     assert lookup_public_transaction(eth, btc, "bitcoin-testnet", BTC_TX)["result"] == "confirmed"
     explorer.response = None
     assert lookup_public_transaction(eth, btc, "bitcoin-testnet", BTC_TX)["result"] == "not_found"
@@ -106,6 +106,54 @@ def test_lookup_fails_closed_on_untrusted_rpc_and_timeout():
     explorer.response = {"confirmed": 1}
     with pytest.raises(ValueError, match="Invalid"):
         lookup_public_transaction(eth, btc, "bitcoin-testnet", BTC_TX)
+
+
+@pytest.mark.parametrize("receipt", [
+    {"transactionHash": EVM_TX, "status": "0x1"},
+    {"transactionHash": EVM_TX, "status": "0x0", "blockNumber": None},
+    {"transactionHash": EVM_TX, "status": "0x1", "blockNumber": -1},
+    {"transactionHash": EVM_TX, "status": "0x1", "blockNumber": "0xzz"},
+    {"transactionHash": EVM_TX, "status": "0x1", "blockNumber": "0x1", "blockHash": "xyz"},
+    {"transactionHash": EVM_TX, "status": "0x1", "blockNumber": "0x1", "blockHash": 42},
+    {"transactionHash": "0x" + "f" * 64, "status": "0x1", "blockNumber": "0x1"},
+])
+def test_lookup_rejects_incomplete_or_mismatched_evm_receipt(receipt):
+    eth, btc, rpc, explorer = pair()
+    rpc.receipt = receipt
+    with pytest.raises(ValueError):
+        lookup_public_transaction(eth, btc, "sepolia", EVM_TX)
+    assert eth.pending is None and btc.pending is None
+    assert rpc.sent == explorer.sent == 0
+
+
+@pytest.mark.parametrize("response", [
+    {"confirmed": True},
+    {"confirmed": True, "block_hash": None},
+    {"confirmed": True, "block_hash": "f" * 63},
+    {"confirmed": True, "block_hash": "g" * 64},
+    {"confirmed": True, "block_hash": 123},
+    {"confirmed": True, "block_hash": "a" * 64, "txid": "e" * 64},
+    {"confirmed": False, "txid": "e" * 64},
+])
+def test_lookup_rejects_incomplete_or_mismatched_bitcoin_status(response):
+    eth, btc, rpc, explorer = pair()
+    explorer.response = response
+    with pytest.raises(ValueError):
+        lookup_public_transaction(eth, btc, "bitcoin-testnet", BTC_TX)
+    assert eth.pending is None and btc.pending is None
+    assert rpc.sent == explorer.sent == 0
+
+
+def test_lookup_untrusted_reorg_or_missing_status_never_implies_finality():
+    eth, btc, rpc, explorer = pair()
+    rpc.receipt = None
+    rpc.found = False
+    assert lookup_public_transaction(eth, btc, "sepolia", EVM_TX)["result"] == "not_found"
+    explorer.response = None
+    assert lookup_public_transaction(eth, btc, "bitcoin-testnet", BTC_TX)["result"] == "not_found"
+    explorer.response = {"confirmed": False}
+    assert lookup_public_transaction(eth, btc, "bitcoin-testnet", BTC_TX)["result"] == "pending"
+    assert eth.pending is None and btc.pending is None
 
 
 def test_lookup_http_requires_loopback_token_origin_and_rejects_broadcast_overrides():
