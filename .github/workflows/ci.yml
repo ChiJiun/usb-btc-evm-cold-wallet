@@ -164,6 +164,20 @@ jobs:
           sha256sum /tmp/dist-b/*.whl
           test "$(sha256sum /tmp/dist-a/*.whl | cut -d' ' -f1)" = "$(sha256sum /tmp/dist-b/*.whl | cut -d' ' -f1)"
 
+      - name: Build and verify network-free offline signing wheel
+        run: |
+          set -euo pipefail
+          python scripts/build_offline_wheel.py /tmp/dist-a/*.whl /tmp/offline-a
+          python scripts/build_offline_wheel.py /tmp/dist-b/*.whl /tmp/offline-b
+          sha256sum /tmp/offline-a/*.whl /tmp/offline-b/*.whl
+          test "$(sha256sum /tmp/offline-a/*.whl | cut -d' ' -f1)" = "$(sha256sum /tmp/offline-b/*.whl | cut -d' ' -f1)"
+          python -m pip install --no-deps --force-reinstall /tmp/offline-a/*.whl
+          python -c "import usb_cold_wallet.cli, importlib.util; assert importlib.util.find_spec('usb_cold_wallet.companion_web') is None"
+          if command -v usb-cold-companion; then
+            echo "Online companion command leaked into offline package" >&2
+            exit 1
+          fi
+
   required:
     name: CI / Required
     if: always()

@@ -82,33 +82,16 @@ def _public_fields(value, depth=0):
         raise ValueError("Unsupported JSON value")
 
 
-def pack_envelope(kind: str, payload: dict) -> dict:
-    if kind not in KIND_NETWORK:
-        raise ValueError("Unsupported exchange kind")
-    _public_fields(payload)
-    base = {"format": FORMAT, "version": 1, "kind": kind,
-            "network": KIND_NETWORK[kind], "payload": payload}
-    encoded = canonical(base)
-    if len(encoded) > MAX_EXCHANGE_BYTES:
-        raise ValueError("Exchange too large")
-    return {**base, "sha256": hashlib.sha256(encoded).hexdigest()}
+def pack_envelope(kind: str, payload) -> dict:
+    """Use the same strict transport schema as the physically offline signer."""
+    from .exchange import package
+    return package(kind, payload)
 
 
 def unpack_envelope(data: dict, kind: str):
-    if not isinstance(data, dict) or set(data) != {"format", "version", "kind", "network", "payload", "sha256"}:
-        raise ValueError("Invalid exchange envelope")
-    if (data["format"] != FORMAT or type(data["version"]) is not int or data["version"] != 1
-            or data["kind"] != kind or data["network"] != KIND_NETWORK[kind]):
-        raise ValueError("Exchange type or network mismatch")
-    _public_fields(data["payload"])
-    base = {key: data[key] for key in ("format", "version", "kind", "network", "payload")}
-    encoded = canonical(base)
-    if len(encoded) > MAX_EXCHANGE_BYTES:
-        raise ValueError("Exchange too large")
-    digest = hashlib.sha256(encoded).hexdigest()
-    if type(data["sha256"]) is not str or not hmac.compare_digest(digest, data["sha256"]):
-        raise ValueError("Exchange integrity check failed (not an authentication signature)")
-    return data["payload"]
+    """Reject any envelope that the offline exchange validator would reject."""
+    from .exchange import verify
+    return verify(data, kind)
 
 
 def checked_address(value: str) -> str:

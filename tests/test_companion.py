@@ -16,6 +16,7 @@ from usb_cold_wallet.companion_core import (
 from usb_cold_wallet.companion_web import create_server
 from usb_cold_wallet.keys import root_from_mnemonic, watch_only, evm_account
 from usb_cold_wallet.evm import decode_signed_eip1559, sign_evm
+from usb_cold_wallet.exchange import package as strict_exchange_package, verify as strict_exchange_verify
 
 PUBLIC_TEST_MNEMONIC = "abandon " * 11 + "about"  # publicly known and unusable for real funds
 TEST_ROOT = root_from_mnemonic(PUBLIC_TEST_MNEMONIC)
@@ -102,7 +103,12 @@ def test_imports_bare_and_issue5_exchange_watch_only():
     assert parse_watch_only(canonical(PUBLIC))["evm"]["address"] == ADDRESS
     exported = pack_envelope("watch-only", PUBLIC)
     assert parse_watch_only(canonical(exported))["bitcoin"]["account_tpub"].startswith("tpub")
-    assert pack_envelope("evm-request", {"chainId": CHAIN_ID})["network"] == "sepolia"
+    tx = {"type": 2, "chainId": CHAIN_ID, "nonce": 0, "to": TO,
+          "value": 1000, "gas": 21000, "maxFeePerGas": 2000000000,
+          "maxPriorityFeePerGas": 1000000000, "data": "0x"}
+    assert pack_envelope("evm-request", tx)["network"] == "sepolia"
+    with pytest.raises(ValueError, match="EVM request"):
+        pack_envelope("evm-request", {"chainId": CHAIN_ID})
 
 
 def test_watch_only_rejects_secret_malformed_btc_wrong_network_and_duplicate():
@@ -449,6 +455,27 @@ def test_loopback_http_rejects_cross_origin_and_serves_ui_without_remote_resourc
         server.shutdown()
         server.server_close()
         thread.join(5)
+
+
+def test_main_exchange_evm_request_and_signed_result_are_end_to_end_compatible():
+    """Actual #11 schema must be identical on both sides of the air gap."""
+    app, rpc, _ = prepare_session()
+    request = app.request_envelope()
+    raw = app.request_raw_json()
+    assert decode_json(raw) == request
+    assert request == strict_exchange_package("evm-request", app.pending["tx"])
+    unsigned = strict_exchange_verify(request, "evm-request")
+    signed = sign_evm(TEST_ROOT, unsigned, TO, unsigned["value"])
+    envelope = strict_exchange_package("evm-signed", signed)
+    assert strict_exchange_verify(envelope, "evm-signed") == signed
+    assert app.accept_signed(canonical(envelope))["stage"] == "verified"
+    assert app.broadcast()["stage"] == "broadcasted"
+    assert len(rpc.sent) == 1
+
+
+def test_main_exchange_watch_only_is_accepted_by_companion():
+    envelope = strict_exchange_package("watch-only", PUBLIC)
+    assert parse_watch_only(canonical(envelope))["bitcoin"]["master_fingerprint"] == PUBLIC["bitcoin"]["master_fingerprint"]
 
 
 def test_real_offline_evm_signer_exchange_is_accepted_without_schema_loss():
