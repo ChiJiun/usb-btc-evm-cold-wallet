@@ -37,6 +37,22 @@ const getMap = (node, required, allowed = required) => {
   return value;
 };
 const field = (m, key) => extractCbor(m.getOrThrow(key));
+function checkOrigin(m, key) {
+  if (!m.has(key)) return;
+  const origin=field(m,key);
+  if (typeof origin!=="string" || origin.length>128 || /[^\x20-\x7e]/.test(origin)) throw Error("Invalid origin");
+}
+function boundedTree(node, depth=0, budget={remaining:256}) {
+  if (depth>12 || --budget.remaining<0) throw Error("Excessive CBOR nesting/container");
+  if (node.type===MajorType.Map) {
+    if (node.value.size>16) throw Error("Excessive CBOR map entries");
+    for (const [k,v] of node.value) {boundedTree(k,depth+1,budget);boundedTree(v,depth+1,budget);}
+  } else if (node.type===MajorType.Tagged) boundedTree(node.value,depth+1,budget);
+  else if (node.type===MajorType.Array) {
+    if (node.value.length>32) throw Error("Excessive CBOR array entries");
+    for (const v of node.value) boundedTree(v,depth+1,budget);
+  }
+}
 const uuid = (s) => {
   if (!/^[0-9a-f]{32}$/.test(s ?? "")) throw Error("Invalid UUID request ID");
   return taggedValue(37, bytes(s, 16, "UUID"));
@@ -165,6 +181,7 @@ export function makeTypedUR(type, data) {
 export function parseTypedUR(ur) {
   const type = ur.type.name;
   if (!TYPES.has(type)) throw Error("Unsupported typed UR");
+  boundedTree(ur.cbor);
   if (type === "crypto-psbt") {
     const raw = expectBytes(ur.cbor, 6, MAX_PAYLOAD, "PSBT");
     if (hex(raw.subarray(0,5)) !== "70736274ff") throw Error("Wrong PSBT magic");
@@ -176,6 +193,7 @@ export function parseTypedUR(ur) {
   if (type==="eth-signature") {
     const sig=expectBytes(m.getOrThrow(2),65,65,"signature");
     if (![0,1,27,28].includes(sig[64])) throw Error("Invalid recovery byte");
+    checkOrigin(m,3);
     return {type,requestId,signatureHex:hex(sig)};
   }
   const raw=expectBytes(m.getOrThrow(2),3,MAX_PAYLOAD,"EIP-2718 tx");
@@ -184,10 +202,7 @@ export function parseTypedUR(ur) {
   validateUnsignedType2(raw);
   const signer=expectBytes(m.getOrThrow(6),20,20,"signer");
   const kp=readKeypath(m.getOrThrow(5));
-  if (m.has(7)) {
-    const origin=field(m,7);
-    if (typeof origin!=="string" || origin.length>128 || /[^\x20-\x7e]/.test(origin)) throw Error("Invalid origin");
-  }
+  checkOrigin(m,7);
   return {type,requestId, unsignedTxHex:hex(raw), dataType,chainId:chain,
     network, address:"0x"+hex(signer), ...kp};
 }
@@ -227,7 +242,9 @@ export function bindTypedToPending(parsed,pending,{
        parsed.chainId !== ETH_CHAIN || parsed.network !== network ||
        typeof parsed.address !== "string" ||
        !/^0x[0-9a-f]{40}$/i.test(parsed.address) ||
-       typeof parsed.unsignedTxHex !== "string") ||
+       typeof parsed.unsignedTxHex !== "string" ||
+       !Array.isArray(parsed.path) ||
+       !/^[0-9a-f]{8}$/.test(parsed.fingerprint ?? "")) ||
       parsed.type === "crypto-psbt" &&
       (typeof parsed.psbtHex !== "string" ||
        !/^70736274ff(?:[0-9a-f]{2})+$/i.test(parsed.psbtHex) ||
@@ -235,11 +252,26 @@ export function bindTypedToPending(parsed,pending,{
     throw Error("Incomplete or invalid typed UR payload");
   }
   const signatureResponse=parsed.type==="eth-signature" && pending.type==="eth-sign-request";
+  const isEvm=parsed.type==="eth-sign-request" || signatureResponse;
+  if (isEvm && (pending.chainId!==ETH_CHAIN || pending.network!==network ||
+      !Array.isArray(pending.path) || !/^[0-9a-f]{8}$/.test(pending.fingerprint ?? "") ||
+      !/^0x[0-9a-f]{40}$/i.test(pending.address ?? "") ||
+      !/^[0-9a-f]{64}$/.test(pending.unsignedDigest ?? "")))
+    throw Error("Missing trusted EVM account/path context");
+  if (parsed.type==="crypto-psbt" &&
+      (pending.network!=="bitcoin-testnet" ||
+       !/^[0-9a-f]{8}$/.test(pending.accountFingerprint ?? "") ||
+       !/^[A-Za-z0-9:_-]{8,150}$/.test(pending.accountId ?? "") ||
+       !/^[0-9a-f]{64}$/.test(pending.psbtDigest ?? "") ||
+       !["unsigned","signed"].includes(pending.phase)))
+    throw Error("Missing trusted Bitcoin testnet account context");
   if (!(parsed.type===pending.type || signatureResponse) ||
       (parsed.type !== "crypto-psbt" && parsed.requestId !== pending.requestId) ||
       (parsed.type === "eth-sign-request" &&
        (parsed.chainId !== pending.chainId ||
-        parsed.address.toLowerCase() !== pending.address?.toLowerCase() ||
+        parsed.address.toLowerCase() !== pending.address.toLowerCase() ||
+        JSON.stringify(parsed.path) !== JSON.stringify(pending.path) ||
+        parsed.fingerprint !== pending.fingerprint ||
         hex(sha256(bytes(parsed.unsignedTxHex))) !== pending.unsignedDigest))) {
     throw Error("Typed UR mismatches immutable pending request");
   }
@@ -262,10 +294,16 @@ export function bindTypedToPending(parsed,pending,{
       throw Error("PSBT bytes differ from pending unsigned transaction");
     }
   }
+  // Consume signed responses synchronously; callers must supply their real session.
+  // This never signs or broadcasts and cannot replace cryptographic verification.
+  if (signatureResponse || (parsed.type==="crypto-psbt" && pending.phase==="signed")) {
+    if (!Object.isExtensible(pending)) throw Error("Signing session must be mutable for replay protection");
+    pending.consumed=true;
+  }
   return parsed;
 }
 export class TypedURScanner {
-  #decoder=new MultipartDecoder();#seen=new Set();#first=null;#mode=null;#type=null;#count=0;#done=null;
+  #decoder=new MultipartDecoder();#seen=new Set();#first=null;#mode=null;#type=null;#count=0;#done=null;#totalChars=0;#declared=null;
   constructor({now=()=>Date.now(),maxDurationMs=MAX_SCAN_MS,expectedType=null}={}) {
     if(!Number.isSafeInteger(maxDurationMs)||maxDurationMs<1||maxDurationMs>MAX_SCAN_MS||
        (expectedType!==null&&!TYPES.has(expectedType))) throw Error("Invalid scanner settings");
@@ -273,7 +311,7 @@ export class TypedURScanner {
   }
   get done(){return this.#done!==null;} get payload(){return this.#done;}
   get progress(){return this.done?1:this.#decoder.progress;}
-  reset(){this.#decoder=new MultipartDecoder();this.#seen.clear();this.#first=null;this.#mode=null;this.#type=null;this.#count=0;this.#done=null;}
+  reset(){this.#decoder=new MultipartDecoder();this.#seen.clear();this.#first=null;this.#mode=null;this.#type=null;this.#count=0;this.#done=null;this.#totalChars=0;this.#declared=null;}
   add(frame) {
     if(this.done)throw Error("Scan already completed");
     if(this.#first===null)this.#first=this.now();
@@ -290,9 +328,13 @@ export class TypedURScanner {
     if(parts.length===3) {
       const h=/^([1-9]\d*)-([1-9]\d*)$/.exec(parts[1]);
       if(!h||Number(h[1])>MAX_FRAGMENTS*32||Number(h[2])>MAX_FRAGMENTS)throw Error("Excessive fragment index/count");
+      if(this.#declared!==null&&this.#declared!==Number(h[2]))throw Error("Mixed multipart counts");
+      this.#declared=Number(h[2]);
     }
     if(this.#seen.has(s))return {done:false,duplicate:true,progress:this.progress};
     if(this.#count++>=MAX_FRAGMENTS)throw Error("Too many QR frames");
+    this.#totalChars+=s.length;
+    if(this.#totalChars>MAX_PAYLOAD*6)throw Error("Typed QR aggregate budget exceeded");
     this.#seen.add(s);
     try {
       const ur=parts.length===2?UR.parse(s):(this.#decoder.add(s),this.#decoder.done?this.#decoder.result:null);
