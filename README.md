@@ -1,184 +1,187 @@
-# USB BTC + EVM 冷錢包（研究原型）
+# USB BTC + EVM 冷錢包
 
-**繁體中文（預設）** | [English](README.en.md)
+**繁體中文** | [English](README.en.md)
 
-> [!WARNING]
-> **實驗性專案 · 僅限測試網 · 未經獨立安全審計 · 請勿存放真實資產。**
->
-> **本 PR 已加入可建置的 Buildroot x86_64 UEFI USB 映像流程，但目前尚未取得完整的雙次建置／開機及實機安全驗證結果，不能視為已驗證的可部署冷錢包。** 一般 USB 隨身碟不是 Ledger、Trezor、YubiKey，也不具備 Secure Element（安全元件）或獨立的硬體金鑰保護能力。
+一支 USB，就能將日常交易操作與私鑰簽署分開：平常在 Windows 開啟隨身碟內的 **Online Companion**，查看資產、建立交易；需要轉出資產時，重新開機進入 USB 內的專用離線作業系統，確認交易並簽章，再返回 Windows 廣播。
 
-## 專案簡介
+這是一個開源的 **Bitcoin + EVM 自製冷錢包**專案，以一般 USB、最小化 Live OS 與離線簽章核心組成可攜式錢包。設計重點是：**不必在平常使用的電腦安裝錢包環境，私鑰只在離線簽章系統內使用，收款與轉帳流程保持直覺。**
 
-這是一個開源的 **Bitcoin 測試網 + Ethereum Sepolia 離線冷錢包**研究原型，目標是利用一般 USB 隨身碟與獨立的離線電腦，完成交易檢查及私鑰簽署。
+> 以下介紹完整產品的目標使用方式；目前版本與開發進度見[專案進度](#專案進度)。
 
-此設計的安全核心不是 USB 本身，而是**連網端與簽章端之間的實體隔離（Air Gap）**：
+## 從空白 USB 開始：首次製作與設定
 
-- **離線電腦：** 產生或解密 BIP39 錢包、獨立核對交易資訊、經使用者確認後簽名。處理私鑰期間不得連網。
-- **連網電腦：** 僅保留公開的 watch-only 錢包資訊，建立未簽章交易，再透過錢包或節點廣播已簽署交易。
-- **資料交換 USB（USB-B）：** 僅傳輸公開資料、未簽署交易及簽章結果，**不能存放助記詞、私鑰、密碼、passphrase 或加密 vault**。
+準備 **一支可清空的 USB（建議 16 GB 以上）**、一台支援 **x86_64 UEFI USB 開機**的電腦，以及紙本助記詞備份。製作時可以在 Windows 連網下載映像與刷寫工具；建立或復原私鑰時則使用 USB 啟動的離線系統。
+
+### A. 完整產品的製作流程（目標使用體驗）
+
+1. **取得映像**：從本專案的 [GitHub Releases](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/releases) 下載適用的 USB 映像（格式為 `.img`）及發布的 SHA-256 驗證資料。正式完整映像尚未發布時，改用下方 **B. 開發版測試流程**。
+2. **檢查下載檔案**：在 Windows PowerShell 計算映像雜湊，與專案正式發布的值比對：
+   ~~~powershell
+   Get-FileHash -Algorithm SHA256 .\usb-cold-wallet.img
+   ~~~
+3. **將空白 USB 製作成冷錢包**：使用 balenaEtcher、Raspberry Pi Imager 等圖形刷寫工具，選取 `usb-cold-wallet.img`、核對 USB 的容量及裝置名稱，再刷寫並完成驗證。**刷寫會清除選取裝置的全部資料；重新刷寫已有錢包的 USB 也可能刪除 Vault。**
+4. **第一次從 USB 開機**：安全退出 USB，重新啟動電腦，從 UEFI 開機選單選擇這支 USB。進入 Offline Signer 後完成開機檢查；選擇「建立錢包」或「從助記詞復原」。
+5. **設定錢包**：設定 Vault 密碼，離線抄寫並複核 24 個 BIP39 助記詞；將備份保存在 USB 之外。這支 USB 的加密儲存區保存錢包資料。
+6. **啟用 Windows Companion**：匯出 BTC/EVM 公開帳戶資訊、關機回到 Windows，直接從 USB 的 Windows 可見分割區開啟 Portable Companion，匯入公開帳戶資料，即可查看餘額與建立交易。
+7. **完成首次測試**：先以 Bitcoin testnet 或 Sepolia 進行一筆小額測試網交易，演練「建立請求 → USB 開機簽署 → 回 Windows 驗證並廣播」。
+
+完成後，平常只需在 Windows 開啟 Companion；要轉帳時才重新啟動 USB 簽章系統。完整版本預計將 **Live OS、加密 Vault、交易交換區和 Windows Portable App** 封裝在同一支 USB 上，無須自行安裝 Python/Node。
+
+### B. 現階段開發版：從原始碼建置並刷入空白 USB
+
+目前 `main` 尚未提供上述單 USB 完整映像。Live USB 的 Buildroot 建置流程位於 [PR #9](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/9) 的開發分支。要實際測試 USB 開機，可在 **Linux x86_64 建置電腦**準備依賴與建置映像（主機所需套件見[Buildroot 建置說明](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/blob/feat/issue-1-reproducible-live-usb/docs/BUILD.md)）：
+
+~~~bash
+git clone https://github.com/ChiJiun/usb-btc-evm-cold-wallet.git
+cd usb-btc-evm-cold-wallet
+git switch feat/issue-1-reproducible-live-usb
+
+make prepare-sources
+make image
+make verify
+make reproducibility-check
+cd build/output/images
+sha256sum -c usb-cold-wallet.img.sha256
+~~~
+
+通過檢查後，將 `build/output/images/usb-cold-wallet.img` 用上述圖形工具刷入空白 USB，從 UEFI 開機，依據[該分支的 USB 操作指南](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/blob/feat/issue-1-reproducible-live-usb/docs/USB_SETUP.md)建立測試錢包與操作簽署選單。
+
+**這個開發版目前是雙 USB 架構**：系統 USB 包含 `USBCOLD_EFI` 和 `COLD_VAULT` 兩個分割區；交易交換使用另一支 FAT32、標籤為 `TX_TRANSFER` 的 USB。它**尚未包含 Windows Portable Companion 或單 USB 跨開機交易交換區**。完整的一支 USB 版本依 [Issue #37](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/37) 整合後才可照 A 流程使用。
+
+## 一支 USB 如何運作？
+
+同一支 USB 提供兩個不同的使用環境：
+
+| 使用環境 | 主要用途 | 何時使用 |
+| --- | --- | --- |
+| **Windows Portable Companion** | 查看公開帳戶與餘額、建立 Bitcoin PSBT / EVM 交易、驗證簽章、廣播與追蹤結果 | 日常收款、查看資產、準備轉帳 |
+| **USB Offline Signer OS** | 從 USB 獨立開機、解鎖加密錢包、解析交易、顯示完整明細、經人工確認後簽章 | 只有需要轉出資產時 |
+
+USB 內另外分出**加密錢包儲存區**及**交易交換區**，讓兩個環境交換待簽與已簽資料。Windows 端僅處理公開帳戶和交易資料；離線端負責私鑰與簽名。
+
+離線系統採用自製的 **Buildroot Linux Live OS**，開機後進入專用簽章介面，預設停用網路與交換記憶體，不依賴日常 Windows 的軟體環境。
+
+## 日常操作流程
+
+### 1. 首次建立錢包
+
+1. 先依[空白 USB 製作流程](#從空白-usb-開始首次製作與設定)完成刷寫，再透過 UEFI 開機選單從 USB 啟動離線系統。
+2. 進入離線錢包介面，建立新錢包，或使用紙本 BIP39 助記詞復原。
+3. 設定加密錢包密碼，離線抄寫並確認助記詞備份。
+4. 將 Bitcoin、EVM 的**公開帳戶資料**提供給 Windows Companion，完成只讀帳戶設定。
+
+日後查看資產和收款，不需要再次解鎖離線錢包。
+
+### 2. 收款與查看資產
+
+在 Windows 插入 USB，直接開啟 **Portable Companion**：
+
+- 查看 BTC 與 EVM 帳戶、餘額、交易紀錄。
+- 產生並複製收款地址，或顯示收款 QR Code。
+- 管理公開地址、常用收款人與待處理交易。
+
+**收款不需要啟動 Offline Signer。** 錢包的公開資訊足以查詢鏈上狀態與提供收款地址。
+
+### 3. 轉出 BTC 或 EVM 資產
+
+完整的單機、單 USB 操作路徑：
 
 ```text
-連網電腦（沒有私鑰）                    實體離線電腦／Linux Live USB
-┌──────────────────────────────┐        ┌──────────────────────────────┐
-│ Watch-only 錢包／區塊鏈節點   │        │ 加密 Vault／BIP39 助記詞    │
-│ 建立 BTC PSBT／EVM 交易       │ ─────► │ 獨立解析、核對交易資訊       │
-│                              │ USB-B  │ 使用者逐筆人工確認           │
-│ 核對簽章結果並廣播交易        │ ◄───── │ 不連網，使用私鑰簽署交易     │
-└──────────────────────────────┘        └──────────────────────────────┘
+Windows：開啟 USB 上的 Companion
+    │
+    ├─ 選擇 BTC / EVM、收款地址、金額
+    ├─ 預覽網路費用並建立待簽交易
+    └─ 將交易請求存入 USB 交換區
+    │
+    ▼
+重新開機 → 從 USB 啟動 Offline Signer OS
+    │
+    ├─ 解鎖加密錢包
+    ├─ 離線解析原始交易
+    ├─ 核對完整地址、金額、找零／Gas 與費用
+    └─ 使用者明確確認 → 簽署 → 存回 USB
+    │
+    ▼
+重新開機 → 返回 Windows
+    │
+    ├─ Companion 匯入簽署結果
+    ├─ 驗證帳戶、鏈別與交易內容是否符合原請求
+    └─ 點選「廣播交易」→ 顯示 TxID / Tx Hash 與狀態
 ```
 
-**收款**只需要公開收款地址，平常不必啟動冷錢包；**轉出資產**才需要將交易送到離線端，進行獨立核對與簽章。
+**Bitcoin** 使用 watch-only 帳戶建立 PSBT，離線端核對 UTXO、收款地址、找零與手續費後簽名；連網端完成交易並廣播。
 
-## 此 PR 分支已實作的功能（尚未正式合併）
+**EVM** 在連網端建立交易，離線端核對 chainId、收款地址、金額、nonce、Gas 及支援的交易語意；連網端驗證已簽署交易後廣播。
 
-| 項目 | 已實作範圍 |
-| --- | --- |
-| 錢包產生與派生 | 在離線端建立一組 24 字 BIP39 助記詞；支援選用的 BIP39 passphrase 與 BIP32 派生 |
-| 加密錢包檔案 | Scrypt + AES-256-GCM；檔案權限 `0600`；拒絕覆寫既有 vault |
-| Bitcoin | **僅測試網**；BIP84 原生 SegWit P2WPKH、保守的 PSBT v0／SIGHASH_ALL 驗證、明確核對收款人／金額／找零／手續費；不支援 RBF／Locktime 語意 |
-| EVM | **僅 Sepolia 測試網**；EIP-1559 Type 2 **原生 ETH 轉帳**、chainId／收款地址／金額／Gas 檢查、已簽署原始交易重新解碼與發送者地址還原 |
-| 公開帳戶資訊 | Bitcoin 測試網收款地址與帳戶 `tpub`；Sepolia EVM 地址 |
-| 安全限制 | 離線簽章程式**沒有 RPC 或廣播功能**；禁止主網簽章、任意合約呼叫、盲簽及私鑰匯出 |
-| 自動化檢查 | GitHub Actions：Python 3.12／3.13 測試、雜湊鎖定相依套件、pip-audit、Gitleaks、dependency review、可重現 wheel，以及 Live USB 雙次 Buildroot 建置與 QEMU/OVMF 開機煙霧測試（**執行結果待確認**） |
-| Live USB 建置 | Buildroot x86_64 UEFI／RAM-only rootfs、停用 Kernel Networking、固定 GPT PARTUUID、簽章來源驗證與空白 COLD_VAULT；**僅表示流程已實作，不表示映像已成功驗證** |
-| USB 離線交換 | 僅允許獨立的 `TX_TRANSFER` VFAT 裝置，檢查掛載來源及 `noexec,nodev,nosuid,sync` 選項 |
+正常操作不需要手動編輯 JSON、輸入 CLI 指令或複製 raw transaction。
 
-**本 PR 尚未支援或完成驗證：** 主網、ERC-20、EIP-712、WalletConnect、Taproot、多簽、PSBT v2、QR 傳輸、可信任的硬體螢幕／按鍵、實體 USB 開機驗收、完整 Bitcoin 地址探索，以及獨立安全審計。
+## 也能使用雙電腦離線簽署
 
-> [!NOTE]
-> 本 README 描述的是 **PR #7 的提案分支**，並非目前 `main` 的已發布功能。其他尚未合併的 PR（例如 [#26 Online Companion](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/26)）也不包含在此分支內。
+如果有一台專用離線電腦，冷錢包 USB 可以一直留在那台設備上，不必每筆交易都重新開機。
 
-## 開發環境與自動化測試
+```text
+連網電腦 / Online Companion                離線電腦 / USB Signer
+建立 BTC / EVM 交易          ── QR ──►    掃描、解析、核對交易
+驗證簽章並廣播交易           ◄─ QR ───    人工確認後簽章
+```
 
-**連網電腦或 VM 只適合用來執行公開且已知外洩的測試向量。** 不得在 Devspace、GitHub Actions、WSL、雲端 VM 或任何連網環境建立或匯入真正打算持有資產的助記詞。
+支援方向包括：
 
-環境需求：Python 3.12 或更新版本。
+- **動態 QR Code**：雙向傳遞待簽請求與簽章結果。
+- **交易交換 USB**：沒有攝影機時的替代方式。
+- **MetaMask 整合**：以公開帳戶搭配 QR 簽章橋接，在相容的交易流程中使用冷端簽名。
+
+單 USB 跨開機模式著重設備最少、Windows 免安裝；雙機 QR 模式著重持續維持實體離線環境。兩種模式共用相同的交易解析、人工核對與簽章核心。
+
+## 錢包功能與設計
+
+- **Bitcoin + EVM**：以 Bitcoin PSBT、EVM 交易與公開帳戶管理為核心，逐步擴充支援的交易類型。
+- **離線錢包保管**：BIP39/BIP32 金鑰、加密 Vault、紙本助記詞備份與復原演練。
+- **獨立交易核對**：冷端直接解析待簽資料，完整顯示收款地址、數量、網路及相關費用；每筆都要人工確認。
+- **交易政策**：地址簿、費用上限、額外確認、未知或未支援合約交易的拒簽規則。
+- **簡潔操作介面**：Windows Portable Companion 與冷端專用 GUI，支援繁體中文。
+- **可重現系統映像**：Buildroot Live USB、固定依賴版本、自動化建置與 QEMU/OVMF 開機檢查。
+
+## 系統架構
+
+```text
+                     冷錢包 USB
+          ┌──────────────────────────┐
+          │ UEFI / Buildroot Live OS │ → 離線簽章介面
+          │ 加密 Vault               │ → 助記詞、金鑰與設定
+          │ 交易交換區               │ → 待簽請求、簽章結果
+          │ Windows Portable App     │ → 連網端交易管理
+          └──────────────────────────┘
+```
+
+私鑰簽章與交易廣播分處不同執行環境；普通 USB 的安全性仍依賴離線主機及開機映像的可信程度。設計與信任邊界詳見[威脅模型](docs/THREAT_MODEL.md)。
+
+## 專案進度
+
+本 README 描述**規劃完成後的產品流程**，並非宣稱所有功能已在目前版本交付。
+
+目前 `main` 為 **v0.1.0 研究原型**，已有 Bitcoin testnet PSBT v0 與 Ethereum Sepolia EIP-1559 原生轉帳的**離線 CLI 簽章核心**、加密 Vault、公開帳戶輸出及 CI 安全檢查。可開機 Live USB、Windows Portable Companion、交易 GUI、QR、MetaMask 整合及單 USB 跨開機流程，正在各功能分支整合與驗證；實體硬體 E2E 驗收尚未完成。
+
+現有 [PR #9 的 Live USB 開發映像](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/9)仍為**系統 USB + 獨立交易交換 USB**；首次空白 USB 建置方式與未來單 USB 目標的差異，請見上方製作說明。
+
+目前以 **Bitcoin testnet / Ethereum Sepolia** 進行開發驗證。主網及真實資產使用須待獨立安全審查與完整發行驗收。
+
+追蹤進度：[所有 Issues](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues) · [PRs](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pulls) · [完整產品體驗 #12](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/12) · [單 USB 跨開機 #37](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/37)
+
+## 開發與文件
+
+目前離線簽章核心的開發環境：Python 3.12+。
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e ".[dev]"
-
 pytest
+usb-cold-wallet --help
 ```
 
-自動化測試通過**不代表**離線硬體、USB 開機環境或實際資產的安全性已經通過驗證。
-
-## Buildroot Live USB 映像（待完整驗證）
-
-在相容的 Linux x86_64 建置主機上使用專案的 Buildroot 流程；**不得在連網 CI 或建置主機產生真實助記詞**：
-
-```bash
-make prepare-sources
-make image
-make verify
-make reproducibility-check
-```
-
-預期產物為 `build/output/images/usb-cold-wallet.img`。必須先確認兩次 clean build 完全一致、QEMU/OVMF UEFI 開機通過，並在實體 USB 上驗證無網路、無 swap、僅允許指定分割區持久化寫入，才能考慮用於後續研究。詳細流程見 [BUILD.md](docs/BUILD.md)。
-
-## 離線環境安裝與準備（手動研究流程）
-
-開始前請先閱讀 [USB 製作與使用指南](docs/USB_SETUP.md)。以下是**手動研究／測試流程**，不是一鍵安裝程式，更不是安全開機的保證。
-
-1. 驗證官方 Linux Live ISO 的來源及校驗資訊，將其製作成系統 USB（**USB-A**）。燒錄通常會清除 USB-A 原有資料。
-2. 在實體斷網前，預先準備經過驗證、版本正確且相容離線主機架構的 Python 套件與原始碼。
-3. 完全關機後斷開 Ethernet、Wi-Fi、Bluetooth 與其他網路路徑，再啟動 Linux Live 環境；不要任意掛載不可信儲存裝置。
-4. 將加密 vault 放在**離線專用的獨立儲存媒體**，USB-B 只負責資料交換，避免兩者混用。
-5. **只在實體離線電腦建立錢包**，並將助記詞及選用的 BIP39 passphrase 另外備份與核對。
-
-示範指令（必須自行確保離線主機已完成實體隔離；指令不會自動建立隔離環境）：
-
-```bash
-# 在連網開發電腦預先準備依賴套件
-python -m pip download -d wheelhouse -e ".[dev]"
-
-# 在離線 Linux 上使用已驗證的 wheelhouse 安裝
-python -m pip install --no-index --find-links wheelhouse -e ".[dev]"
-
-# 僅能在離線主機建立加密 vault；不可在連網電腦執行
-usb-cold-wallet --vault /offline/wallet.vault init \
-  --offline-ack --i-have-paper-backup
-
-# 輸出可以交給連網端的公開 watch-only 資訊
-usb-cold-wallet --vault /offline/wallet.vault addresses --count 3
-```
-
-`--offline-ack` 僅是使用者確認旗標，**不代表程式能驗證電腦真的已經斷網**。作業系統與硬體仍需獨立檢查。
-
-## 如何簽署並轉出交易？
-
-連網端負責建立未簽署交易；**離線端必須使用可信任且獨立的資訊來源，核對實際收款地址、金額及費用**，不可只相信連網電腦顯示的交易摘要。
-
-### EVM：Sepolia 原生 ETH 轉帳
-
-先在連網電腦準備 EIP-1559 Type 2 未簽章交易 JSON，再透過 USB-B 帶入離線電腦。
-
-```bash
-usb-cold-wallet --vault /offline/wallet.vault sign-evm \
-  --tx /transport/sepolia-unsigned.json \
-  --to 0x000000000000000000000000000000000000dEaD \
-  --wei 1000000000000 \
-  --out /transport/sepolia-signed.json
-```
-
-其中 `--to` 與 `--wei` 是**獨立核對的預期收款人與金額**。離線程式會檢查原始交易並要求人工確認。簽署完成後，再將結果透過 USB-B 帶回連網電腦，由外部錢包或 RPC 工具廣播。
-
-### Bitcoin：測試網 BTC 轉帳
-
-連網端先建立含正確 BIP32 派生來源與 UTXO 資訊的未簽署 PSBT。若有找零，必須獨立核對 BIP84 內部找零地址的索引。
-
-```bash
-usb-cold-wallet --vault /offline/wallet.vault sign-btc \
-  --psbt /transport/unsigned.psbt \
-  --to tb1qREPLACE_WITH_INDEPENDENTLY_VERIFIED_ADDRESS \
-  --sats 50000 --max-fee-sats 2000 --change-index 0 \
-  --out /transport/signed.json
-```
-
-若沒有找零輸出，請省略 `--change-index`。簽好的資料傳回連網環境，再由相容的錢包或節點完成交易及廣播。**離線 CLI 刻意不具備廣播功能。**
-
-## 安全設計與已知限制
-
-- **普通 USB 是儲存媒體，不是硬體安全模組。** 沒有 Secure Element、獨立的可信任確認螢幕，也無法自行強制保證私鑰不可匯出。
-- 解密 vault 時，Seed 與派生私鑰會進入**離線電腦的記憶體**；惡意韌體、作業系統、周邊裝置、swap、crash dump 與實體記憶體攻擊仍可能洩漏機密。
-- 加密 vault 的密碼**不能取代**經過驗證、保存在裝置之外的 BIP39 助記詞與選用 passphrase 備份。
-- 若連網電腦或 USB-B 遭到入侵，交易內容可能被替換。檔案雜湊／Checksum **不等於來源身分認證，更不等於使用者授權簽章**。
-- 一般 Linux Live 系統若未額外稽核，可能把機密寫入 swap、日誌、休眠檔或持久化磁碟。
-- 原始碼、相依套件、封裝、威脅模型及實體設備運作**尚未接受獨立完整安全審計**；測試網能使用不代表主網可以安全使用。
-
-**絕對不要**將助記詞、BIP39 passphrase、私鑰、解密後資料或加密 vault 放上會與連網電腦交換的 USB，也不要上傳到公開 Issue、PR 或日誌。
-
-詳細規範請參閱 [安全政策](SECURITY.md) 與 [威脅模型](docs/THREAT_MODEL.md)。
-
-## 專案結構
-
-| 檔案 | 用途 |
-| --- | --- |
-| `src/usb_cold_wallet/vault.py` | BIP39 錢包 vault 加解密 |
-| `src/usb_cold_wallet/keys.py` | 使用 `embit` 進行 BIP32 金鑰派生 |
-| `src/usb_cold_wallet/btc.py` | Bitcoin 測試網 PSBT 檢查與簽署 |
-| `src/usb_cold_wallet/evm.py` | 使用 `eth-account` 檢查／簽署 Sepolia 原生 ETH 轉帳 |
-| `src/usb_cold_wallet/cli.py` | 離線命令列、人工確認及檔案交換 |
-| `tests/` | 公開測試向量、確定性測試與拒絕情境測試 |
-| `docs/` | USB 指南、威脅模型、測試向量與供應鏈安全文件 |
-
-專案**不自行實作**橢圓曲線密碼學、Keccak、PSBT 序列化或 AES 演算法；相關依賴與設計參考列於 [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)。
-
-## 開發路線圖
-
-1. 可重現的離線相依套件建置流程，以及經驗證、真正隔離網路的啟動環境。
-2. Bitcoin Core／Sparrow 與 EVM 的獨立測試向量、惡意輸入／Fuzz 測試、外部安全審查。
-3. 可重現的唯讀 Linux Live USB 映像，以及安全的 USB 檔案／QR 交易傳輸。
-4. 更方便的離線交易審查 UI、助記詞復原演練與主網上線前的完整安全驗收。
-5. 未來可選擇發展具備獨立可信任螢幕、按鍵及安全開機的專用硬體版本。
-
-簽章流程、操作便利性與熱錢包整合的後續規劃，請參閱 [Issue #12](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/12)。
-
-## 相關文件
-
-[USB 製作指南](docs/USB_SETUP.md) · [安全政策](SECURITY.md) · [威脅模型](docs/THREAT_MODEL.md) · [EVM 測試向量](docs/EVM_TEST_VECTORS.md) · [CI／供應鏈安全](docs/CI_SECURITY.md) · [開源專案參考](docs/OPEN_SOURCE_REFERENCES.md)
+[USB 製作與操作](docs/USB_SETUP.md) · [安全政策](SECURITY.md) · [威脅模型](docs/THREAT_MODEL.md) · [CI 與供應鏈](docs/CI_SECURITY.md) · [開源技術參考](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## 授權
 
-採用 **MIT License**。程式碼為本專案自行開發的研究原型；其他開源專案主要作為架構與實作參考，未直接複製封閉原始碼或廠商韌體。
+專案原創程式碼採 **MIT License**；所使用的第三方依賴與元件遵循各自授權。
