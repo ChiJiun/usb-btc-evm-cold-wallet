@@ -289,7 +289,7 @@ def _current_mount_evidence(
             if vault_disk is not None else ""
         )
         if (
-            not expected_sysfs.startswith("/sys/")
+            not expected_sysfs.startswith("/")
             or not expected_diskseq.isdigit()
             or live_sysfs != expected_sysfs
             or live_diskseq != expected_diskseq
