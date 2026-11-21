@@ -163,6 +163,19 @@
       </article>
     </section>
     </div>
+    <section class="panel" aria-label="故障恢復與鏈上唯讀查詢">
+      <div class="step"><span>恢復</span> 查詢已知交易</div>
+      <h2>重新啟動後查詢 Tx Hash／TxID</h2>
+      <p>只查詢測試網狀態，不恢復已遺失的簽章授權，也不會重新廣播。查詢結果來自不可信的 RPC／Esplora。</p>
+      <form id="lookupForm">
+        <label for="lookupAsset">交易所在測試網</label>
+        <select id="lookupAsset"><option value="sepolia">Sepolia ETH</option><option value="bitcoin-testnet">Bitcoin Testnet</option></select>
+        <label for="lookupHash">已知完整 Tx Hash（Sepolia 0x 開頭；BTC 64 位十六進位）</label>
+        <input id="lookupHash" type="text" autocomplete="off" spellcheck="false" maxlength="66" required>
+        <button id="lookupBtn" type="submit">唯讀查詢交易狀態</button>
+      </form>
+      <div class="facts" id="lookupResult" role="status" aria-live="polite">尚未查詢。沒有交易紀錄時，不能從網路端安全重建原本的簽署請求。</div>
+    </section>
     <footer>僅繫結 127.0.0.1 · 本機 session 不存入瀏覽器永久儲存 · 不會向遠端上傳錢包私鑰 · 任何 QR/USB 檔案都應視為不可信。</footer>
   </main>
 </body>
