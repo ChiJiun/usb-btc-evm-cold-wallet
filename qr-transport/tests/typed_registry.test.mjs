@@ -62,6 +62,25 @@ test("immutable pending context binds chain/account/request/digest and refuses s
  assert.throws(()=>bindTypedToPending(sig,{...pending,unsignedDigest:undefined},{now:2000,verifySignature:()=>true}),/Independent EIP-1559/);
  assert.throws(()=>bindTypedToPending(sig,pending,{now:2000,verifySignature:()=>false}),/Independent EIP-1559/);
 });
+test("binding rejects missing mandatory fields even when called without the UR parser",()=>{
+ const parsed=parseTypedUR(makeTypedUR("eth-sign-request",tx));
+ const pending={type:"eth-sign-request",chainId:11155111,address,requestId:rid,
+   unsignedDigest:digest(tx.unsignedTxHex),createdAt:1000,ttlMs:5000};
+ for(const omission of ["requestId","chainId","network","address","unsignedTxHex"]) {
+   const incomplete={...parsed};delete incomplete[omission];
+   assert.throws(()=>bindTypedToPending(incomplete,pending,{now:2000}),/Incomplete|mismatch/);
+ }
+ const sig=parseTypedUR(makeTypedUR("eth-signature",{requestId:rid,signatureHex:"11".repeat(64)+"1b"}));
+ for(const omission of ["requestId","signatureHex"]) {
+   const incomplete={...sig};delete incomplete[omission];
+   assert.throws(()=>bindTypedToPending(incomplete,pending,{now:2000,verifySignature:()=>true}),/Incomplete/);
+ }
+ const btcPending={type:"crypto-psbt",phase:"unsigned",psbtDigest:digest(psbtHex),
+   createdAt:1000,ttlMs:5000};
+ assert.throws(()=>bindTypedToPending({type:"crypto-psbt"},btcPending,{now:2000}),/Incomplete/);
+ assert.throws(()=>bindTypedToPending({type:"crypto-psbt",psbtHex:"70736274ff"},btcPending,{now:2000}),/Incomplete/);
+});
+
 test("bounded multipart rejects wrong type, mixed messages, malformed CBOR, scan timeout and excessive frames",()=>{
  const large={psbtHex:"70736274ff"+"aa".repeat(11000)};
  const frames=encodeTypedFrames("crypto-psbt",large,{fragmentBytes:180});
