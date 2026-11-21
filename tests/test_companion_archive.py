@@ -11,6 +11,7 @@ PUBLIC = "\n".join([
     "'usb_cold_wallet.companion_portable'",
     "'usb_cold_wallet.companion_envelope'",
     "'usb_cold_wallet.companion_crossboot'",
+    "'usb_cold_wallet.transaction_state'",
     "'usb_cold_wallet.companion_static.index.html'",
     "'usb_cold_wallet.companion_static.companion.css'",
     "'usb_cold_wallet.companion_static.companion.js'",
@@ -23,7 +24,7 @@ def test_only_online_modules_are_allowed():
 
 @pytest.mark.parametrize("forbidden", [
     "vault", "keys", "btc", "evm", "recovery", "cli", "gui", "policy",
-    "review", "signer_session", "exchange", "qr_workflow", "keystone_public",
+    "review", "signer_session", "exchange", "cross_boot", "qr_workflow", "keystone_public",
 ])
 def test_offline_module_exposure_fails_closed(forbidden):
     with pytest.raises(AssertionError, match="Offline or unknown"):
