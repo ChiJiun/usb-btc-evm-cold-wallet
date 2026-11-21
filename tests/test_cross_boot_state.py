@@ -113,7 +113,7 @@ def rehash(envelope):
 
 def test_evm_v2_full_request_response_binding():
     request = evm_request()
-    checked = verify_v2_request(request, trusted_time=100)
+    checked = verify_v2_request(request, expected_account=EVM_ACCOUNT, trusted_time=100)
     assert checked["expiryAssurance"] == "trusted-time"
     assert checked["intent"] == {
         "recipient": EVM_RECIPIENT,
@@ -150,7 +150,7 @@ def test_v2_request_rejects_recomputed_wrong_chain_account_digest_or_intent(muta
     mutator(request)
     rehash(request)
     with pytest.raises(ValueError):
-        verify_v2_request(request, trusted_time=100)
+        verify_v2_request(request, expected_account=EVM_ACCOUNT, trusted_time=100)
 
 
 def test_expiry_requires_trusted_time_or_explicit_restricted_no_clock_mode():
@@ -201,16 +201,16 @@ def test_cold_replay_ledger_survives_restart_and_blocks_id_and_transaction_repla
     request = evm_request("41" * 16)
     ledger = ReplayLedger(root)
     checked = verify_v2_request(request, trusted_time=100)
-    assert ledger.review_once(request, trusted_time=100).state == "COLD_REVIEWED"
+    assert ledger.review_once(request, expected_account=request["account"], trusted_time=100).state == "COLD_REVIEWED"
     ledger = ReplayLedger(root)
     with pytest.raises(ValueError, match="Duplicate requestId"):
-        ledger.review_once(request, trusted_time=100)
+        ledger.review_once(request, expected_account=request["account"], trusted_time=100)
 
     same_tx_new_id = copy.deepcopy(request)
     same_tx_new_id["requestId"] = "42" * 16
     rehash(same_tx_new_id)
     with pytest.raises(ValueError, match="Transaction digest already reviewed"):
-        ledger.review_once(same_tx_new_id, trusted_time=100)
+        ledger.review_once(same_tx_new_id, expected_account=same_tx_new_id["account"], trusted_time=100)
 
 
 def test_cold_signed_state_and_response_digest_survive_restart(tmp_path):
@@ -218,7 +218,7 @@ def test_cold_signed_state_and_response_digest_survive_restart(tmp_path):
     request = btc_request()
     checked = verify_v2_request(request, trusted_time=100)
     ledger = ReplayLedger(root)
-    ledger.review_once(request, trusted_time=100)
+    ledger.review_once(request, expected_account=request["account"], trusted_time=100)
     signed = sign_btc_psbt(ROOT, request["payload"], BTC_RECIPIENT, 60_000, 1500, 0)
     response = package_v2_response(request, signed, trusted_time=100)
     ledger.mark_signed(request, response, trusted_time=100)
@@ -321,5 +321,5 @@ def test_state_import_verifies_response_before_transition(tmp_path):
 def test_no_clock_cold_review_persists_unverified_assurance(tmp_path):
     request = evm_request(expiry={"mode": "no-trusted-clock", "notAfter": None})
     ledger = ReplayLedger(tmp_path / "ledger")
-    snap = ledger.review_once(request, allow_no_trusted_clock=True)
+    snap = ledger.review_once(request, expected_account=EVM_ACCOUNT, allow_no_trusted_clock=True)
     assert snap.metadata["expiryAssurance"] == "unverified"
