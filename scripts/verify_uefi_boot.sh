@@ -92,6 +92,13 @@ while [ "$count" -lt 120 ]; do
     sleep 2
 done
 echo "ERROR: UEFI guest boot did not reach startup audit within 240 seconds" >&2
+if grep -Eq 'Linux version|Kernel command line|Booting Linux' "$TMP/serial.log" 2>/dev/null; then
+    echo "DIAG: Linux emitted serial output; inspect kernel/init/audit" >&2
+elif grep -Eq 'Booting |GNU GRUB' "$TMP/serial.log" 2>/dev/null; then
+    echo "DIAG: GRUB reached, no Linux serial evidence; inspect EFI handoff and console" >&2
+else
+    echo "DIAG: no GRUB serial evidence; inspect OVMF/USB boot discovery" >&2
+fi
 tail -70 "$TMP/serial.log" >&2 || true
 tail -70 "$TMP/qemu.log" >&2 || true
 exit 1
