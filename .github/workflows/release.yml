@@ -255,6 +255,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      attestations: read
     env:
       TAG: ${{ inputs.tag }}
       SOURCE_SHA: ${{ inputs.source_sha }}
