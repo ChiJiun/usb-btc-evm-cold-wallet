@@ -7,11 +7,11 @@ existing BTC/EVM paths.
 """
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import json
 import re
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +51,11 @@ def _sha(value: Any) -> str:
 
 def _envelope_sha(data: dict) -> str:
     return _sha({key: value for key, value in data.items() if key != "sha256"})
+
+
+def new_request_id() -> str:
+    """Generate a cryptographically random 128-bit request identifier."""
+    return secrets.token_hex(16)
 
 
 def _request_id(value: Any) -> str:
@@ -356,6 +361,9 @@ def verify_v2_response(
             response["transactionDigest"] != request["transactionDigest"] or
             response["expiryAssurance"] != checked_request["expiryAssurance"]):
         raise ValueError("Signed response does not match pending request")
+    for field in ("requestEnvelopeDigest", "signedResultDigest", "sha256"):
+        if type(response[field]) is not str or HEX64_RE.fullmatch(response[field]) is None:
+            raise ValueError(f"Invalid signed response {field}")
     if not hmac.compare_digest(response["requestEnvelopeDigest"], _sha(request)):
         raise ValueError("Signed response request digest mismatch")
     if not hmac.compare_digest(response["signedResultDigest"], _sha(response["payload"])):
