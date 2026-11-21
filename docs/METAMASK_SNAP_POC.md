@@ -131,6 +131,33 @@ closed-ID cache evicts old entries. Removing or resetting Snap state removes
 this counter; the offline signer must still independently authorize each
 transaction and should never accept an old response after account/state reset.
 
+## Developer MetaMask 實機驗收矩陣（尚未執行）
+
+此段為 #22 的**外部驗收清單**；CI 的 SDK entrypoint、Chromium mock provider
+與 JS→Python→JS 測試可保證專案內部協定，**無法取代真正 MetaMask Extension
+接收 keyring event 的證據**。避免用成功的模擬測試宣稱已完成實際 MetaMask 整合。
+
+驗收環境紀錄須附：MetaMask Flask／支援 Account Management Snap 的
+extension 版本與 commit、瀏覽器版本、Snap bundle SHA-256、測試日期、
+本機 Companion origin 與測試網 chain ID（11155111）。僅使用
+公開／永久洩漏的測試助記詞與 Sepolia 測試幣；不要拍攝、輸出真實 seed。
+
+| 驗收操作 | 實際 MetaMask 必須觀察到的結果 | 證據 |
+| --- | --- | --- |
+| 安裝並連線 Snap | `wallet_requestSnaps` 安裝成功、permissions 僅限公開帳戶及本機 origins | 擴充功能版本、許可畫面／事件紀錄 |
+| 匯入、選取／取消選取公開帳戶 | 出現**獨立** cold account，不覆蓋熱錢包；選取回呼、取消選取限制與 Snap 持久化資料一致 | 帳戶列表、callback/選取後測試 |
+| MetaMask 發起 Sepolia 原生交易 | 實際 keyring `eth_signTransaction` 建立**唯一** pending intent，產生完整交易欄位與原始 Wei | 請求 ID、脫敏 QR digest、鏈 ID |
+| 真正離線簽章回覆 | MetaMask 實際接受 `RequestApproved` 的 `{v,r,s}`；原始 signed EIP-1559 的地址／Nonce／Gas／收款人／金額一致 | 同一請求 ID、交易 hash、已去識別事件結果 |
+| 拒絕、過期、錯誤鏈、重播 | MetaMask request 正確結束或被拒絕，不能自動重試、轉主網或用舊 QR 簽章 | 每項失敗輸入及結果 |
+| AccountCreated／Deleted、RequestApproved／Rejected 通知故障 | 在模擬事件投遞失敗／清除失敗及 Snap 重啟後，先核對真實 MetaMask 帳戶／請求狀態，才由 Companion 明確 retry/abandon；不能隱式重發或建立幽靈帳戶 | 持久化 outbox、事件順序、恢復後列表 |
+| 真實 Sepolia 廣播與 receipt | 由 MetaMask 送出測試交易，第三方查得到相同 hash、receipt 與狀態；失敗不得自動重廣播 | 區塊瀏覽器連結與 receipt |
+| 實體 USB／雙機 QR | 一次完整空氣隔離收送和簽章，無私鑰進入線上端 | 實體操作紀錄（後續硬體 Gate） |
+
+若擴充功能因 Snap allowlisting 或版本限制拒絕安裝，記錄明確錯誤與版本，
+維持 Draft，不把假 provider 測試列為通過。上游 Keyring API／permission 參考：
+<https://metamask.github.io/keyring-api/latest/>、
+<https://docs.metamask.io/snaps/reference/entry-points/>。
+
 ## Integration status
 
 - **Implemented and automated-unit-tested:** keyless custom account,
