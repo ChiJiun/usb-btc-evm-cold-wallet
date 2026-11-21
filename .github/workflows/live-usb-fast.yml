@@ -1,0 +1,80 @@
+name: Live USB fast boot diagnostics
+
+# Optional developer feedback only. The existing two-clean-build workflow
+# remains the authoritative reproducibility and merge gate.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/live-usb-fast.yml"
+      - "buildroot-external/**"
+      - "infra/**"
+      - "scripts/**"
+      - "src/**"
+      - "tests/**"
+      - "Makefile"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-usb-fast-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  boot-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      BR2_JLEVEL: "2"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Install build-host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential make gcc g++ patch rsync perl tar cpio file bc gawk gzip \
+            bzip2 xz-utils python3 python3-venv python3-pip curl wget gnupg \
+            coreutils findutils diffutils unzip ca-certificates qemu-system-x86 ovmf
+
+      - name: Verify host prerequisites
+        run: sh scripts/check_host.sh
+
+      # This is an early single-build feedback job, not a shorter total CI run.
+      # The full two-clean-build PR gate runs independently and remains mandatory.
+      # Cache source inputs only, never compiler output, rootfs, or images.
+      # fetch_buildroot.sh rechecks the signed release manifest and archive;
+      # fetch_wheelhouse.sh rechecks every wheel against pinned SHA-256.
+      - name: Restore verified source downloads
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4
+        with:
+          path: |
+            build/dl
+            build/cache
+            build/wheelhouse
+          key: live-usb-sources-${{ runner.os }}-${{ hashFiles('infra/buildroot.env', 'infra/buildroot-release-key.asc', 'infra/embit.env', 'infra/wheelhouse.sha256', 'infra/wheelhouse-requirements.txt', 'infra/reproducible.env', 'buildroot-external/**', 'scripts/fetch_buildroot.sh', 'scripts/fetch_wheelhouse.sh', 'scripts/fetch_sources.sh', 'scripts/configure_buildroot.sh') }}
+
+      - name: Prepare authenticated offline sources
+        run: sh scripts/fetch_sources.sh
+
+      - name: Build and statically audit one image
+        run: sh scripts/build_image.sh
+
+      - name: Boot generated USB image and require security audit
+        run: sh scripts/verify_uefi_boot.sh
+
+      # This artifact exists only after verify_uefi_boot.sh starts. Earlier
+      # source/build failures are diagnosed from their corresponding step logs.
+      - name: Upload bounded UEFI-only failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: live-usb-fast-uefi-failure
+          path: build/reproducibility/uefi-smoke.log
+          if-no-files-found: ignore
+          retention-days: 7
