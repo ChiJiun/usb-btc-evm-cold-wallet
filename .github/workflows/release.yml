@@ -178,7 +178,7 @@ jobs:
           set -euo pipefail
           . infra/buildroot.env
           export BUILDROOT_VERSION BUILDROOT_SHA256 NODE_VERSION XZ_VERSION
-          dpkg-query -W -f='${Package}=${Version}\\n' \
+          dpkg-query -W -f='${Package}=${Version}\n' \
             build-essential make gcc g++ patch rsync perl tar cpio file bc gawk gzip \
             bzip2 xz-utils python3 python3-venv python3-pip curl wget gnupg \
             coreutils findutils diffutils unzip ca-certificates qemu-system-x86 ovmf \
@@ -354,10 +354,20 @@ jobs:
           for issue in 24 43; do
             state="$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
             if [[ "$state" != "CLOSED" ]]; then
-              echo "::error::Issue #$issue is still $state; production release remains blocked"
+              echo "::error::Issue #$issue is still $state; release remains blocked"
               exit 1
             fi
           done
+          case "$TAG" in
+            *-*) ;;
+            *)
+              state="$(gh issue view 48 --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
+              if [[ "$state" != "CLOSED" ]]; then
+                echo "::error::Issue #48 is still $state; stable/mainnet release remains blocked"
+                exit 1
+              fi
+              ;;
+          esac
 
       - name: Refuse replacement of an existing Release
         run: |
