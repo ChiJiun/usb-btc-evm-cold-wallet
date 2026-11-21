@@ -121,3 +121,49 @@ claiming the Issue's long-running fuzz acceptance is complete.
 - Only P2WPKH / BIP84 testnet derivations within the initial search window
   are supported. Some valid external-wallet PSBTs are intentionally rejected.
 - Never use a genuine secret in CI, Devspace, or another networked machine.
+
+
+## Support matrix (current testnet prototype)
+
+| Capability | Status | Enforced boundary |
+| --- | --- | --- |
+| Bitcoin testnet, BIP84 native P2WPKH | Supported | `m/84'/1'/0'/{0,1}/index`, index < 100 |
+| PSBT v0 / BIP174 | Supported | Canonical unsigned transaction; 1–20 inputs, 1–2 outputs; <= 200,000 decoded bytes |
+| Both witness UTXO and full non-witness UTXO | Required | TXID, referenced vout, script and satoshis must match |
+| BIP143 SIGHASH_ALL | Supported | Exact signature and output/fee policy before export |
+| BTC mainnet, PSBT v2 / BIP370 | Rejected | No mainnet or mixed PSBTv2 transaction-construction fields |
+| RBF, relative locktime, absolute locktime | Rejected | `sequence=0xffffffff`, `locktime=0`, transaction version 2 |
+| Taproot, P2SH, P2WSH, multisig, arbitrary metadata | Rejected | No blind signing or unsupported scripts |
+| External consensus/U​TXO inclusion proof | Not implemented | Cold signer checks provided prevout consistency only |
+
+## Bounded fuzz campaign and replay (Issue #2)
+
+The Linux workflow uses `ulimit -v 786432` (768 MiB process virtual memory),
+a 240-second external watchdog, a 180-second mutation deadline, and a
+250-millisecond per-case POSIX timer. Timeout failures are raised outside
+the parser's normal `ValueError` boundary and saved as crash artifacts.
+The report records random seed, accepted/rejected parser and policy cases,
+coverage line count, maximum payload length, per-case timeout enforcement,
+peak Linux RSS (KiB), replayed corpus count, and crash hashes. Linux
+`ru_maxrss` is a measurement, not a replacement for the address-space cap.
+
+```bash
+python tools/fuzz_btc_psbt.py --seconds 180 --max-cases 50000 \
+  --seed 20261122 --case-timeout-ms 250 \
+  --replay-dir tests/fixtures/btc_psbt_crashes \
+  --artifact-dir btc-psbt-crashes
+```
+
+Any unexpected exception, elapsed per-case timer or failed replay returns
+non-zero and retains the exact byte payload. Preserve the SHA256-named sample
+under `tests/fixtures/btc_psbt_crashes/` after triage and add a behavioral
+regression. The optional workflow can only substantiate the runs actually
+executed; its schedule alone is not evidence of a sustained clean campaign.
+
+**External E2E gate still pending:** Prior public Bitcoin Core/Sparrow
+fixtures are independent parser-format vectors, but are not a full
+BIP84 P2WPKH signing/finalization oracle for this cold signer. An independently
+produced Bitcoin Core/Sparrow PSBT fixture and signed Core finalize/extract
+transcript, including pinned tool version, generation commands, independent
+BIP143 verification, recipient/change/fee and TXID, are required before
+closing #2.
