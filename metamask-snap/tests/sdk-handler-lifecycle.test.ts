@@ -36,7 +36,7 @@ test('SDK keyring RPC: durable account notifications, selection and concurrent c
   };
   (globalThis as unknown as {snap:typeof host}).snap = host;
   const keyring = (who:string, method:string, params:any={}) =>
-    onKeyringRequest({origin:who,request:{jsonrpc:'2.0',id:1,method,params}} as never);
+    onKeyringRequest({origin:who,request:{jsonrpc:'2.0',id:1,method,...(Object.keys(params).length ? {params} : {})}} as never);
   const rpc = (method:string,params?:unknown) =>
     onRpcRequest({origin,request:{method,params}} as never);
 
