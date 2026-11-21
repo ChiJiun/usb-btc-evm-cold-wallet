@@ -38,11 +38,12 @@ def test_dependency_review_never_skips_on_pr_when_graph_is_unavailable():
     assert "Detect Dependency Graph availability" not in review
     required = content.split("\n  required:", 1)[1]
     assert "      - dependency_review" in required
-    assert 'test "$DEPENDENCY_REVIEW" = "success"' in required or (
-        'require("DEPENDENCY_REVIEW"' in (
-            Path(__file__).resolve().parents[1] / "scripts/ci_checks.py"
-        ).read_text(encoding="utf-8")
-    )
+    required_gate = (
+        Path(__file__).resolve().parents[1] / "scripts/ci_checks.py"
+    ).read_text(encoding="utf-8")
+    assert ('test "$DEPENDENCY_REVIEW" = "success"' in required or
+            '"DEPENDENCY_REVIEW",' in required_gate)
+    assert 'env.get("EVENT_NAME") == "pull_request" and deps == "true"' in required_gate
 
 
 def test_qr_transport_must_fail_when_manifest_is_missing():
