@@ -34,8 +34,10 @@ def read_gpt(
     if disk.is_symlink():
         raise ValueError("block device path must not be a symlink")
     with disk.open("rb") as source:
-        if source.read(SECTOR_SIZE)[510:512] != b"\x55\xaa":
-            raise ValueError("missing protective MBR")
+        mbr = source.read(SECTOR_SIZE)
+        if (len(mbr) != SECTOR_SIZE or mbr[510:512] != b"\x55\xaa"
+                or mbr[450] != 0xEE or any(mbr[462:510])):
+            raise ValueError("missing or hybrid protective MBR")
         header = source.read(SECTOR_SIZE)
         if len(header) != SECTOR_SIZE or header[:8] != b"EFI PART":
             raise ValueError("missing GPT")
