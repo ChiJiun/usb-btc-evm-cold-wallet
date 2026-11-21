@@ -1,24 +1,79 @@
-# GitHub Release 獨立驗證（#57 第一階段）
+# GitHub Release provenance 與獨立驗證（#57）
 
-目前本專案**尚未有經真機與獨立安全審查核准的 Release**。本驗證器可在未來 Release 發布後，由另一台乾淨電腦下載及驗證資產；不能以 CI 成功宣稱可安全存放主網資產。
+目前專案沒有經 #24／#43 實體安全驗收核准的 production-safe Release。`.github/workflows/release.yml` 已工程化正式供應鏈流程，但 `publish` 預設為 `false`，且 #24 或 #43 仍為 open 時 publish job 會 fail closed。
 
-## 前置條件
+## Release workflow 信任邊界
 
-- 已安裝近期 GitHub CLI（包含 `gh release verify`、`gh release verify-asset`、`gh attestation verify`）且可存取 GitHub。
-- 從**獨立可信管道**取得完整 40 字元來源 commit SHA；不可僅複製同一個 Release Notes 的 SHA 當成獨立信任錨點。
-- GitHub 已驗證的簽章 annotated tag、Immutable Release、Release Asset Attestation，以及由 `.github/workflows/release.yml` 簽署的 Build Provenance；缺一即拒絕。
-- 發行時應另附可重現 `.img`／`.img.xz` 建置證據、SBOM、依賴來源 hashes、硬體/安全驗收紀錄。本工具**不重新編譯**，亦不證明二進位安全。
+Release workflow 只能由 `workflow_dispatch` 從 `main` 啟動，輸入既有的 signed annotated version tag 與完整 lowercase 40-hex source commit。第一個 job 使用現有 `scripts/verify_release_assets.py --source-only` 驗證 tag 的 GitHub signature、tag 名稱及其精確 commit 綁定；PR 事件不會執行此 workflow。
 
-於乾淨 checkout 執行（以真實且獨立確認的 SHA 取代佔位字串）：
+權限分離如下：
 
-`python3 scripts/verify_release_assets.py --tag v0.1.0-beta.1 --commit <independently-verified-40-hex-commit> --asset usb-cold-wallet-v0.1.0-beta.1.img.xz`
+- validate / build / verify / gate：`contents: read`；build 沒有 OIDC、attestation 或 release write。
+- attest：只有此 job 取得 `id-token: write`、`attestations: write`，另提供目前 `actions/attest` 寫入 artifact metadata 所需的 `artifact-metadata: write`；沒有 `contents: write`。
+- publish：只有 gate 成功且使用者明確設定 `publish=true` 才取得 `contents: write`；另以 `issues: read` 確認 #24 與 #43 均已關閉。既有 Release 一律拒絕覆寫。
 
-成功回報下載資產的 SHA-256；以下情況非 0 退出：無法核驗簽章 tag、SHA/tag 不符、Draft、缺失/驗證失敗的 Immutable Release、checksum 異常、資產被換、Build Provenance 的來源 ref/commit/signer-workflow 或 digest 不符。
+所有 `uses:` 都釘選完整 40-hex action commit。Buildroot 版本、來源 SHA-256、簽章與 release key 已由 `infra/buildroot.env` 固定；target wheelhouse 由 `infra/wheelhouse-requirements.txt` 與 `infra/wheelhouse.sha256` 固定；Node release runtime 固定為 `24.22.3` 並用各 app 的 `package-lock.json` 執行 `npm ci`。SBOM action 固定 commit，Syft 固定為 `v1.54.0`。
 
-驗證工具限定固定 repository、受限版本 tag、對應的映像檔名；下載到新的暫存目錄，不執行 Release 中的程式碼。`SHA256SUMS` 本身也必須通過 Release Asset Attestation；單純對比攻擊者可一併替換的 checksum 與 image 無法確保真偽。
+## 建置、attestation 與 publish 順序
 
-## 尚未完成的發行工項
+流程固定為：
 
-本 PR 交付**獨立下載驗證器與負向測試**。#57 尚須在 #7 合併後接續實作：受控簽章 tag 的 release workflow、兩次乾淨 image build、Node/Python/Buildroot 依賴鎖定與 SBOM、成品 attestation、build/publish 權限分離、必要 job skipped fail-closed、第三方獨立重建與 Release 真正驗證。#43/#24 硬體驗收仍為正式發行的必要條件。
+1. signed tag → exact source SHA 驗證。
+2. 同一來源做兩次 clean Buildroot image build，`scripts/check_reproducible.sh` 比對 raw `usb-cold-wallet.img` SHA-256。
+3. 對第二次 raw image 再確認 digest，使用該 Buildroot 版本所固定的 host `xz`，以 `-6 --threads=1 --check=crc64 --no-sparse` 壓縮兩次並 byte-for-byte 比對。
+4. 由最後 root filesystem 產生 SPDX JSON SBOM；建立 `release-metadata.json` 與 `SHA256SUMS`。manifest 只涵蓋最後預定發布的 image、SBOM、metadata。
+5. 將這批 candidate bytes 上傳成同一次 workflow 的 immutable Actions artifact；attest job 下載原 bytes 後建立 SLSA Build Provenance，另建立 SBOM attestation。
+6. verify job 重新下載同一 candidate artifact，沿用 `verify_release_assets.py --local-dir` 驗證 repository、tag、source SHA、release workflow identity、subject digest、manifest 與 metadata。
+7. required gate 把 build / attest / verify 的 `skipped`、`cancelled`、`failure` 全部視為失敗。
+8. publish job 只下載已通過驗證的 artifact，再做 checksum；**沒有 build、重新壓縮或修改 bytes 的步驟**，接著才建立 GitHub Release。
 
-GitHub CLI 官方文件：[Release 驗證](https://cli.github.com/manual/gh_release_verify)、[Asset 驗證](https://cli.github.com/manual/gh_release_verify-asset)、[Build Attestation](https://cli.github.com/manual/gh_attestation_verify)。
+## 獨立驗證已發布 Release
+
+前置條件：
+
+- 安裝支援 `gh release verify`、`gh release verify-asset`、`gh attestation verify` 的近期 GitHub CLI。
+- 從獨立可信管道取得完整 40 字元 source commit SHA；不可只從同一份 Release Notes 複製。
+- GitHub Release 已啟用 Immutable Releases，tag 是 GitHub 顯示 `Verified` 的 signed annotated tag。
+
+~~~sh
+python3 scripts/verify_release_assets.py \
+  --tag v0.1.0-beta.1 \
+  --commit <independently-verified-40-hex-commit> \
+  --asset usb-cold-wallet-v0.1.0-beta.1.img.xz
+~~~
+
+驗證器固定 repository，不接受 URL；它從 GitHub Release 下載 `SHA256SUMS` 與指定 image，重算 SHA-256，再要求 Immutable Release integrity、Release Asset Attestation，以及 `.github/workflows/release.yml` 對相同 tag/source SHA/subject digest 的 SLSA Build Provenance。任一缺失或不一致均 nonzero exit。
+
+`SHA256SUMS` 只能證明 bytes 與 manifest 一致；其本身仍需 GitHub 的 Release integrity / asset verification。signed tag、Immutable Release、Build Provenance 各自提供不同保證，不能互相替代。
+
+## Repository admin 必須人工設定
+
+此 workflow **不會也不能假裝已替 repository 開啟下列管理設定**：
+
+1. **Immutable Releases**：Repository → Settings → General → Releases 啟用 immutable releases。正式發布後執行 `gh release verify <tag> -R ChiJiun/usb-btc-evm-cold-wallet`，失敗就不得宣稱 release integrity 已驗證。
+2. **Signed annotated tag**：維護者用受控 GPG/SSH signing identity 建立版本 tag，例如 `git tag -s <tag> <exact-sha>` 後 push；在 GitHub tag 頁確認 `Verified`，並再次核對 tag 指向的 commit。
+3. **main / workflow 保護**：以 repository Rulesets 或 branch protection 要求必要 CI、review，並限制可修改 release workflow / 建立版本 tag 的身分。實際規則需在 Settings 中人工確認；本文件不宣稱目前已啟用。
+4. 若組織政策提供 deployment environment / required reviewers，可再把 publish job 綁定受保護 environment；目前 workflow 沒有假設該 environment 已存在。
+
+## 第三方 clean rebuild
+
+同一 GitHub runner 內兩次 clean build 只證明該 CI 環境內可重現。第三方驗證者應在另一台乾淨 x86_64 Linux 主機：
+
+~~~sh
+git checkout --detach <exact-source-sha>
+sh scripts/check_host.sh
+sh scripts/fetch_sources.sh
+sh scripts/check_reproducible.sh
+~~~
+
+先比對 `build/reproducibility/run-1.sha256` 與 `run-2.sha256`，再將 raw image SHA 與 release build evidence 比對。若要比對實際下載的 `.img.xz`，必須使用 release metadata 記錄的同版 Buildroot host `xz` 與完全相同參數重新壓縮，再比對 `SHA256SUMS` 中的 digest。第三方結果需另行保存其主機、工具版本、source SHA 與 hashes；CI 自身的雙重 build 不算第三方已驗證。
+
+## 發布限制
+
+#57 的工程實作不依賴實體 USB 才能完成，但 #24／#43 驗收前 workflow 會阻擋 publish，文件與 Release Notes 也不得宣稱 production-safe。關閉 Issue 只是自動 gate 的最低條件；正式發布前仍需由維護者確認 Issue 內確實存在相應實體驗收證據及 admin 設定。
+
+官方驗證命令文件：
+
+- https://cli.github.com/manual/gh_release_verify
+- https://cli.github.com/manual/gh_release_verify-asset
+- https://cli.github.com/manual/gh_attestation_verify
