@@ -12,8 +12,11 @@ export type State = {
   requests: Record<string, StoredRequest>;
   closedIds: string[];
   selected: string[];
+  // Persistent monotonic domain separation for QR request IDs, even when
+  // bounded closedIds history discards old MetaMask request identifiers.
+  requestSequence: number;
 };
-export const freshState = (): State => ({ accounts:{}, requests:{}, closedIds:[], selected:[] });
+export const freshState = (): State => ({ accounts:{}, requests:{}, closedIds:[], selected:[], requestSequence:0 });
 type Save = (state: State) => Promise<void>;
 type Emit = (event: KeyringEvent, data: Record<string, unknown>) => Promise<void>;
 
@@ -110,7 +113,13 @@ export class ColdKeyring implements Keyring {
       throw new Error('Only eth_signTransaction (Sepolia native transfer) is supported');
     }
     const tx = normalizeUnsigned(request.request.params[0], account.address);
-    const pending = makeQrRequest(request.id, account.id, account.address, tx, this.now());
+    const sequence = this.state.requestSequence;
+    if (!Number.isSafeInteger(sequence) || sequence < 0 ||
+        sequence === Number.MAX_SAFE_INTEGER) {
+      throw new Error('Invalid or exhausted cold request sequence');
+    }
+    const pending = makeQrRequest(request.id, account.id, account.address, tx, this.now(), sequence + 1);
+    this.state.requestSequence = sequence + 1;
     this.state.requests[request.id] = {request, pending};
     await this.save(this.state);
     return {pending:true, redirect:{
