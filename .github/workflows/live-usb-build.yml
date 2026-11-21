@@ -61,6 +61,27 @@ jobs:
       - name: Boot generated USB image using UEFI OVMF/QEMU (TCG)
         run: sh scripts/verify_uefi_boot.sh
 
+      # Publish only after both clean builds match AND the generated image
+      # actually booted through OVMF with the startup security audit passing.
+      # No artifact is created on failed/cancelled/incomplete verification.
+      - name: Verify exact image bytes against reproducibility evidence
+        working-directory: build/output/images
+        run: |
+          sha256sum -c ../../reproducibility/run-2.sha256
+          sha256sum usb-cold-wallet.img > usb-cold-wallet.img.sha256
+          sha256sum -c usb-cold-wallet.img.sha256
+
+      - name: Upload verified testnet-only boot image (NOT A RELEASE)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: testnet-only-NOT-A-RELEASE-usb-cold-wallet
+          path: |
+            build/output/images/usb-cold-wallet.img
+            build/output/images/usb-cold-wallet.img.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
       - name: Upload bounded UEFI failure diagnostics (test image only)
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
