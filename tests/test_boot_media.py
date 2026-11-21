@@ -65,6 +65,7 @@ def _disk(
     struct.pack_into("<QIII", header, 72, 2, 128, 128, zlib.crc32(entries))
     struct.pack_into("<I", header, 16, zlib.crc32(header[:92]))
     mbr = bytearray(512)
+    mbr[450] = 0xEE  # GPT protective MBR entry, no hybrid partition table
     mbr[510:512] = b"\x55\xaa"
     return bytes(mbr + header + entries)
 
@@ -170,6 +171,7 @@ def test_duplicated_cloned_usb_is_denied(tmp_path):
         "missing_partition",
         "wrong_sector_size",
         "extra_partition",
+        "hybrid_mbr",
         "kernel_start_mismatch",
         "kernel_size_mismatch",
         "kernel_partition_number_mismatch",
@@ -202,6 +204,10 @@ def test_corruption_and_unexpected_media_fail_closed(tmp_path, mutation):
         (dev / "sda").write_bytes(data)
     elif mutation == "missing_partition":
         (sys_block / "sda3").unlink()
+    elif mutation == "hybrid_mbr":
+        data = bytearray((dev / "sda").read_bytes())
+        data[462 + 4] = 0x07  # additional Windows/MBR partition
+        (dev / "sda").write_bytes(data)
     elif mutation == "wrong_sector_size":
         (sys_block / "sda/queue/logical_block_size").write_text("4096\n")
     elif mutation == "kernel_start_mismatch":
