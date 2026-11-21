@@ -1,7 +1,9 @@
 """Scrypt + AES-256-GCM encrypted mnemonic container. No network functions."""
 import base64
+import errno
 import json
 import os
+import stat
 from pathlib import Path
 
 from cryptography.exceptions import InvalidTag
@@ -90,21 +92,41 @@ def _atomic_rename_noreplace(parent_fd: int, stage: str, final: str) -> None:
         raise OSError(err, os.strerror(err), final)
 
 
-def atomic_create_at(parent_fd: int, name: str, data: bytes) -> None:
-    """Publish a complete new file under a pinned Linux directory fd.
+def _require_private_export_directory(parent_fd: int) -> None:
+    """Enforce one security identity for the staging/publish directory.
 
-    Uses same-directory staging and renameat2(RENAME_NOREPLACE), including
-    VFAT volumes. Never expose an incomplete final name or replace any
-    pre-existing file; fail closed when atomic publication is unavailable.
+    A directory shared with another local UID/GID admits a stat/rename/unlink
+    race. VFAT has no per-file ACL: the offline OS must mount it with a private
+    uid/gid + dmask=0077 (or umask=0077). This cannot protect against a
+    *compromised process with the same UID/root permissions*.
+    """
+    info = os.fstat(parent_fd)
+    if (not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+        raise PermissionError(
+            errno.EACCES,
+            "Atomic export needs a signer-owned directory not writable by group/others",
+        )
+
+
+def atomic_create_at(parent_fd: int, name: str, data: bytes) -> None:
+    """Atomically publish complete bytes in a verified private Linux directory.
+
+    FAT32 requires the entire TX_TRANSFER mount to be private to the signer.
+    Concurrent actors with the same UID/root can still manipulate directory
+    entries; the offline boot/runtime security boundary must exclude them.
     """
     import secrets
-    import stat
 
     if (type(name) is not str or not name or name in (".", "..")
             or "/" in name or "\x00" in name):
         raise ValueError("Invalid atomic export filename")
     if type(data) is not bytes:
         raise TypeError("Atomic export requires bytes")
+    # Reject unsafe mount masks/ownership before creating a single entry.
+    # FAT32 exposes mount-wide permissions, not effective chmod ACLs.
+    _require_private_export_directory(parent_fd)
     stage = f".usbwallet-{secrets.token_hex(16)}.partial"
     fd = None
     identity = None
@@ -123,14 +145,28 @@ def atomic_create_at(parent_fd: int, name: str, data: bytes) -> None:
                 raise OSError("Short write while staging export")
             offset += written
         os.fsync(fd)
-        os.close(fd)
-        fd = None
+        # Keep the staged file descriptor open across publication so that a
+        # replaced name cannot be silently accepted as our completed bytes.
         staged = os.stat(stage, dir_fd=parent_fd, follow_symlinks=False)
         if (not stat.S_ISREG(staged.st_mode) or
                 (staged.st_dev, staged.st_ino) != identity):
-            raise OSError("USB staging file changed during export")
+            raise OSError(errno.ESTALE, "USB staging file changed during export")
         _atomic_rename_noreplace(parent_fd, stage, name)
+        # Check AFTER rename, using a fresh fstat: VFAT inode numbering may
+        # change on rename. Comparing current fd vs the published directory
+        # entry detects a staged-name swap during the rename boundary.
+        published = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        held = os.fstat(fd)
+        if (not stat.S_ISREG(published.st_mode) or
+                (published.st_dev, published.st_ino) != (held.st_dev, held.st_ino)
+                or published.st_size != len(data)):
+            raise OSError(
+                errno.ESTALE,
+                "USB published file does not match staged descriptor; refusing success",
+            )
         os.fsync(parent_fd)
+        os.close(fd)
+        fd = None
     finally:
         if fd is not None:
             os.close(fd)
