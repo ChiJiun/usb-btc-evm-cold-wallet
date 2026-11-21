@@ -67,8 +67,13 @@ async function action(fn) {
   try { await fn(); }
   catch (err) {
     message(err.message || "操作失敗",true);
-    // A timed-out broadcast has an ambiguous outcome; refresh the button states.
-    try { renderWallet(await api("/api/wallet")); } catch (_) { /* preserve original error */ }
+    // A broadcast timeout can mean the network already accepted a transaction.
+    // Reconcile BOTH sessions; if either refresh fails, keep its broadcast
+    // control disabled rather than exposing a stale "verified" button.
+    try { renderWallet(await api("/api/wallet")); }
+    catch (_) { $("broadcastBtn").disabled=true; }
+    try { await refreshBtc(); }
+    catch (_) { $("btcBroadcastBtn").disabled=true; }
   }
 }
 function eth(wei) {
@@ -373,6 +378,9 @@ $("btcBroadcastBtn").addEventListener("click",()=>action(async()=>{
   if(!btcPending || btcPending.stage!=="verified")throw new Error("尚未完成離線簽章驗證");
   if(!window.confirm("確定廣播 Bitcoin Testnet 測試交易？\n收款人："+btcPending.recipient+
       "\n金額："+btcSats(btcPending.amount_sats)+"\n總手續費："+btcPending.fee_sats+" sats"))return;
+  // Lock synchronously, before the first await, so double clicks cannot
+  // submit twice while the first request is in flight.
+  renderBtc({...btcPending,stage:"broadcast_unknown"});
   renderBtc(await api("/api/btc/broadcast",{}));
   message("BTC 測試交易已送往 Esplora。請查詢 TxID 狀態，勿自動重送。");
 }));
