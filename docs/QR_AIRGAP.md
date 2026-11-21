@@ -56,9 +56,8 @@ The separate `qr-transport/src/typed_registry.mjs` module implements:
 `TypedURScanner`, and `bindTypedToPending` are distinct from
 `encodeFrames` / `BoundedURScanner`; the latter intentionally accepts
 **only** `ur:bytes` and continues to require the internal v1 envelope.
-The typed scanner bounds message/frame size, frame count and time;
-the explicit pending-binding function checks request ID, account, chain,
-payload digest, expiry and one-use state. For an `eth-signature`
+The typed scanner bounds frame size, aggregate scan text, fragment counts and time, and rejects mixed fragment counts; the parsed CBOR tree also has explicit nesting/container limits. The upstream UR/dCBOR decoder still performs initial CBOR materialization, so its internal allocation limit must be verified before accepting arbitrary camera input in production;
+the explicit pending-binding function checks request ID, EVM derivation path and fingerprint, trusted BTC testnet account ID/fingerprint, chain, payload digest and expiry. For signed responses it synchronously consumes the mutable pending session after successful independent verification; callers must pass their real authoritative session object, not a copied snapshot. The bare crypto-psbt UR has no chain or account identifier, so account context and PSBT policy must come from the trusted session, not the UR. For an `eth-signature`
 response, `bindTypedToPending` additionally **requires**
 `verifySignature(parsed,pending) === true`; for signed `crypto-psbt` it
 requires `verifySignedPsbt(parsed,pending) === true`. A missing, false,
