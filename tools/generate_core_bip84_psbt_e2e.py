@@ -31,7 +31,7 @@ COIN = 100_000_000
 
 def core(*args):
     cmd = ["docker", "exec", "btc-issue2-core", "bitcoin-cli", "-regtest",
-           *[json.dumps(arg, separators=(",", ":")) if isinstance(arg, (dict, list))
+           *[json.dumps(arg, separators=(",", ":")) if isinstance(arg, (dict, list, bool))
              else str(arg) for arg in args]]
     result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
     output = result.stdout.strip()
