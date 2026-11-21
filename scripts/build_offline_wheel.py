@@ -18,7 +18,7 @@ import zipfile
 
 PACKAGE = "usb_cold_wallet/"
 ALLOWED_OFFLINE_MODULES = frozenset({
-    "__init__.py", "appliance.py", "btc.py", "cli.py", "evm.py", "exchange.py",
+    "__init__.py", "appliance.py", "btc.py", "cli.py", "evm.py", "evm_erc20.py", "evm_eip712.py", "exchange.py",
     "keys.py", "recovery.py", "vault.py", "policy.py", "gui.py", "review.py",
     "signer_session.py", "qr_session.py", "qr_workflow.py", "qr_cli.py",
     "keystone_public.py", "gui_qr_bridge.py",
