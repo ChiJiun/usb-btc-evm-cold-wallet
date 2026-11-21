@@ -582,7 +582,10 @@ class CrossBootManager:
         return self.status(session, btc_session)
 
     def mark_broadcasted(self, session, btc_session, txid: str) -> None:
-        request, _owner, _asset = self._request_from_verified(session, btc_session)
+        request, _owner, _asset = self._request_from_any(session, btc_session)
+        snap = self._store().get(request["requestId"])
+        if snap is None or snap.state != "IMPORTED_VERIFIED":
+            raise ValueError("Broadcast result is not bound to IMPORTED_VERIFIED state")
         self._store().broadcasted(request, txid)
         self._cleanup_files(request["requestId"])
 
@@ -616,12 +619,6 @@ class CrossBootManager:
                     raise ValueError("Pending Request ID invalid")
                 return self._load_request(request_id), owner, asset
         raise ValueError("No persisted cross-boot request")
-
-    def _request_from_verified(self, session, btc_session):
-        request, owner, asset = self._request_from_any(session, btc_session)
-        if owner.pending.get("stage") != "verified":
-            raise ValueError("Only a verified signed result can advance to broadcasted")
-        return request, owner, asset
 
     def _cleanup_files(self, request_id: str) -> None:
         if self.exchange is None:
