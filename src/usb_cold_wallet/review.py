@@ -572,3 +572,36 @@ def build_eip712_review_pages(typed_data: dict, *, trusted_approval: dict) -> tu
             _field("signing_digest", reviewed["signing_digest"], "EIP-712 canonical hash"),
             _field("signing_enabled", False, "no trusted nonce consumption/deployed verifier"))),
     )
+
+
+def build_eip712_policy_pages(typed_data: dict, root, offline_profile: dict,
+                              *, now_timestamp: int) -> tuple[tuple[ReviewPage, ...], object]:
+    """Strict encrypted policy -> existing review fields; never a signing path."""
+    from .policy import decide_eip712
+    reviewed, decision = decide_eip712(offline_profile, root, typed_data,
+                                      now_timestamp=now_timestamp)
+    if decision.status == "DENY":
+        return (ReviewPage("policy", (
+            _field("decision", "DENY", "offline typed-data policy"),
+            _field("reason", "; ".join(decision.reasons), "offline typed-data policy"))),), decision
+    party_field = "recipient" if reviewed["primary_type"] == "WalletTransferIntent" else "spender"
+    amount_field = "amount" if party_field == "recipient" else "allowance"
+    pages = (
+        ReviewPage("typed_domain", (
+            _field("network", "Ethereum Sepolia", "offline policy"),
+            _field("chain_id", reviewed["chain_id"], "typed domain"),
+            _field("owner", reviewed["owner"], "typed payload; wallet-bound"),
+            _field("verifying_contract", reviewed["domain"]["verifyingContract"], "trusted offline typed rule"),
+            _field("schema", reviewed["primary_type"], "strict schema allowlist"))),
+        ReviewPage("typed_intent", (
+            _field(party_field, reviewed[party_field], "typed payload; trusted rule match"),
+            _field(amount_field + "_atomic", reviewed[amount_field], "typed uint256; no online decimals"),
+            _field("nonce", reviewed["nonce"], "typed payload; trusted rule match"),
+            _field("deadline", reviewed["deadline"], "typed payload; trusted rule match"),
+            _field("digest", reviewed["signing_digest"], "computed EIP-712 hash"))),
+        ReviewPage("policy", (
+            _field("decision", decision.status, "offline policy"),
+            _field("reason", "; ".join(decision.reasons), "offline policy"),
+            _field("signing_enabled", False, "no on-chain verifier/nonce consumption gate"))),
+    )
+    return pages, decision
