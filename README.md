@@ -6,9 +6,20 @@
 
 這是一個以**實際可用的 Bitcoin + EVM 冷錢包產品**為目標的開源專案，以一般 USB、最小化 Live OS 與離線簽章核心組成可攜式錢包。設計重點是：**不必在日常電腦安裝錢包環境，私鑰只在離線簽章系統內使用，收款與轉帳流程保持直覺。**
 
-**驗證策略**：開發與實機端到端測試使用 Bitcoin testnet／Ethereum Sepolia，確保交易、操作、安全與恢復流程真正可用。測試網是降低開發風險的驗證環境；正式開放主網與真實資產前，仍須完成完整硬體驗收、威脅模型與獨立安全審查。
+**正式產品必要能力是 Bitcoin 與 Ethereum 主網收發。** Bitcoin testnet／Ethereum Sepolia 僅供開發及 Beta 驗收，主網須經實機、安全、供應鏈與獨立審查後才能開放。**目前不可用於真實資產。** 見 [#12](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/12)、[#48](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/48) 及 [#47](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/47)。
 
 > 以下介紹完整產品的目標使用方式；目前版本與開發進度見[專案進度](#專案進度)。
+
+## 最終產品目標與發行階段
+
+| 階段 | 交付範圍 | 驗收 |
+| --- | --- | --- |
+| **Beta（測試網）** | 單 USB、Windows 免安裝自有 Companion、離線 GUI、初始化／紙本恢復、BTC testnet／Sepolia 完整跨開機交易 | 真實 USB／UEFI、故障與交易 E2E；[#37](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/37)、[#43](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/43)、[#24](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/24) |
+| **v1.0 主網核心** | **Bitcoin mainnet BIP84／PSBT** 與 **Ethereum mainnet EIP-1559 ETH** 收發；嚴格的鏈別、帳戶、地址、交易政策隔離 | 獨立安全審查、實機最小金額主網 E2E 與可信發行；[#48](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/48)、[#47](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/47) |
+| **ERC-20 與進階交易** | 經審查 Token 的 `transfer`（離線驗證合約、decimals、數量及 Gas），後續受限的 `approve`／revoke、EIP-712／Permit、合約互動 | ERC-20 是最終產品目標，是否包含在 v1.0 依驗收決定；未知方法與 blind signing 預設拒簽；[#3](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/3)、[#21](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/21) |
+| **後續相容功能** | 自有 Companion 的 WalletConnect／dApp；選用 MetaMask 原生 QR，相較之下 Snap 僅為備選 | 獨立驗收，不阻擋核心冷錢包；[#23](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/23)、[#22](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/22) |
+
+**產品主要入口是自有 Windows Companion 與 Offline GUI。** 單 USB 跨開機為主要 UX；雙機 QR 可作持續離線的其他模式。私鑰只能在離線端解鎖，所有交易都必須重新解析原始資料並逐筆人工確認。
 
 ## 從空白 USB 開始：首次製作與設定
 
@@ -31,24 +42,7 @@
 
 ### B. 現階段開發版：從原始碼建置並刷入空白 USB
 
-目前 `main` 尚未提供上述單 USB 完整映像。Live USB 的 Buildroot 建置流程位於 [PR #9](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/9) 的開發分支。要實際測試 USB 開機，可在 **Linux x86_64 建置電腦**準備依賴與建置映像（主機所需套件見[Buildroot 建置說明](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/blob/feat/issue-1-reproducible-live-usb/docs/BUILD.md)）：
-
-~~~bash
-git clone https://github.com/ChiJiun/usb-btc-evm-cold-wallet.git
-cd usb-btc-evm-cold-wallet
-git switch feat/issue-1-reproducible-live-usb
-
-make prepare-sources
-make image
-make verify
-make reproducibility-check
-cd build/output/images
-sha256sum -c usb-cold-wallet.img.sha256
-~~~
-
-通過檢查後，將 `build/output/images/usb-cold-wallet.img` 用上述圖形工具刷入空白 USB，從 UEFI 開機，依據[該分支的 USB 操作指南](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/blob/feat/issue-1-reproducible-live-usb/docs/USB_SETUP.md)建立測試錢包與操作簽署選單。
-
-**這個開發版目前是雙 USB 架構**：系統 USB 包含 `USBCOLD_EFI` 和 `COLD_VAULT` 兩個分割區；交易交換使用另一支 FAT32、標籤為 `TX_TRANSFER` 的 USB。它**尚未將 Windows Portable Companion 或單 USB 跨開機交換分割區整合到映像**。目前有[獨立 Windows 免安裝測試版](docs/WINDOWS_PORTABLE_COMPANION.md)，仍需手動交換檔案。完整的一支 USB 版本依 [Issue #37](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/37) 整合後才可照 A 流程使用。
+目前 `main` 尚無完成整合與實機驗收的單 USB 發行映像。Buildroot 開機、安全稽核與映像建置仍在 [PR #7](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/7) 驗證，請參照其最新分支與 CI 文件，**不要把 PR #9 舊版建置指令或模擬器開機結果當成正式實體 USB 驗收**。目前開發映像採系統 USB＋獨立資料交換 USB；單 USB 交換區與 Windows 程式整合仍由 [#37](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/37) 追蹤。[PR #50](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/50) 的 Windows 免安裝 EXE 已通過 GitHub Windows runner 執行測試，但仍在 Review，尚未整合進單 USB 映像。
 
 ## 一支 USB 如何運作？
 
@@ -135,7 +129,7 @@ Windows：開啟 USB 上的 Companion
 
 單 USB 跨開機模式著重設備最少、Windows 免安裝；雙機 QR 模式著重持續維持實體離線環境。兩種模式共用相同的交易解析、人工核對與簽章核心。
 
-**MetaMask、WalletConnect 與 dApp 整合是選用功能。** 自有 Windows Companion 與 USB 離線 GUI 就必須能完成日常收款、查看餘額、建立交易、離線簽署與廣播，不需另外安裝或依賴 MetaMask。介面以清楚的繁體中文、少量必要操作及安全核對為優先。
+**WalletConnect／dApp 是自有 Companion 的長期重要能力；MetaMask 原生 QR 是選用相容功能，Snap 僅為備選方案。** 核心 BTC／ETH 收發不依賴它們，也不需 CLI／手動 JSON。
 
 ## 錢包功能與設計
 
@@ -164,11 +158,17 @@ Windows：開啟 USB 上的 Companion
 
 本 README 描述**規劃完成後的產品流程**，並非宣稱所有功能已在目前版本交付。
 
-目前 `main` 為 **v0.1.0 開發階段版本，尚未通過完整產品發行驗收**，已有 Bitcoin testnet PSBT v0 與 Ethereum Sepolia EIP-1559 原生轉帳的**離線 CLI 簽章核心**、加密 Vault、公開帳戶輸出及 CI 安全檢查。可開機 Live USB、Windows Portable Companion、交易 GUI、QR、MetaMask 整合及單 USB 跨開機流程，正在各功能分支整合與驗證；實體硬體 E2E 驗收尚未完成。
+目前 `main` 包含**測試網開發程式碼**，未完成正式產品或實體 USB 驗收：
 
-現有 [PR #9 的 Live USB 開發映像](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/9)仍為**系統 USB + 獨立交易交換 USB**；首次空白 USB 建置方式與未來單 USB 目標的差異，請見上方製作說明。
+| 模組 | 已合併功能 | 尚待整合／驗收 |
+| --- | --- | --- |
+| **簽章核心** | BTC testnet BIP84／PSBT v0、Sepolia EIP-1559、加密 Vault 與安全測試 | BTC／ETH 主網、ERC-20、進階合約仍未開放 |
+| **Online Companion** | BTC／Sepolia watch-only、交易建立、簽章核對與人工廣播（[PR #26](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/26)） | Windows EXE [PR #50](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/50) 仍在 Review，尚未完成單 USB 整合 |
+| **Offline GUI／Policy／Session** | 已合併交易核對與簽章 GUI、政策及鎖定 Session 模組（[PR #40](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/40)、[PR #28](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/28)、[PR #29](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/29)） | 正式 USB 上開機、GUI 操作與故障實測 |
+| **USB／QR** | 紙本復原、USB 交換、QR 與整合測試（[PR #11](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/11)、[PR #27](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/27)、[PR #42](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/42)、[PR #49](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/49)） | 單 USB 跨開機與雙機攝影機真實 E2E、標準 UR 互通 |
+| **Live USB／MetaMask** | Buildroot 開發分支；MetaMask 原生 QR 程式 [PR #31](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/31) 已合併 | Live USB [PR #7](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/7) 與選用 Snap [PR #30](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/30) 尚未合併；實機驗收未完成 |
 
-目前以 **Bitcoin testnet / Ethereum Sepolia** 進行開發驗證。主網及真實資產使用須待獨立安全審查與完整發行驗收。
+**通過 CI 不代表實體 USB 安全或主網交易可用。** Beta／RC／v1.0 依 [Release Roadmap #47](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/47) 和 [#24](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/24) 的證據與發行閘門驗收。
 
 追蹤進度：[所有 Issues](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues) · [PRs](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pulls) · [完整產品體驗 #12](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/12) · [單 USB 跨開機 #37](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/37)
 

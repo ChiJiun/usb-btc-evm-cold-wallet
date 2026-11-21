@@ -6,9 +6,20 @@
 
 This is an open-source project aimed at delivering a **practical, fully usable Bitcoin + EVM cold wallet** using ordinary USB storage, a minimal Linux Live OS, and an air-gapped signing core. The intended daily workflow requires no wallet installation on the everyday PC and never signs with private keys in the online environment.
 
-**Validation strategy:** End-to-end development and hardware acceptance testing use Bitcoin testnet and Ethereum Sepolia to avoid risking real funds. These networks are the testing environment, not the long-term product definition. Mainnet/real-asset release requires separate hardware, threat-model, supply-chain, and independent security review.
+**Bitcoin and Ethereum mainnet transactions are mandatory final-product capabilities.** Bitcoin testnet and Ethereum Sepolia serve development/Beta acceptance only; hardware, threat-model, supply-chain and independent security review are required before mainnet activation. **Do not use the current version with real assets.** See [#12](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/12), [#48](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/48), and [#47](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/47).
 
 > This README describes the intended experience once the full product is integrated. See [Project status](#project-status) for what is available today.
+
+## Final product goals and release phases
+
+| Phase | Scope | Acceptance |
+| --- | --- | --- |
+| **Beta (testnets)** | Single USB, zero-install first-party Windows Companion, offline GUI, initialization/paper recovery and full BTC testnet/Sepolia cross-boot transactions | Real USB/UEFI, failure and transaction E2E; [#37](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/37), [#43](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/43), [#24](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/24) |
+| **v1.0 mainnet core** | **Bitcoin mainnet BIP84/PSBT** and **Ethereum mainnet EIP-1559 ETH** transfers; strict chain/account/address/policy separation | Independent security review, minimal-value physical-device mainnet E2E, trusted release; [#48](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/48), [#47](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/47) |
+| **ERC-20 and advanced transactions** | Reviewed token `transfer` with offline contract/decimals/amount/gas verification; later restricted `approve`/revoke, EIP-712/Permit and contract methods | ERC-20 is a final product goal; inclusion in v1.0 depends on acceptance. Unknown methods and blind signing remain denied; [#3](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/3), [#21](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/21) |
+| **Optional integrations** | First-party WalletConnect/dApp and optional MetaMask native QR (Snap only as alternative) | Independently accepted and not a core wallet blocker; [#23](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/23), [#22](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/22) |
+
+**First-party Windows Companion and Offline GUI are the primary interfaces.** Single-USB cross-boot is the main UX; two-device QR is another continuously air-gapped mode. Secrets remain offline, and every signature requires independent parsing and human approval.
 
 ## From an empty USB: first-time setup
 
@@ -31,24 +42,7 @@ After setup, daily account viewing uses the Windows Companion; only spending req
 
 ### B. Development build available today
 
-The current `main` branch does not include the complete single-USB image yet. The Buildroot image builder is in the [PR #9](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/9) feature branch. On a **Linux x86_64 build host**, follow the [Buildroot prerequisites](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/blob/feat/issue-1-reproducible-live-usb/docs/BUILD.md) and run:
-
-~~~bash
-git clone https://github.com/ChiJiun/usb-btc-evm-cold-wallet.git
-cd usb-btc-evm-cold-wallet
-git switch feat/issue-1-reproducible-live-usb
-
-make prepare-sources
-make image
-make verify
-make reproducibility-check
-cd build/output/images
-sha256sum -c usb-cold-wallet.img.sha256
-~~~
-
-After successful verification, flash `build/output/images/usb-cold-wallet.img` to an empty USB using a graphical flasher, boot it via UEFI, and follow the [feature branch USB guide](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/blob/feat/issue-1-reproducible-live-usb/docs/USB_SETUP.md) to create a test wallet and use its signing menu.
-
-**This development image currently uses two USB drives.** The signer USB contains `USBCOLD_EFI` and `COLD_VAULT` partitions; a separate FAT32 USB labeled `TX_TRANSFER` carries requests and responses. It **does not yet bundle the Windows Portable Companion or the same-USB exchange partition**. A [separate Windows x64 no-install test build](docs/WINDOWS_PORTABLE_COMPANION.md) is available, with manual JSON transfer. The unified single-USB flow becomes available after [Issue #37](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/37) is implemented and verified.
+The `main` branch has no fully integrated, physically accepted single-USB release image. Buildroot boot, isolation and image construction remain under [PR #7](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/7); use its current branch/CI instructions, **not obsolete PR #9 commands or QEMU results as proof of hardware acceptance**. The current development design uses a signer USB plus a separate exchange USB. Single-USB exchange and Windows integration remain [#37](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/37). The standalone Windows executable in [PR #50](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/50) passed real GitHub Windows-runner startup/API smoke but remains under review and is not bundled with the single-USB image.
 
 ## How one USB drive works
 
@@ -150,17 +144,23 @@ Single-USB cross-boot mode prioritizes portability and a zero-install Windows ex
 
 Private-key signing and network broadcasting run in separate environments. An ordinary USB drive still depends on the integrity of the offline host and boot image. See the [threat model](docs/THREAT_MODEL.md).
 
-**MetaMask, WalletConnect and dApp integrations are optional.** The first-party Windows Companion and offline USB signing interface must independently cover balance and address viewing, transaction creation, clear review, signing, broadcasting, and status tracking. The essential wallet workflow cannot depend on installing MetaMask or using a CLI/hand-edited JSON.
+**WalletConnect/dApp is an important long-term first-party Companion capability; MetaMask native QR is optional, with Snap as an alternative.** Core BTC/ETH transfers depend on neither integration and must require no CLI or manual JSON.
 
 ## Project status
 
 This document presents the **planned fully integrated product experience**, not a claim that all components are currently available.
 
-The current `main` branch is a **v0.1.0 development version that has not passed full product release acceptance** with an offline CLI signing core for Bitcoin testnet PSBT v0 and Ethereum Sepolia EIP-1559 native transfers, an encrypted vault, public account export, and CI security checks. The bootable Live USB, Windows Portable Companion, signing GUI, QR transport, MetaMask integration, and cross-boot workflow are being integrated and verified in feature branches. Physical end-to-end validation is still pending.
+The `main` branch contains **testnet development code**, not a fully accepted USB wallet:
 
-The [PR #9 Live USB development image](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/9) still uses a **signer USB plus a separate transaction-transfer USB**; the setup instructions above explain this distinction from the planned single-USB product.
+| Module | Merged code | Integration/acceptance still pending |
+| --- | --- | --- |
+| **Signing core** | BTC testnet BIP84/PSBT v0, Sepolia EIP-1559, encrypted vault and security tests | BTC/ETH mainnet, ERC-20 and advanced contracts disabled |
+| **Online Companion** | BTC/Sepolia watch-only, transaction preparation, signed-result verification and manual broadcast ([PR #26](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/26)) | Windows EXE [PR #50](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/50) under review; no single-USB integration |
+| **Offline GUI/policy/session** | Review/signing GUI, policy and attended lock/session modules ([PR #40](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/40), [PR #28](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/28), [PR #29](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/29)) | Real USB boot-to-GUI and failure acceptance |
+| **USB/QR** | Paper recovery, USB exchange, QR and integration tests ([PR #11](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/11), [PR #27](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/27), [PR #42](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/42), [PR #49](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/49)) | Physical single-USB cross-boot, two-camera E2E, standard UR interoperability |
+| **Live USB/MetaMask** | Buildroot development branch; MetaMask native QR adapter merged in [PR #31](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/31) | Live USB [PR #7](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/7) and optional Snap [PR #30](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/30) open; physical acceptance pending |
 
-Development currently targets **Bitcoin testnet and Ethereum Sepolia**. Mainnet or real-asset use requires separate security review and release acceptance.
+**Green CI does not imply physical USB safety or mainnet readiness.** Beta/RC/v1.0 releases follow evidence-based gates in [Release Roadmap #47](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/47) and [#24](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/24).
 
 Track progress: [Issues](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues) · [Pull requests](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pulls) · [Product UX #12](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/12) · [Single-USB cross-boot #37](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/37)
 
@@ -176,7 +176,7 @@ pytest
 usb-cold-wallet --help
 ```
 
-[USB setup and operation](docs/USB_SETUP.md) · [Paper recovery and USB exchange](docs/RECOVERY_AND_USB_EXCHANGE.md) · [Security policy](SECURITY.md) · [Threat model](docs/THREAT_MODEL.md) · [CI and supply chain](docs/CI_SECURITY.md) · [Open-source references](docs/OPEN_SOURCE_REFERENCES.md)
+[USB setup and operation](docs/USB_SETUP.md) · [Windows portable Companion](docs/WINDOWS_PORTABLE_COMPANION.md) · [Paper recovery and USB exchange](docs/RECOVERY_AND_USB_EXCHANGE.md) · [Security policy](SECURITY.md) · [Threat model](docs/THREAT_MODEL.md) · [CI and supply chain](docs/CI_SECURITY.md) · [Open-source references](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## License
 
