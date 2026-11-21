@@ -11,11 +11,14 @@ export type TerminalEvent =
   | {kind: 'approved'; result: ApprovedSignature; responseDigest: string; attempted: boolean}
   | {kind: 'rejected'; attempted: boolean};
 export type StoredRequest = { request: KeyringRequest; pending: Pending; terminal?: TerminalEvent };
+type AccountEvent = {kind: 'created'; account: KeyringAccount; attempted: boolean} | {kind: 'deleted'; id: string; attempted: boolean};
 export type State = {
   accounts: Record<string, KeyringAccount>;
   requests: Record<string, StoredRequest>;
   closedIds: string[];
   selected: string[];
+  // Durable outbox: MetaMask account notifications are not exactly-once.
+  accountEvent?: AccountEvent;
   // Persistent monotonic domain separation for QR request IDs, even when
   // bounded closedIds history discards old MetaMask request identifiers.
   requestSequence: number;
@@ -60,9 +63,12 @@ export class ColdKeyring implements Keyring {
       methods:[EthMethod.SignTransaction], scopes:[EthScope.Eoa],
       options:{coldSigner:true, network:'eip155:11155111'},
     };
-    await this.emit(KeyringEvent.AccountCreated, {account, accountNameSuggestion:'USB Cold Sepolia'});
-    this.state.accounts[account.id] = account;
-    await this.save(this.state);
+    if (this.state.accountEvent) throw new Error('Recover the previous account notification first');
+    await this.persist({...this.state,
+      accounts:{...this.state.accounts, [account.id]:account},
+      accountEvent:{kind:'created',account,attempted:false},
+    });
+    await this.deliverAccountEvent();
     return account;
   }
   async updateAccount(_account: KeyringAccount): Promise<void> {
@@ -73,10 +79,46 @@ export class ColdKeyring implements Keyring {
     if (Object.values(this.state.requests).some((r) => r.pending.accountId === id)) {
       throw new Error('Reject all pending requests before deleting an account');
     }
-    await this.emit(KeyringEvent.AccountDeleted, {id});
-    delete this.state.accounts[id];
-    await this.save(this.state);
+    if (this.state.accountEvent) throw new Error('Recover the previous account notification first');
+    const accounts = {...this.state.accounts};
+    delete accounts[id];
+    await this.persist({...this.state,
+      accounts, selected:this.state.selected.filter((item) => item !== id),
+      accountEvent:{kind:'deleted',id,attempted:false},
+    });
+    await this.deliverAccountEvent();
   }
+  private async deliverAccountEvent(): Promise<void> {
+    let event = this.state.accountEvent;
+    if (!event) throw new Error('No account notification to recover');
+    if (!event.attempted) {
+      await this.persist({...this.state, accountEvent:{...event,attempted:true}});
+      event = this.state.accountEvent;
+    }
+    if (!event) throw new Error('Account notification vanished');
+    if (event.kind === 'created') {
+      await this.emit(KeyringEvent.AccountCreated,
+        {account:event.account,accountNameSuggestion:'USB Cold Sepolia'});
+    } else {
+      await this.emit(KeyringEvent.AccountDeleted,{id:event.id});
+    }
+    await this.persist({...this.state,accountEvent:undefined});
+  }
+
+  listAccountEvents(): Array<{kind: 'created' | 'deleted'; id: string; attempted: boolean}> {
+    const event = this.state.accountEvent;
+    return event ? [{kind:event.kind,id:event.kind === 'created' ? event.account.id : event.id,
+      attempted:event.attempted}] : [];
+  }
+
+  async recoverAccountEvent(action: 'retry' | 'abandon'): Promise<void> {
+    if (!this.state.accountEvent) throw new Error('No pending account notification');
+    if (action === 'retry') return this.deliverAccountEvent();
+    if (action !== 'abandon') throw new Error('Unsupported account recovery action');
+    // The caller must have checked that MetaMask's account view is reconciled.
+    await this.persist({...this.state,accountEvent:undefined});
+  }
+
   async exportAccount(_id: string): Promise<Record<string, Json>> {
     throw new Error('No private keys exist in this Snap; export is unavailable');
   }

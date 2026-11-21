@@ -9,6 +9,7 @@ let client = null;
 let pending = [];
 let accounts = [];
 let terminalEvents = [];
+let accountEvents = [];
 async function snapRecovery(method, params = undefined) {
   return provider().request({method:'wallet_invokeSnap', params:{
     snapId:SNAP_ID, request:{method, ...(params ? {params} : {})},
@@ -35,7 +36,16 @@ async function refresh() {
   accounts = await requireClient().listAccounts();
   pending = await requireClient().listRequests();
   terminalEvents = await snapRecovery('usb_listTerminalEvents');
-  if (!Array.isArray(terminalEvents)) throw Error('Snap 未回傳合法的恢復狀態');
+  accountEvents = await snapRecovery('usb_listAccountEvents');
+  if (!Array.isArray(terminalEvents) || !Array.isArray(accountEvents)) throw Error('Snap 未回傳合法的恢復狀態');
+  $('account-terminal').replaceChildren();
+  for (const item of accountEvents) {
+    const option = document.createElement('option');
+    option.value = item.id;
+    option.textContent = item.kind + ' · ' + item.id +
+      (item.attempted ? '（通知結果可能已送達）' : '（尚未嘗試通知）');
+    $('account-terminal').appendChild(option);
+  }
   $('terminal').replaceChildren();
   for (const item of terminalEvents) {
     const option = document.createElement('option');
@@ -144,6 +154,18 @@ $('reject').addEventListener('click',()=>guarded(async()=>{
   await refresh();status('已拒絕此請求；同一 Request ID 不可重播。');
 }));
 
+$('retry-account').addEventListener('click',()=>guarded(async()=>{
+  if (!accountEvents.length) throw Error('沒有待恢復帳戶通知');
+  if (!window.confirm('重送原本的帳戶事件？若已成功送達，MetaMask 可能收到重複事件。')) return;
+  await snapRecovery('usb_recoverAccountEvent',{action:'retry'});
+  await refresh(); status('已重送帳戶通知，請檢查 MetaMask 帳戶列表。');
+}));
+$('abandon-account').addEventListener('click',()=>guarded(async()=>{
+  if (!accountEvents.length) throw Error('沒有待恢復帳戶通知');
+  if (!window.confirm('請先確認 MetaMask 帳戶列表與 Snap 已儲存的帳戶狀態一致。確定要放棄原本通知？')) return;
+  await snapRecovery('usb_recoverAccountEvent',{action:'abandon'});
+  await refresh(); status('已清除帳戶通知狀態。');
+}));
 $('retry-terminal').addEventListener('click',()=>guarded(async()=>{
   const item = terminalEvents.find((event)=>event.id === $('terminal').value);
   if(!item) throw Error('沒有待恢復事件');

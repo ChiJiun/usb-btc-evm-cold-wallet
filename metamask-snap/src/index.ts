@@ -44,15 +44,20 @@ export const onRpcRequest: OnRpcRequestHandler = ({origin, request}) => serializ
   if (!COMPANION.has(origin)) throw new Error('Unauthorized Snap RPC origin');
   const keyring = await createKeyring();
   if (request.method === 'usb_listTerminalEvents') return keyring.listTerminalEvents();
-  if (!['usb_getQrRequest', 'usb_recoverTerminalEvent'].includes(request.method)) {
+  if (request.method === 'usb_listAccountEvents') return keyring.listAccountEvents();
+  if (!['usb_getQrRequest', 'usb_recoverTerminalEvent', 'usb_recoverAccountEvent'].includes(request.method)) {
     throw new Error('Unauthorized Snap RPC method');
   }
   const params = request.params as {id?: unknown; action?: unknown} | undefined;
+  if (params?.action !== 'retry' && params?.action !== 'abandon' && request.method !== 'usb_getQrRequest') {
+    throw new Error('Explicit recovery action required');
+  }
+  if (request.method === 'usb_recoverAccountEvent') {
+    await keyring.recoverAccountEvent(params!.action as 'retry' | 'abandon');
+    return {recovered:true};
+  }
   if (typeof params?.id !== 'string') throw new Error('Expected public request ID');
   if (request.method === 'usb_getQrRequest') return keyring.exportQrRequest(params.id);
-  if (params.action !== 'retry' && params.action !== 'abandon') {
-    throw new Error('Explicit terminal recovery action required');
-  }
-  await keyring.recoverTerminal(params.id, params.action);
+  await keyring.recoverTerminal(params.id, params.action as 'retry' | 'abandon');
   return {recovered:true};
 });

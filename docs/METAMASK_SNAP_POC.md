@@ -134,22 +134,24 @@ transaction and should never accept an old response after account/state reset.
   type-2 fail-closed validation, v1 #18 QR envelope, signed raw transaction
   binding and recovery, replay/cancel/timeout guards, zh-TW Companion UI.
 - **Snap and browser bundles build:** MetaMask Snaps CLI SES eval succeeds;
-  11 automated adversarial tests and TypeScript typecheck pass in dedicated CI.
+  19 automated adversarial/recovery tests and TypeScript typecheck pass locally; dedicated CI results must be checked on the latest commit.
 - **Not yet verified:** installation into a compatible real MetaMask client,
   full MetaMask native account selection and transaction/broadcast lifecycle,
   physical dual-machine camera/QR workflow, RPC failure/reorg handling at
   end-to-end level, successful transfer of real Sepolia test ETH.
-- **Dependencies:** #17 Online Companion is merged into `main`, while #18 QR
-  transport and #19 offline GUI are independent work streams. This PR does not
-  silently include their unmerged changes. The Snap emits the #18 protocol;
-  physical offline signer/GUI and #21 policy remain separate acceptance gates.
+- **Dependencies:** #17 Online Companion, #18 QR transport and #19 offline
+  GUI core are merged into `main`. This optional Snap POC still lacks real
+  MetaMask browser E2E and optical camera/presenter wiring; #21 policy and
+  physical offline hardware remain separate acceptance gates.
 - The generic #18 `ur:bytes` JSON transport is **not yet** ERC-4527
   `eth-sign-request` CBOR interoperability. Signed transactions should never
   be treated as an already-broadcast chain transaction.
 - Supply chain: `npm audit --omit=dev --audit-level=high` reported **zero
   high or critical** findings at development time, but **moderate transitive
   advisories** remain in the pinned MetaMask toolchain and dependencies
-  (including `uuid`). Do not waive this risk for production release.
+  (in the upstream MetaMask toolchain). Pinned Vite is 7.3.8 and the
+  transitive vulnerable uuid@9 is overridden to uuid@11.1.1, with typecheck,
+  SES build, and tests required; do not waive remaining findings for release.
 
 This POC deliberately does not claim that the Issue #22 acceptance criteria
 have all been completed. Keep its PR in Draft pending an actual developer
@@ -166,4 +168,4 @@ MetaMask install and air-gapped integration test.
 2. **確認後清除**：只有在已確認 MetaMask 中該筆請求**完成或已取消**，才用此功能清除不確定的 outbox 狀態。保留 closed request ID 的重播保護，不會廣播或簽署交易。
 3. 在 event 狀態未處理前，新交易繼續 fail closed；恢復完成後才可發起新 request。MetaMask 事件 API 與 Snap 持久化之間無共同原子交易，因此**無法保證精確一次通知**。
 
-已加入持久化失敗、事件傳送失敗、Snap 重啟後重送及「已送出但最終儲存失敗」情境的故障注入測試。此工作仍是 **Draft POC**；建立/刪除帳戶的 AccountCreated/AccountDeleted 事件與儲存順序尚有另一個 P2 待改進，實體 MetaMask 擴充功能完整 E2E 尚未驗收。
+已加入持久化失敗、事件傳送失敗、Snap 重啟後重送及「已送出但最終儲存失敗」情境的故障注入測試。建立／刪除帳戶也使用持久化通知 outbox：先儲存新的帳戶集合與固定的 AccountCreated/AccountDeleted 事件，再標記 attempted、發送通知並清除。save/emit/清理失敗可於 Snap 重啟後在 Companion「帳戶通知失敗恢復」頁面手動重送，或核對 MetaMask 帳戶集合後清除；不自動重試，仍無法保證 exactly-once。已加入故障注入與重啟測試。此工作仍是 **Draft POC**，實體 MetaMask 擴充功能完整 E2E 尚未驗收。
