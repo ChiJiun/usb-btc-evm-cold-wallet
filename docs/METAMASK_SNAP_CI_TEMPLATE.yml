@@ -1,0 +1,46 @@
+name: MetaMask Snap POC
+on:
+  pull_request:
+    paths:
+      - 'metamask-snap/**'
+      - '.github/workflows/metamask-snap.yml'
+  push:
+    paths:
+      - 'metamask-snap/**'
+      - '.github/workflows/metamask-snap.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: metamask-snap-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: MetaMask Snap / Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: metamask-snap
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: metamask-snap/package-lock.json
+      - name: Install exact dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Type check and unit/adversarial tests
+        run: npm run check
+      - name: Build SES-compatible Snap bundle
+        run: npm run build
+      - name: Build local browser companion
+        run: npm run build:companion
+      - name: Reject high/critical production dependency advisories
+        run: npm audit --omit=dev --audit-level=high

@@ -1,0 +1,31 @@
+{
+  "version": "0.1.0",
+  "description": "TESTNET POC only. Sepolia keyless account using an offline USB signer; never imports MetaMask or USB wallet keys.",
+  "proposedName": "USB Cold Signer (Sepolia POC)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ChiJiun/usb-btc-evm-cold-wallet.git"
+  },
+  "source": {
+    "shasum": "I5wIdv9MecdEZ7j7D/Oe5VoyFVgwLVKMVxNYMsSPkhE=",
+    "location": {
+      "npm": {
+        "filePath": "dist/bundle.js",
+        "packageName": "@chijiun/usb-cold-signer-snap-poc",
+        "registry": "https://registry.npmjs.org/"
+      }
+    }
+  },
+  "initialPermissions": {
+    "endowment:keyring": {
+      "allowedOrigins": ["http://localhost:8000", "http://127.0.0.1:8000"]
+    },
+    "endowment:rpc": {
+      "allowedOrigins": ["http://localhost:8000", "http://127.0.0.1:8000"]
+    },
+    "snap_manageAccounts": {},
+    "snap_manageState": {}
+  },
+  "platformVersion": "11.2.0",
+  "manifestVersion": "0.1"
+}

@@ -163,7 +163,7 @@ Windows：開啟 USB 上的 Companion
 | 模組 | 已合併功能 | 尚待整合／驗收 |
 | --- | --- | --- |
 | **簽章核心** | BTC testnet BIP84／PSBT v0、Sepolia EIP-1559、加密 Vault 與安全測試 | BTC／ETH 主網、ERC-20、進階合約仍未開放 |
-| **Online Companion** | BTC／Sepolia watch-only、交易建立、簽章核對與人工廣播（[PR #26](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/26)） | Windows EXE [PR #50](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/50) 仍在 Review，尚未完成單 USB 整合 |
+| **Online Companion** | BTC／Sepolia watch-only、交易建立、簽章核對與人工廣播（[PR #26](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/26)） | Windows EXE [PR #50](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/50) 已合併並通過 CI；單 USB 跨開機實機整合尚未完成 |
 | **Offline GUI／Policy／Session** | 已合併交易核對與簽章 GUI、政策及鎖定 Session 模組（[PR #40](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/40)、[PR #28](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/28)、[PR #29](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/29)） | 正式 USB 上開機、GUI 操作與故障實測 |
 | **USB／QR** | 紙本復原、USB 交換、QR 與整合測試（[PR #11](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/11)、[PR #27](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/27)、[PR #42](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/42)、[PR #49](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/49)） | 單 USB 跨開機與雙機攝影機真實 E2E、標準 UR 互通 |
 | **Live USB／MetaMask** | Buildroot 開發分支；MetaMask 原生 QR 程式 [PR #31](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/31) 已合併 | Live USB [PR #7](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/7) 與選用 Snap [PR #30](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/30) 尚未合併；實機驗收未完成 |
@@ -184,7 +184,7 @@ pytest
 usb-cold-wallet --help
 ```
 
-[USB 製作與操作](docs/USB_SETUP.md) · [Windows 免安裝 Companion](docs/WINDOWS_PORTABLE_COMPANION.md) · [紙本復原與 USB 交換安全](docs/RECOVERY_AND_USB_EXCHANGE.md) · [MetaMask 原生 QR 測試網 POC](docs/METAMASK_NATIVE_QR.md) · [安全政策](SECURITY.md) · [威脅模型](docs/THREAT_MODEL.md) · [CI 與供應鏈](docs/CI_SECURITY.md) · [開源技術參考](docs/OPEN_SOURCE_REFERENCES.md)
+[USB 製作與操作](docs/USB_SETUP.md) · [Windows 免安裝 Companion](docs/WINDOWS_PORTABLE_COMPANION.md) · [紙本復原與 USB 交換安全](docs/RECOVERY_AND_USB_EXCHANGE.md) · [MetaMask 原生 QR 測試網 POC](docs/METAMASK_NATIVE_QR.md) · [MetaMask Snap POC](docs/METAMASK_SNAP_POC.md) · [安全政策](SECURITY.md) · [威脅模型](docs/THREAT_MODEL.md) · [CI 與供應鏈](docs/CI_SECURITY.md) · [開源技術參考](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## 授權
 
