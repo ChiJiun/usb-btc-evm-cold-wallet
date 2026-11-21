@@ -94,7 +94,7 @@ def generate():
     assert external["hex"] == signed["finalized_tx_hex"], "Core extract differs from cold transaction"
     decoded = core("decoderawtransaction", external["hex"])
     final = transaction.Transaction.parse(bytes.fromhex(external["hex"]))
-    assert decoded["txid"] == final.txid()[::-1].hex()
+    assert decoded["txid"] == final.txid().hex()
     assert final.vout[0].value == recipient_sats
     assert final.vout[1].value == change_sats
     assert input_sats - sum(out.value for out in final.vout) == fee_sats
