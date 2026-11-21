@@ -509,6 +509,7 @@ class OfflineReviewApp:
         self._active_usb_file = None
         self._active_usb_identity = None
         self._active_usb_digest = None
+        self._active_request_id = None
         self._active_qr_request = None
         if self.session and not self.session.signed:
             self._signed_qr_text = None
