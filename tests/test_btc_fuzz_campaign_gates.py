@@ -12,11 +12,11 @@ from usb_cold_wallet.btc import _read_psbt
 
 
 @pytest.mark.parametrize("map_index,key,value", [
-    (0, b"\\x00", b"duplicate unsigned transaction"),
-    (1, b"\\x01", b"duplicate witness utxo"),
-    (0, b"\\x02", b"\\x02\\x00\\x00\\x00"),  # v2-only global key
-    (1, b"\\x0e", b"\\x11" * 32),  # v2-only input prevout
-    (2, b"\\x03", b"\\x01" * 8),  # v2-only output amount
+    (0, b"\x00", b"duplicate unsigned transaction"),
+    (1, b"\x01", b"duplicate witness utxo"),
+    (0, b"\x02", b"\x02\x00\x00\x00"),  # v2-only global key
+    (1, b"\x0e", b"\x11" * 32),  # v2-only input prevout
+    (2, b"\x03", b"\x01" * 8),  # v2-only output amount
 ])
 def test_hostile_duplicate_and_mixed_version_maps_fail_closed(map_index, key, value):
     # The unsigned tx and witness UTXO are already present in the public seed.
@@ -25,16 +25,16 @@ def test_hostile_duplicate_and_mixed_version_maps_fail_closed(map_index, key, va
         _read_psbt(raw)
 
 
-@pytest.mark.parametrize("prefix", [b"\\xfd\\xfc\\x00", b"\\xfe\\xff\\xff\\x00\\x00",
-                                   b"\\xff\\xff\\xff\\xff\\xff\\x00\\x00\\x00\\x00",
-                                   b"\\xfd", b"\\xfe", b"\\xff"])
+@pytest.mark.parametrize("prefix", [b"\xfd\xfc\x00", b"\xfe\xff\xff\x00\x00",
+                                   b"\xff\xff\xff\xff\xff\x00\x00\x00\x00",
+                                   b"\xfd", b"\xfe", b"\xff"])
 def test_noncanonical_or_truncated_compactsize_rejected(prefix):
     with pytest.raises(ValueError):
-        _read_psbt(base64.b64encode(b"psbt\\xff" + prefix).decode())
+        _read_psbt(base64.b64encode(b"psbt\xff" + prefix).decode())
 
 
 def test_replay_stored_rejections_and_report_resource_bounds(monkeypatch, tmp_path, capsys):
-    (tmp_path / "known-rejection.psbt").write_bytes(b"psbt\\xff\\xfd")
+    (tmp_path / "known-rejection.psbt").write_bytes(b"psbt\xff\xfd")
     monkeypatch.setattr(sys, "argv", ["fuzz_btc_psbt.py", "--seed", "20261122",
         "--seconds", "10", "--max-cases", "7", "--replay-dir", str(tmp_path)])
     assert fuzz.main() == 0
