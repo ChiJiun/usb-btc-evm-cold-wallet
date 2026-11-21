@@ -15,6 +15,7 @@ from .evm import review_evm_transaction, sign_evm
 from .exchange import (read as read_exchange, read_envelope, read_bounded,
                        _unique_object, write as write_exchange, MAX_BYTES)
 from .keys import root_from_mnemonic, watch_only
+from .keystone_public import export_keystone_public
 from .policy import (
     default_profile, load_profile, load_policy_snapshot, read_policy_snapshot,
     save_profile, set_limit, register_verified_address, normalize_address,
@@ -154,6 +155,8 @@ def main(argv=None):
     watch = sub.add_parser("export-watch-only", help="Create integrity-checked PUBLIC export")
     watch.add_argument("--count", type=int, default=3)
     watch.add_argument("--out", type=Path, required=True)
+    keystone = sub.add_parser("export-keystone-public", help="Export public EVM BIP32 data for MetaMask QR pairing")
+    keystone.add_argument("--out", type=Path, required=True, help="Create-only public account export; not a vault")
 
     pack = sub.add_parser("pack-request", help="On online host: wrap UNSIGNED request with SHA-256")
     pack.add_argument("--kind", choices=["btc-request", "evm-request"], required=True)
@@ -274,6 +277,11 @@ def main(argv=None):
                 _approve("EXPORT PUBLIC WATCH ONLY")
                 write_exchange(args.out, "watch-only", info)
                 print(f"PUBLIC watch-only envelope written to {args.out}")
+        elif args.command == "export-keystone-public":
+            root = _wallet_root(args)
+            _approve("EXPORT PUBLIC EVM ACCOUNT")
+            save_vault(args.out, export_keystone_public(root))
+            print(f"Public EVM xpub and address saved: {args.out} (public data reveals account activity)")
         elif args.command == "sign-evm":
             raw = read_exchange(args.request, "evm-request") if args.request else _read_legacy_evm(args.tx)
             reviewed = review_evm_transaction(raw, args.to, args.wei)

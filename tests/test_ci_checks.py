@@ -129,6 +129,7 @@ def required_env(**overrides):
         "NODE": "false",
         "NODE_AUDIT": "skipped",
         "QR_TRANSPORT": "skipped",
+        "NATIVE_QR": "skipped",
         "EVENT_NAME": "pull_request",
         "TESTS": "skipped",
         "REPRODUCIBLE_BUILD": "skipped",
@@ -137,6 +138,8 @@ def required_env(**overrides):
         "DEPENDENCY_REVIEW": "skipped",
     }
     env.update(overrides)
+    if "NATIVE_QR" not in overrides:
+        env["NATIVE_QR"] = "success" if env.get("CODE") == "true" else "skipped"
     return env
 
 
@@ -191,6 +194,10 @@ def test_required_gate_accepts_expected_results(env):
           "QR_TRANSPORT": "failure"}, "QR_TRANSPORT"),
         ({"CODE": "true", "TESTS": "success", "REPRODUCIBLE_BUILD": "success",
           "QR_TRANSPORT": "cancelled"}, "QR_TRANSPORT"),
+        ({"CODE": "true", "TESTS": "success", "REPRODUCIBLE_BUILD": "success",
+          "QR_TRANSPORT": "success", "NATIVE_QR": "skipped"}, "NATIVE_QR"),
+        ({"CODE": "true", "TESTS": "success", "REPRODUCIBLE_BUILD": "success",
+          "QR_TRANSPORT": "success", "NATIVE_QR": "failure"}, "NATIVE_QR"),
         ({"DEPS": "true"}, "AUDIT"),
         ({"AUDIT": "success"}, "AUDIT"),
         ({"METADATA": "true"}, "WHEEL_SMOKE"),
