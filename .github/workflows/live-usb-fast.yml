@@ -69,7 +69,8 @@ jobs:
         run: sh scripts/verify_uefi_boot.sh
 
       # This artifact exists only after verify_uefi_boot.sh starts. Earlier
-      # source/build failures are diagnosed from their corresponding step logs.\n      - name: Upload bounded UEFI-only failure diagnostics
+      # source/build failures are diagnosed from their corresponding step logs.
+      - name: Upload bounded UEFI-only failure diagnostics
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
