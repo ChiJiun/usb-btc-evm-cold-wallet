@@ -11,8 +11,10 @@ USB HID 解鎖功能，也沒有把 passphrase 或 seed 寫入環境變數。
 1. #1 Live USB 的可信任、唯讀系統啟動，並執行網路停用、swap 停用、
    RAM-root、COLD_VAULT、持久化掛載及 lockdown 檢查，將結果保存在
    `/run/usb-wallet/boot-checks.txt`。
-2. 啟動 GUI 前再次呼叫 `runtime_audit()`；缺少檢查、偵測到網路介面、
-   swap 或不允許的寫入持久化掛載，**拒絕啟動簽署畫面**。
+2. 啟動 GUI 前再次呼叫 `runtime_audit()`；每次解鎖、定時檢查及簽章時
+   讀取即時 `/proc/self/mountinfo`，核對 RAM root、COLD_VAULT 的
+   `/run/usb-wallet/vault-device` 來源與安全掛載旗標，並拒絕額外可寫
+   持久化掛載。僅有開機 PASS 紀錄不構成持續有效的安全證據。
 3. 在進入 GUI 時設定目前程序的 `RLIMIT_CORE=0` 和檔案 `umask 077`。
    這不能阻止惡意 root、firmware、DMA、冷開機攻擊或 kernel dump。
 4. 啟動後的第一個畫面預設 **LOCKED**；按選擇 BTC/EVM 才會進入
@@ -52,8 +54,9 @@ LOCKED → UNLOCKING → REVIEWING → APPROVED → SIGNED
   丟棄本程式持有的金鑰參考。到達 3 筆上限則即刻鎖定。
 - 取消解鎖、拒絕交易、輸入格式錯誤、USB-B 匯入取消、相機不可用、
   未能完成掃描、UI callback 例外、簽章失敗、匯出錯誤以及監測到來源
-  USB 檔案遭刪除或替換，皆返回 **LOCKED**。掃描器內部超時須由
-  #18 adapter 額外執行；同步阻塞攝影機 SDK 可能妨礙 UI 定時器。
+  USB 檔案遭刪除或替換，皆返回 **LOCKED**。QR 攝影機讀取會在
+  Vault 解鎖前完成，避免攝影機 SDK 阻塞 UI 計時器時私鑰留在 RAM；
+  掃描器內部超時仍須由 #18 adapter 執行。
 - GUI 每秒檢查 idle/absolute deadline 與 runtime audit；簽署動作另有
   同步檢查。解鎖錯誤提示不回顯密碼或原始 mnemonic。
 
