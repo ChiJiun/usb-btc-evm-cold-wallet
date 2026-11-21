@@ -14,6 +14,7 @@ from pathlib import Path
 from .btc import review_btc_psbt
 from .evm import review_evm_transaction
 from .keys import root_from_mnemonic
+from .policy import read_policy_snapshot, load_policy_snapshot, enforce_review_policy
 from .qr_session import MAX_BYTES, _check, REQUEST_KEYS, RESPONSE_KEYS
 from .qr_workflow import prepare_btc_qr, prepare_evm_qr, sign_offline, verify_evm_response, verify_btc_response
 from .vault import load_vault, save_vault
@@ -76,6 +77,8 @@ def main(argv=None):
     sign = sub.add_parser("offline-sign")
     sign.add_argument("--offline-ack", action="store_true", help="User asserts a trusted physically offline host")
     sign.add_argument("--vault", type=Path, required=True)
+    sign.add_argument("--expected-policy-sha256", required=True,
+                      help="Independent SHA-256 of the wallet-bound encrypted policy")
     sign.add_argument("--request", type=Path, required=True)
     sign.add_argument("--to", required=True, help="Recipient independently verified on offline device")
     sign.add_argument("--amount", type=int, required=True, help="Satoshis or wei, independently verified")
@@ -105,9 +108,18 @@ def main(argv=None):
                 raise ValueError("Require --offline-ack on physically disconnected trusted host")
             req = _read(args.request)
             _check(req, REQUEST_KEYS, "unsigned")
+            # Capture policy bytes once, validate the independent anchor BEFORE
+            # putting mnemonic or signing root into RAM.
+            policy_path = args.vault.with_name(args.vault.name + ".policy")
+            policy_snapshot = read_policy_snapshot(policy_path, args.expected_policy_sha256)
             mnemonic = load_vault(args.vault, getpass.getpass("Vault encryption passphrase: "))
             bip39_pass = getpass.getpass("Optional BIP39 passphrase (Enter if none): ")
             root = root_from_mnemonic(mnemonic, bip39_pass)
+            profile = load_policy_snapshot(
+                policy_snapshot, root, getpass.getpass("Policy encryption passphrase: "))
+            mnemonic = ""
+            bip39_pass = ""
+            policy_snapshot = b""
             print(f"NETWORK: {req['network'].upper()} (TESTNET ONLY)\n"
                   f"Recipient: {args.to}\nAmount (wei/sats): {args.amount}\n"
                   "CHECK THESE FROM A SEPARATE TRUSTED SOURCE, NOT THE UNTRUSTED QR.")
@@ -119,9 +131,16 @@ def main(argv=None):
                                            args.amount, args.max_fee_sats, args.change_index)
                 print(f"Bitcoin network fee (sats): {reviewed['fee_sats']}")
                 print(f"Change output (sats): {reviewed['change_sats']}")
+            kind = "evm" if req["network"] == "sepolia" else "btc"
+            decision = enforce_review_policy(profile, root, reviewed, kind=kind)[1]
+            extra_confirmation = None
+            if decision.status == "REQUIRE_EXTRA_CONFIRMATION":
+                _approve("UNVERIFIED RECIPIENT")
+                extra_confirmation = "UNVERIFIED RECIPIENT"
             _approve(f"QR SIGN {req['network']} {args.to[-8:]} {args.amount}")
             result = sign_offline(root, req, recipient=args.to, amount=args.amount,
-                                  max_fee_sats=args.max_fee_sats, change_index=args.change_index)
+                                  max_fee_sats=args.max_fee_sats, change_index=args.change_index,
+                                  profile=profile, extra_confirmation=extra_confirmation)
             save_vault(args.out, result)
             print("Signed response saved. Show ONLY signed data in QR; keep vault and mnemonic OFFLINE.")
         elif args.command in ("verify-evm", "verify-btc"):

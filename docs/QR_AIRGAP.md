@@ -85,12 +85,19 @@ usb-cold-wallet-qr prepare-evm \
 
 Import `sepolia-request.json` into the online QR page, point the trusted
 **offline** camera at the online display. When the offline page completes,
-download the restored unsigned JSON. The offline host must independently
-review the **recipient and amount** (not simply copy them from the QR):
+download the restored unsigned JSON. The offline host must independently review the **recipient, amount, and
+current encrypted policy SHA-256** (not simply copy them from the QR). Before
+signing, create the wallet-bound `<vault>.policy` with the offline CLI `policy
+--action init`; retain its SHA-256 independently on paper. Every QR signature
+requires that exact current anchor and the policy encryption passphrase.
+Missing, stale, or incorrect policy fails before vault unlock. Unknown
+recipients require an extra typed confirmation; BTC/EVM policy caps apply to
+QR as well as USB and GUI signing:
 
 ```bash
 usb-cold-wallet-qr offline-sign --offline-ack \
   --vault /offline/wallet.vault \
+  --expected-policy-sha256 INDEPENDENT_CURRENT_POLICY_SHA256 \
   --request /offline/scanned-request.json \
   --to 0xYOUR_INDEPENDENTLY_VERIFIED_RECIPIENT \
   --amount 1000000000000 --out /offline/signed-response.json
@@ -124,7 +131,8 @@ usb-cold-wallet-qr prepare-btc \
 
 Transfer the JSON by QR. Offline `offline-sign` requires identical
 independently reviewed `--to`, `--amount 50000`, `--max-fee-sats 1500`
-and `--change-index 0`. Return the signed JSON by QR and run
+and `--change-index 0`, plus `--expected-policy-sha256` from the independent
+current policy backup. Return the signed JSON by QR and run
 `usb-cold-wallet-qr verify-btc --request btc-request.json
 --response btc-response.json` on the online host. This checks that the
 unsigned transaction remained unchanged, P2WPKH witness UTXOs and all
@@ -143,8 +151,10 @@ script validation; prefer Bitcoin Core validation before broadcast.
   A cancelled or expired `QRSession` refuses results; the same session
   can consume its response only once. Replaying in a new independent
   process still needs chain nonce / UTXO checks and manual approval.
-- USB-B file exchange from Issue #5 remains a supported operational fallback
-  after that branch is integrated. This PR does **not** alter the existing
+- USB-B file exchange from merged Issue #5 remains a supported operational
+  fallback. It uses the same mandatory policy SHA-256. QR uses UR:BYTES to
+  carry its own app schema; it does not implement ERC-4527/crypto-psbt
+  interoperability with external wallets. This PR does **not** alter the existing
   `sign-evm --tx` or `sign-btc --psbt` fallback paths.
 - Never scan a QR containing a mnemonic, seed, private key, decrypted vault
   or login/authorization token. Avoid QR/HID virtual keyboard bridges.

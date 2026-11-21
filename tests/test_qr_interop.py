@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from usb_cold_wallet.keys import evm_account, root_from_mnemonic
+from usb_cold_wallet.policy import default_profile
 from usb_cold_wallet.qr_cli import main as qr_main
 from usb_cold_wallet.qr_session import REQUEST_KEYS, RESPONSE_KEYS, _check
 from usb_cold_wallet.qr_workflow import sign_offline, verify_evm_response
@@ -55,7 +56,8 @@ def test_python_cli_browser_ur_and_signed_response_are_lossless(wei, tmp_path):
     assert received_request == request
     assert received_request["payload"]["transaction"]["value"] == wei
 
-    response = sign_offline(root, received_request, recipient=recipient, amount=wei)
+    response = sign_offline(root, received_request, recipient=recipient, amount=wei,
+                            profile=default_profile(root), extra_confirmation="UNVERIFIED RECIPIENT")
     received_response = _browser_roundtrip(response)
     _check(received_response, RESPONSE_KEYS, "signed")
     assert received_response == response
