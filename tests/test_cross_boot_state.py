@@ -17,6 +17,9 @@ from usb_cold_wallet.cross_boot import (
     package_v2_response,
     verify_v2_request,
     verify_v2_response,
+    read_v2_request,
+    read_v2_response,
+    write_v2,
 )
 from usb_cold_wallet.evm import sign_evm
 from usb_cold_wallet.keys import btc_address, btc_key, evm_account, root_from_mnemonic
@@ -263,3 +266,20 @@ def test_unanchored_store_does_not_claim_rollback_protection(tmp_path):
     online = PendingRequestStore(tmp_path / "state")
     online.create(request)
     assert online.rollback_resistant is False
+
+
+def test_v2_file_io_reuses_bounded_atomic_exchange_primitives(tmp_path):
+    request = evm_request()
+    request_path = tmp_path / "request.json"
+    write_v2(request_path, request)
+    loaded = read_v2_request(request_path, trusted_time=100)
+    assert loaded["requestId"] == request["requestId"]
+
+    signed = sign_evm(ROOT, request["payload"], EVM_RECIPIENT, request["intent"]["amount"])
+    response = package_v2_response(request, signed, trusted_time=100)
+    response_path = tmp_path / "response.json"
+    write_v2(response_path, response)
+    assert read_v2_response(response_path, request, trusted_time=100)["requestId"] == request["requestId"]
+
+    with pytest.raises(FileExistsError):
+        write_v2(request_path, request)
