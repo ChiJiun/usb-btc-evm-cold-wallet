@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
-from embit import bip32, ec, psbt, script, transaction
+from embit import bip32, ec, networks, psbt, script, transaction
 
 from usb_cold_wallet import cli
 from usb_cold_wallet.btc import sign_btc_psbt
@@ -91,6 +91,64 @@ def read_written(kind, payload):
     envelope = package(kind, payload)
     from usb_cold_wallet.exchange import verify
     return verify(envelope, kind)
+
+
+@pytest.mark.parametrize("invalid_raw", [
+    b"psbt\xffjunk",
+    b"psbt\xff",
+    b"psbt\xff\x00trailing",
+])
+def test_btc_request_rejects_malformed_psbt_before_inspect(
+        tmp_path, capsys, invalid_raw):
+    malformed = __import__("base64").b64encode(invalid_raw).decode("ascii")
+    with pytest.raises(ValueError, match="PSBT"):
+        package("btc-request", malformed)
+
+    valid = _real_signed_btc()
+    envelope = package("btc-signed", valid)
+    envelope["kind"] = "btc-request"
+    envelope["network"] = "bitcoin-testnet"
+    envelope["payload"] = malformed
+    attacker = tmp_path / "invalid-btc-request.json"
+    _write_checksum_valid_attack(attacker, envelope)
+    with pytest.raises(ValueError, match="PSBT"):
+        read_envelope(attacker)
+    assert cli.main(["inspect-transfer", "--input", str(attacker)]) == 1
+    assert "ERROR:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("account_path", ["m/84h/1h", "m/84h/1h/1h"])
+def test_watch_only_refuses_wrong_tpub_account_level_even_if_addresses_match(
+        tmp_path, account_path):
+    public = watch_only(ROOT, count=2)
+    wrong = ROOT.derive(account_path).to_public()
+    assert (wrong.depth, wrong.child_number) != (3, 0x80000000)
+    public["bitcoin"]["account_tpub"] = wrong.to_base58(
+        version=networks.NETWORKS["test"]["xpub"]
+    )
+    public["bitcoin"]["receive_addresses"] = [
+        script.p2wpkh(wrong.derive(f"m/0/{i}").key).address(networks.NETWORKS["test"])
+        for i in range(2)
+    ]
+    with pytest.raises(ValueError, match="(account|tpub|BIP84)"):
+        package("watch-only", public)
+    envelope = package("watch-only", watch_only(ROOT, count=2))
+    envelope["payload"] = public
+    attacker = tmp_path / "forged-tpub.json"
+    _write_checksum_valid_attack(attacker, envelope)
+    with pytest.raises(ValueError, match="(tpub|account|BIP84)"):
+        read_envelope(attacker)
+
+
+def test_inspect_signed_btc_explicitly_denies_standalone_broadcast_authorization(
+        tmp_path, capsys):
+    envelope = tmp_path / "signed-btc.json"
+    write(envelope, "btc-signed", _real_signed_btc())
+    assert cli.main(["inspect-transfer", "--input", str(envelope)]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["integrity_only_not_authenticated"] is True
+    assert data["standalone_check_does_not_authorize_broadcast"] is True
+    assert data["btc_change_not_bound_to_approved_request"] is True
 
 
 def test_signed_evm_payload_is_exact_and_matches_raw_signature():
