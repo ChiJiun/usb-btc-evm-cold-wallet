@@ -13,8 +13,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Only supersede older runs of the same pull request. Push/schedule/manual
+  # runs use their unique run id so a later merge to main cannot cancel an
+  # earlier main validation and create a false Required failure.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -435,6 +438,8 @@ jobs:
 
   required:
     name: CI / Required
+    # Keep the aggregate gate fail-closed. Manual/unexpected cancellation of
+    # an active run must still surface cancelled dependencies as a failure.
     if: always()
     needs:
       - changes
