@@ -27,7 +27,7 @@ ASSET_RE = re.compile(
 )
 CHECKSUM_RE = re.compile(r"([a-fA-F0-9]{64}) [ *]([A-Za-z0-9][A-Za-z0-9._+-]*)")
 MAX_MANIFEST_BYTES = 128 * 1024
-REQUIRED_STAGED_FILES = ("SBOM.spdx.json", "release-metadata.json")
+REQUIRED_STAGED_FILES = ("SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt")
 Run = Callable[[list[str]], str]
 
 
@@ -193,10 +193,49 @@ def _verify_metadata(path: Path, tag: str, commit: str, asset: str) -> None:
         "source_sha": commit,
         "workflow": ".github/workflows/release.yml",
         "asset": asset,
+        "compression": "xz -6 --threads=1 --check=crc64 --no-sparse",
+        "reproducibility_runs": 2,
     }
     for key, value in expected.items():
         if metadata.get(key) != value:
             raise ReleaseVerificationError(f"Release metadata mismatch: {key}")
+
+    digest = metadata.get("raw_image_sha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise ReleaseVerificationError("Release metadata has invalid raw image digest")
+    for key in ("buildroot_sha256",):
+        value = metadata.get(key)
+        if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value):
+            raise ReleaseVerificationError(f"Release metadata has invalid {key}")
+    for key in ("buildroot_version", "node_version", "xz_version"):
+        value = metadata.get(key)
+        if not isinstance(value, str) or not value or len(value) > 80:
+            raise ReleaseVerificationError(f"Release metadata has invalid {key}")
+    for key in ("workflow_run_id", "workflow_run_attempt"):
+        value = metadata.get(key)
+        if not isinstance(value, str) or not value.isdigit():
+            raise ReleaseVerificationError(f"Release metadata has invalid {key}")
+
+
+def _verify_spdx(path: Path) -> None:
+    try:
+        sbom = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ReleaseVerificationError("Invalid SPDX SBOM") from exc
+    if (
+        not isinstance(sbom, dict)
+        or sbom.get("spdxVersion") != "SPDX-2.3"
+        or sbom.get("SPDXID") != "SPDXRef-DOCUMENT"
+        or sbom.get("dataLicense") != "CC0-1.0"
+    ):
+        raise ReleaseVerificationError("SPDX SBOM identity is invalid")
+
+
+def _verify_build_provenance(
+    run: Run, directory: Path, names: list[str], tag: str, commit: str
+) -> None:
+    for name in names:
+        run(_attest_args(_safe_file(directory, name), tag, commit))
 
 
 def verify_local_artifacts(
@@ -230,10 +269,18 @@ def verify_local_artifacts(
 
     image = _safe_file(root, asset)
     _verify_metadata(_safe_file(root, "release-metadata.json"), tag, commit, asset)
+    _verify_spdx(_safe_file(root, "SBOM.spdx.json"))
 
-    # This verifies the build provenance of the exact final bytes. A later
-    # rebuild/recompression would change the digest and fail verification.
-    run(_attest_args(image, tag, commit))
+    # Every published byte set is independently bound to the same signed tag,
+    # source commit and release workflow. A substituted manifest/SBOM/metadata
+    # therefore cannot authenticate a different image.
+    _verify_build_provenance(
+        run,
+        root,
+        ["SHA256SUMS", asset, *REQUIRED_STAGED_FILES],
+        tag,
+        commit,
+    )
     return _sha256(image)
 
 
@@ -267,7 +314,8 @@ def verify_release(tag: str, commit: str, asset: str, *, run: Run = _gh) -> str:
 
     with tempfile.TemporaryDirectory(prefix="wallet-release-verify-") as temp:
         directory = Path(temp)
-        for name in ("SHA256SUMS", asset):
+        release_files = ["SHA256SUMS", asset, *REQUIRED_STAGED_FILES]
+        for name in release_files:
             run(
                 [
                     "release",
@@ -284,15 +332,24 @@ def verify_release(tag: str, commit: str, asset: str, *, run: Run = _gh) -> str:
             _safe_file(directory, name)
 
         manifest = _safe_file(directory, "SHA256SUMS")
-        expected = parse_sha256sums(manifest.read_bytes(), asset)
+        entries = parse_sha256sums_entries(manifest.read_bytes())
+        expected_names = {asset, *REQUIRED_STAGED_FILES}
+        if set(entries) != expected_names:
+            raise ReleaseVerificationError(
+                "SHA256SUMS must cover exactly every published payload file"
+            )
+        for name, expected_digest in entries.items():
+            if _sha256(_safe_file(directory, name)) != expected_digest:
+                raise ReleaseVerificationError(f"Downloaded release digest mismatch: {name}")
+
         image = _safe_file(directory, asset)
         actual = _sha256(image)
-        if actual != expected:
-            raise ReleaseVerificationError("Downloaded binary does not match SHA256SUMS")
+        _verify_metadata(_safe_file(directory, "release-metadata.json"), tag, commit, asset)
+        _verify_spdx(_safe_file(directory, "SBOM.spdx.json"))
 
-        # Independently authenticate the release manifest and binary against
-        # GitHub's signed immutable-release asset attestations.
-        for name in ("SHA256SUMS", asset):
+        # Authenticate every published file with immutable-release integrity
+        # and the same SLSA source/workflow identity.
+        for name in release_files:
             run(
                 [
                     "release",
@@ -303,8 +360,7 @@ def verify_release(tag: str, commit: str, asset: str, *, run: Run = _gh) -> str:
                     REPOSITORY,
                 ]
             )
-
-        run(_attest_args(image, tag, commit))
+        _verify_build_provenance(run, directory, release_files, tag, commit)
     return actual
 
 
