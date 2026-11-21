@@ -16,6 +16,7 @@ const makeBtc=()=>({stage:"prepared",request_id:"btc-01",digest:"b".repeat(64),r
 function harness(){
   const elements=new Map(),calls=[],blobs=[];
   let evmPending=null,btcPending=null,failOverview=false,failBroadcast=false;
+  let failBtcBroadcast=false,failBtcWallet=false;
   function element(id){
     if(elements.has(id))return elements.get(id);
     const listeners=new Map();
@@ -37,7 +38,10 @@ function harness(){
     const payload=options.body?JSON.parse(options.body):{};
     let data={},status=200;
     if(path==="/api/wallet")data={...wallet,pending:evmPending};
-    else if(path==="/api/btc/wallet")data={network:"Bitcoin testnet",endpoint:"https://mock.invalid",spending_ready:true,pending:btcPending};
+    else if(path==="/api/btc/wallet"){
+      if(failBtcWallet){data={error:"BTC wallet refresh unavailable"};status=400;}
+      else data={network:"Bitcoin testnet",endpoint:"https://mock.invalid",spending_ready:true,pending:btcPending};
+    }
     else if(path==="/api/overview"){
       if(failOverview){data={error:"RPC timed out"};status=400;}
       else data={chain_id:11155111,address:ADDRESS,balance_wei:"999999999999999999",pending_nonce:7,local:true,
@@ -55,7 +59,11 @@ function harness(){
       if(failBroadcast){data={error:"Broadcast result unknown"};status=400;}
       else{evmPending={...evmPending,stage:"broadcasted"};data=evmPending;}
     }
-    else if(path==="/api/btc/broadcast"){btcPending={...btcPending,stage:"broadcasted"};data=btcPending;}
+    else if(path==="/api/btc/broadcast"){
+      if(failBtcBroadcast){btcPending={...btcPending,stage:"broadcast_unknown"};
+        data={error:"BTC broadcast outcome unknown"};status=400;}
+      else{btcPending={...btcPending,stage:"broadcasted"};data=btcPending;}
+    }
     else if(path==="/api/lookup"){data={asset:payload.asset,txid:payload.txid,result:"pending",untrusted_rpc:true};}
     else if(path==="/api/status"){data={...evmPending,result:"pending"};}
     else if(path==="/api/btc/status"){data={...btcPending,result:"pending"};}
@@ -69,7 +77,8 @@ function harness(){
     setTimeout(){},BigInt,console};
   runInNewContext(source,sandbox,{filename:"companion.js"});
   const tick=async()=>{for(let i=0;i<8;i++)await new Promise(resolve=>setImmediate(resolve));};
-  return {element,calls,blobs,tick,sandbox,failOverview(){failOverview=true;},failBroadcast(){failBroadcast=true;}};
+  return {element,calls,blobs,tick,sandbox,failOverview(){failOverview=true;},failBroadcast(){failBroadcast=true;},
+    failBtcBroadcast(){failBtcBroadcast=true;},failBtcWallet(){failBtcWallet=true;}};
 }
 test("watch-only receive address copy and two-asset navigation",async()=>{
   const h=harness();await h.tick();
@@ -159,4 +168,42 @@ test("public transaction lookup rejects wrong network syntax and never grants br
   assert.match(h.element("lookupResult").textContent,/等待鏈上確認/);
   assert.equal(h.element("broadcastBtn").disabled,true);
   assert.equal(h.calls.filter(c=>c.path==="/api/broadcast").length,0);
+});
+
+
+async function btcVerifiedHarness(h){
+  h.element("btcRecipient").value=BTC_ADDRESS;
+  h.element("btcAmount").value="0.00120001";
+  h.element("btcMaxFee").value="50000";
+  h.element("btcRate").value="2";
+  h.element("btcSendForm").dispatch("submit");await h.tick();
+  h.element("btcSignedFile").files=[{size:64,text:async()=>'{"signed":"fixture"}'}];
+  h.element("btcVerifyBtn").dispatch("click");await h.tick();
+  assert.equal(h.element("btcBroadcastBtn").disabled,false);
+}
+test("BTC broadcast timeout locks UI and re-reads broadcast_unknown from backend",async()=>{
+  const h=harness();await h.tick();
+  await btcVerifiedHarness(h);
+  h.failBtcBroadcast();
+  h.element("btcBroadcastBtn").dispatch("click");
+  assert.equal(h.element("btcBroadcastBtn").disabled,true);
+  // Even a synthetic second click while the response is in flight cannot submit.
+  h.element("btcBroadcastBtn").dispatch("click");
+  await h.tick();
+  assert.equal(h.calls.filter(x=>x.path==="/api/btc/broadcast").length,1);
+  assert.equal(h.element("btcBroadcastBtn").disabled,true);
+  assert.match(h.element("btcPending").textContent,/廣播結果不明/);
+  assert.match(h.element("message").textContent,/BTC broadcast outcome unknown/);
+  assert.ok(h.calls.some(x=>x.path==="/api/btc/wallet"));
+});
+test("BTC broadcast timeout with failed wallet refresh stays fail-closed",async()=>{
+  const h=harness();await h.tick();
+  await btcVerifiedHarness(h);
+  h.failBtcBroadcast();
+  h.failBtcWallet();
+  h.element("btcBroadcastBtn").dispatch("click");await h.tick();
+  assert.equal(h.element("btcBroadcastBtn").disabled,true);
+  h.element("btcBroadcastBtn").dispatch("click");await h.tick();
+  assert.equal(h.calls.filter(x=>x.path==="/api/btc/broadcast").length,1);
+  assert.match(h.element("btcPending").textContent,/廣播結果不明/);
 });
