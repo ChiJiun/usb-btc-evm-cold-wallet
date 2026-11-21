@@ -46,7 +46,7 @@ RESPONSE_FIELDS = {
 }
 NETWORK = {"evm-request": "sepolia", "btc-request": "bitcoin-testnet"}
 RESPONSE_KIND = {"evm-request": "evm-signed", "btc-request": "btc-signed"}
-ACTIVE_STATES = {"DRAFT", "EXPORTED", "IMPORTED_VERIFIED"}
+ACTIVE_STATES = {"DRAFT", "EXPORTED", "IMPORTED_VERIFIED", "BROADCAST_REQUESTED"}
 
 
 def _sha(value) -> str:
@@ -540,15 +540,13 @@ class CrossBootManager:
         request = self._load_request(request_id, expected)
         owner = self._reconstruct(request, session, btc_session)
         snap = self._store().get(request_id)
-        if snap.state in {"IMPORTED_VERIFIED", "FAILED"}:
+        if snap.state in {"IMPORTED_VERIFIED", "BROADCAST_REQUESTED"}:
             response = _read_json(self._response_path(request_id))
             payload = _verify_response_public(
                 request, response, expected_account=expected, allow_no_trusted_clock=True
             )
             owner.accept_signed(canonical(payload))
-            if snap.state == "FAILED":
-                if "broadcast outcome unknown" not in snap.metadata.get("reason", ""):
-                    raise ValueError("Failed request is not recoverable")
+            if snap.state == "BROADCAST_REQUESTED":
                 owner.pending["stage"] = "broadcast_unknown"
         return True
 
@@ -590,11 +588,22 @@ class CrossBootManager:
         )
         return self.status(session, btc_session)
 
+    def mark_broadcast_requested(self, session, btc_session, txid: str) -> None:
+        """Durably reserve the only broadcast attempt before network I/O."""
+        request, owner, _asset = self._request_from_any(session, btc_session)
+        if owner.pending.get("stage") != "verified":
+            raise ValueError("Only a verified signed result may request broadcast")
+        snap = self._store().get(request["requestId"])
+        if snap is None or snap.state != "IMPORTED_VERIFIED":
+            raise ValueError("Broadcast request is not bound to IMPORTED_VERIFIED state")
+        self._store().broadcast_requested(request, txid)
+
     def mark_broadcasted(self, session, btc_session, txid: str) -> None:
         request, _owner, _asset = self._request_from_any(session, btc_session)
         snap = self._store().get(request["requestId"])
-        if snap is None or snap.state != "IMPORTED_VERIFIED":
-            raise ValueError("Broadcast result is not bound to IMPORTED_VERIFIED state")
+        if (snap is None or snap.state != "BROADCAST_REQUESTED"
+                or snap.metadata.get("txid") != txid):
+            raise ValueError("Broadcast result lacks the durable pre-broadcast reservation")
         self._store().broadcasted(request, txid)
         self._cleanup_files(request["requestId"])
 
@@ -605,10 +614,8 @@ class CrossBootManager:
             return
         snap = self._store().get(request["requestId"])
         if snap is not None and snap.state in {"DRAFT", "EXPORTED", "IMPORTED_VERIFIED"}:
-            text = reason[:256] or "failed"
-            self._store().failed(request, text)
-            if "broadcast outcome unknown" not in text:
-                self._cleanup_files(request["requestId"])
+            self._store().failed(request, (reason[:256] or "failed"))
+            self._cleanup_files(request["requestId"])
 
     def cancel(self, session, btc_session, request_id: str | None) -> None:
         if not request_id or REQUEST_ID_RE.fullmatch(request_id) is None:
