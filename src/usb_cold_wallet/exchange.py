@@ -48,9 +48,6 @@ _BTC_SIGNED_FIELDS = {
     "network", "recipient", "amount_sats", "fee_sats", "signature_count",
     "signed_psbt_base64", "finalized_tx_hex",
 }
-# Offline GUI #19 attaches these fixed-size integrity linkage fields. They
-# are not secrets, authorizations or authentication signatures.
-_REVIEW_DIGEST_FIELDS = {"request_sha256", "review_sha256"}
 
 
 def _canonical(value):
@@ -151,6 +148,9 @@ def _validate_watch_only(payload):
         account = bip32.HDKey.from_base58(tpub)
         if account.is_private:
             raise ValueError("Private BIP32 keys must never be exported")
+        if (account.depth != 3 or account.child_number != 0x80000000 or
+                account.version != _BTC_NETWORK["xpub"]):
+            raise ValueError("Expected Bitcoin testnet BIP84 account m/84h/1h/0h")
     except Exception as exc:
         raise ValueError("Malformed public tpub") from exc
     if "master_fingerprint" in btc and (
@@ -160,6 +160,8 @@ def _validate_watch_only(payload):
     addrs = btc["receive_addresses"]
     if type(addrs) is not list or not 1 <= len(addrs) <= 20:
         raise ValueError("Watch-only address count out of bounds")
+    if any(type(addr) is not str for addr in addrs):
+        raise ValueError("Invalid Bitcoin watch-only receive address")
     if len(set(addrs)) != len(addrs):
         raise ValueError("Duplicate Bitcoin address")
     for index, addr in enumerate(addrs):
@@ -174,18 +176,8 @@ def _validate_watch_only(payload):
     _address(evm["address"])
 
 
-def _review_digests(payload):
-    present = _REVIEW_DIGEST_FIELDS & payload.keys()
-    if present not in (set(), _REVIEW_DIGEST_FIELDS):
-        raise ValueError("Both request and review digests must be included together")
-    for name in present:
-        if type(payload[name]) is not str or not _HEX64.fullmatch(payload[name]):
-            raise ValueError("Invalid request/review digest format")
-
-
 def _validate_evm_signed(payload):
-    _fields(payload, _EVM_SIGNED_FIELDS, _REVIEW_DIGEST_FIELDS, "signed EVM")
-    _review_digests(payload)
+    _fields(payload, _EVM_SIGNED_FIELDS, label="signed EVM")
     if _int(payload["chain_id"], "signed chain", 11155111, 11155111) != 11155111:
         raise ValueError("Signed chain mismatch")
     _address(payload["from"])
@@ -211,8 +203,7 @@ def _validate_evm_signed(payload):
 
 
 def _validate_btc_signed(payload):
-    _fields(payload, _BTC_SIGNED_FIELDS, _REVIEW_DIGEST_FIELDS, "signed BTC")
-    _review_digests(payload)
+    _fields(payload, _BTC_SIGNED_FIELDS, label="signed BTC")
     if payload["network"] != "bitcoin-testnet":
         raise ValueError("Signed Bitcoin network mismatch")
     _btc_address(payload["recipient"])
@@ -243,13 +234,20 @@ def _validate_btc_signed(payload):
             raise ValueError("Unexpected signed Bitcoin input metadata")
         if scope.non_witness_utxo.txid() != psbt.tx.vin[ix].txid:
             raise ValueError("Bitcoin previous transaction mismatch")
-        prev = scope.non_witness_utxo.vout[psbt.tx.vin[ix].vout]
+        prevout_index = psbt.tx.vin[ix].vout
+        if not 0 <= prevout_index < len(scope.non_witness_utxo.vout):
+            raise ValueError("Bitcoin prevout index out of range")
+        prev = scope.non_witness_utxo.vout[prevout_index]
         if prev.value != scope.witness_utxo.value or prev.script_pubkey.data != scope.witness_utxo.script_pubkey.data:
             raise ValueError("Bitcoin input UTXO mismatch")
         if not prev.script_pubkey.data.startswith(b"\x00\x14") or len(prev.script_pubkey.data) != 22:
             raise ValueError("Bitcoin input not P2WPKH")
         inputs_total += prev.value
         pub, sig = next(iter(scope.partial_sigs.items()))
+        # A mathematically valid ECDSA signature from an unrelated key cannot
+        # spend this P2WPKH prevout. Bind the witness key to its HASH160 script.
+        if script.p2wpkh(pub).data != prev.script_pubkey.data:
+            raise ValueError("Signed Bitcoin public key does not match P2WPKH UTXO")
         if len(sig) < 2 or sig[-1] != 1 or not pub.verify(ec.Signature.parse(sig[:-1]), psbt.sighash(ix, sighash=1)):
             raise ValueError("Invalid signed Bitcoin ECDSA signature")
     outputs_total = 0
@@ -280,6 +278,10 @@ def _validate_payload(kind, payload):
     _no_secrets(payload)
     if kind == "btc-request":
         _psbt_base64(payload, "BTC request")
+        # Integrity alone is not enough: reject malformed/PSBTv2 framing
+        # before `inspect-transfer` reports a valid exchange envelope.
+        from .btc import _read_psbt
+        _read_psbt(payload)
     elif kind == "evm-request":
         _validate_unsigned_evm(payload)
     elif kind == "watch-only":
@@ -293,7 +295,7 @@ def _validate_payload(kind, payload):
 
 
 def package(kind: str, payload):
-    if kind not in KINDS:
+    if type(kind) is not str or kind not in KINDS:
         raise ValueError("Unrecognized exchange kind")
     _validate_payload(kind, payload)
     content = {"format": FORMAT, "version": VERSION, "kind": kind,
@@ -311,7 +313,7 @@ def verify(data, expected_kind=None):
         raise ValueError("Invalid exchange envelope fields")
     kind = data["kind"]
     if (data["format"] != FORMAT or type(data["version"]) is not int or
-            data["version"] != VERSION or kind not in KINDS or
+            data["version"] != VERSION or type(kind) is not str or kind not in KINDS or
             data["network"] != KINDS[kind] or
             (expected_kind is not None and kind != expected_kind)):
         raise ValueError("Exchange format, type, or network mismatch")
@@ -350,37 +352,16 @@ def read_bounded(path: Path, limit=MAX_BYTES + 8192):
         os.close(fd)
 
 
-def decode_envelope(raw: bytes | bytearray | str, expected_kind=None):
-    """Decode one bounded envelope from USB bytes or a QR-decoded text payload.
-
-    Both transports intentionally terminate in the same strict JSON + digest
-    verification path so the review UI cannot have a weaker QR parser.
-    """
-    if isinstance(raw, str):
-        try:
-            encoded = raw.encode("utf-8")
-        except UnicodeError as exc:
-            raise ValueError("Invalid exchange text") from exc
-    elif isinstance(raw, (bytes, bytearray)):
-        encoded = bytes(raw)
-    else:
-        raise ValueError("Exchange input must be bytes or text")
-    if len(encoded) > MAX_BYTES + 8192:
-        raise ValueError("Exchange input too large")
+def read_envelope(path: Path, expected_kind=None):
+    raw = read_bounded(path)
     try:
-        data = json.loads(
-            encoded.decode("utf-8"),
-            object_pairs_hook=_unique_object,
-            parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Non-finite JSON number")),
-        )
+        data = json.loads(raw.decode("utf-8"),
+                          object_pairs_hook=_unique_object,
+                          parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Non-finite JSON number")))
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("Invalid exchange JSON") from exc
     verify(data, expected_kind)
     return data
-
-
-def read_envelope(path: Path, expected_kind=None):
-    return decode_envelope(read_bounded(path), expected_kind)
 
 
 def read(path: Path, expected_kind=None):

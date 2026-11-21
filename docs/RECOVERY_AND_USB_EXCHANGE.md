@@ -82,7 +82,26 @@ and addresses are still privacy-sensitive even though they are not signing
 secrets. Exchange reads are limited to regular files, refuse symbolic links,
 and validate a **single bounded read** to avoid inspecting metadata from a
 different file than the payload just checked. The online request packer also
-enforces bounded input size and duplicate-key rejection.
+enforces bounded input size and duplicate-key rejection. A `btc-request`
+passes strict PSBT v0 framing checks before `inspect-transfer` succeeds;
+its transaction is **not** thereby independently approved for signing.
+The Bitcoin account tpub must be a testnet public account at depth 3 with
+account child index `0'`, consistent with the declared BIP84 path.
+
+**Important for `btc-signed`:** standalone `verify` / `inspect-transfer`
+checks envelope structure, cryptographic signatures, PSBT/UTXO consistency,
+recipient, fee, and the finalized witnesses. It **cannot prove that a second
+P2WPKH output is the intended wallet change**, because this standalone
+validator has neither the unlocked wallet root nor a trusted approved
+unsigned request. The command now prints
+`standalone_check_does_not_authorize_broadcast=true`; for BTC signed results,
+`btc_change_not_bound_to_approved_request=true` is also printed.
+**Never broadcast solely because `inspect-transfer` passes.** The online
+companion or broadcaster MUST retain the originally approved unsigned PSBT
+and compare the complete unsigned transaction, every input, every output,
+change script/index and amounts against that trusted pending request before
+allowing an explicit user-confirmed broadcast (as in PR #26). If there is no
+trusted pending request, reject rather than infer change ownership.
 
 Prepare an unsigned request on online PC:
 
@@ -92,19 +111,26 @@ usb-cold-wallet pack-request --kind evm-request \
 usb-cold-wallet inspect-transfer --input /transport/unsigned-envelope.json
 ```
 
-After moving the **transport** USB to the offline computer, sign with
-**independently verified** recipient and amount:
+After moving the **transport** USB to the offline computer, create an encrypted
+`<vault>.policy` once using `usb-cold-wallet --vault /offline/wallet.vault policy
+--file /offline/wallet.vault.policy --action init`. Record the displayed
+policy SHA-256 independently on paper and supply it at every signing. Sign
+only after independently verifying recipient, amount and the current policy
+hash (see [offline policy](OFFLINE_POLICY.md)):
 
 ```bash
 usb-cold-wallet --vault /offline/wallet.vault sign-evm \
   --request /transport/unsigned-envelope.json \
   --to 0x000000000000000000000000000000000000dEaD \
-  --wei 1000000000000 --out /transport/signed-envelope.json
+  --wei 1000000000000 \
+  --expected-policy-sha256 INDEPENDENT_CURRENT_POLICY_SHA256 \
+  --out /transport/signed-envelope.json
 ```
 
 For Bitcoin testnet use `pack-request --kind btc-request --input unsigned.psbt`
 followed by `sign-btc --request ... --to tb1... --sats ... --max-fee-sats
-... --change-index 0 --out ...`. All recipient/amount/fee policies still
+... --change-index 0 --expected-policy-sha256 CURRENT_HASH --out ...`.
+A missing or mismatched external policy SHA-256 fails closed. All recipient/amount/fee policies still
 run *after* envelope validation. Signing via legacy `--psbt` or `--tx`
 remains available but emits plain JSON; **both legacy inputs are now single-read,
 size-bounded, non-symlink regular files**, EVM JSON checks duplicate properties

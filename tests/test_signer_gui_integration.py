@@ -3,6 +3,8 @@ import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from usb_cold_wallet import gui
 from usb_cold_wallet.gui import OfflineReviewApp
 from usb_cold_wallet.signer_session import SignerSession, State
@@ -15,13 +17,23 @@ class StubReview:
         self.signed = False
         self.sign_calls = 0
 
-    def sign(self, root):
-        assert root is not None
+    def sign(self, root, profile, *, extra_confirmation=None):
+        assert root is not None and profile is not None
         self.sign_calls += 1
         self.signed = True
 
     def cancel(self):
         self.can_sign = False
+
+
+@pytest.fixture(autouse=True)
+def mock_only_policy_for_state_machine_tests(monkeypatch):
+    # These tests exercise GUI session timing with deliberately fake ReviewPlan
+    # and wallet objects. Real policy DENY paths are tested in test_offline_review.
+    monkeypatch.setattr(
+        gui, "review_policy_decision",
+        lambda plan, root, profile: SimpleNamespace(status="ALLOW_FOR_REVIEW"),
+    )
 
 
 class StubMessagebox:
@@ -40,6 +52,7 @@ def ui_fixture():
     app = OfflineReviewApp.__new__(OfflineReviewApp)
     app.language = "en"
     app.wallet_root = object()
+    app.policy_profile = object()
     app._active_usb_file = None
     app._active_usb_identity = None
     app._active_usb_digest = None

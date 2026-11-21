@@ -19,10 +19,12 @@ import sys
 import time
 from typing import Callable
 
-from .exchange import decode_envelope, read_bounded
+from .exchange import read_bounded, verify, _unique_object, MAX_BYTES
 from .keys import btc_address, evm_account, root_from_mnemonic
-from .review import ReviewPlan, ReviewSession, build_review_plan, load_review_qr
+from .review import (ReviewPlan, ReviewSession, build_review_plan, load_review_qr,
+                     review_policy_decision)
 from .signer_session import SignerSession, State, DEFAULT_IDLE_SECONDS
+from .policy import read_policy_snapshot, load_policy_snapshot
 from .vault import load_vault
 
 DEFAULT_VAULT = Path("/mnt/cold-vault/wallet.vault")
@@ -190,6 +192,23 @@ _STATIC_LABELS = {
 
 class CameraUnavailable(RuntimeError):
     pass
+
+
+def _decode_envelope_text(text: str, kind: str | None):
+    """Validate hostile USB/QR JSON without the wallet root or vault unlock."""
+    if type(text) is not str:
+        raise ValueError("Exchange payload must be UTF-8 text")
+    try:
+        if len(text.encode("utf-8")) > MAX_BYTES + 8192:
+            raise ValueError("Exchange payload too large")
+        envelope = json.loads(
+            text, object_pairs_hook=_unique_object,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError("Non-finite JSON value: " + value)))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid exchange JSON") from exc
+    verify(envelope, kind)
+    return envelope
 
 
 def _is_public_test_root(root) -> bool:
@@ -419,6 +438,7 @@ class OfflineReviewApp:
         self._active_usb_file = None
         self._active_usb_identity = None
         self._active_usb_digest = None
+        self.policy_profile = None
         self.last_activity = time.monotonic()
         self.security = SignerSession(
             audit=lambda: self.development_mode or (self.audit_ok and runtime_audit()[0]),
@@ -480,6 +500,7 @@ class OfflineReviewApp:
 
     def _drop_wallet_references(self):
         self.wallet_root = None
+        self.policy_profile = None
         self._active_usb_file = None
         self._active_usb_identity = None
         self._active_usb_digest = None
@@ -575,10 +596,13 @@ class OfflineReviewApp:
 
     def _unlock(self) -> bool:
         if self.wallet_root is not None:
+            if self.policy_profile is None:
+                self._lock_wallet(self.t("locked"))
+                return False
             try:
                 self.security.activity()
                 if self.security.tick():
-                    raise ValueError("Session locked due to failed safety audit")
+                    raise ValueError("Signer session locked due to failed safety audit")
                 return True
             except ValueError:
                 self._lock_wallet(self.t("locked"))
@@ -586,6 +610,20 @@ class OfflineReviewApp:
         try:
             self.security.begin_unlock()
         except ValueError as exc:
+            self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
+            return False
+        anchor = self.simpledialog.askstring(
+            self.t("unlock"), "Independently recorded policy SHA-256 (64 lowercase hex)",
+            parent=self.root,
+        )
+        if anchor is None:
+            self.security.lock("cancel_unlock")
+            return False
+        try:
+            policy_path = self.vault.with_name(self.vault.name + ".policy")
+            snapshot = read_policy_snapshot(policy_path, anchor)
+        except ValueError as exc:
+            self.security.lock("invalid_policy_anchor")
             self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
             return False
         password = self.simpledialog.askstring(
@@ -606,9 +644,17 @@ class OfflineReviewApp:
         if bip39_password is None:
             self.security.lock("cancel_unlock")
             return False
+        policy_password = self.simpledialog.askstring(
+            self.t("unlock"), "Encrypted offline policy passphrase",
+            show="*", parent=self.root,
+        )
+        if policy_password is None:
+            self.security.lock("cancel_unlock")
+            return False
         try:
             mnemonic = load_vault(self.vault, password)
             wallet_root = root_from_mnemonic(mnemonic, bip39_password)
+            policy_profile = load_policy_snapshot(snapshot, wallet_root, policy_password)
         except (ValueError, OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
             self.security.unlock_failed()
             self.messagebox.showerror(self.t("error"), "Vault unlock failed. Retry is rate-limited.", parent=self.root)
@@ -616,6 +662,8 @@ class OfflineReviewApp:
         finally:
             password = ""
             bip39_password = ""
+            policy_password = ""
+            snapshot = b""
             if "mnemonic" in locals():
                 mnemonic = ""
         if self.development_mode and not _is_public_test_root(wallet_root):
@@ -632,6 +680,7 @@ class OfflineReviewApp:
             self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
             return False
         self.wallet_root = wallet_root
+        self.policy_profile = policy_profile
         self._activity()
         return True
 
@@ -678,7 +727,7 @@ class OfflineReviewApp:
             # One bounded read supplies both reviewed snapshot and its file hash.
             # No attacker-controlled second read after vault unlock.
             raw = read_bounded(path)
-            envelope = decode_envelope(raw.decode("utf-8"), kind)
+            envelope = _decode_envelope_text(raw.decode("utf-8"), kind)
             info = path.lstat()
             if not stat.S_ISREG(info.st_mode):
                 raise ValueError("Transfer request is not a regular file")
@@ -721,7 +770,7 @@ class OfflineReviewApp:
             text = self.qr_reader()
             if not text:
                 raise CameraUnavailable("empty QR capture")
-            decode_envelope(text, requested_kind)  # Validate untrusted data before unlock.
+            _decode_envelope_text(text, requested_kind)  # Validate before unlock.
         except CameraUnavailable:
             self._lock_wallet(self.t("locked"))
             self.messagebox.showwarning(self.t("error"), self.t("camera_failed"), parent=self.root)
@@ -900,9 +949,21 @@ class OfflineReviewApp:
                 raise ValueError("USB transport removed or changed; signing canceled")
             if not self.session.can_sign:
                 raise ValueError("Explicit confirmation required for every transaction")
+            decision = review_policy_decision(
+                self.session.plan, self.wallet_root, self.policy_profile)
+            extra_confirmation = None
+            if decision.status == "REQUIRE_EXTRA_CONFIRMATION":
+                answer = self.simpledialog.askstring(
+                    self.t("error"), "Type UNVERIFIED RECIPIENT to confirm the full address",
+                    parent=self.root,
+                )
+                if answer != "UNVERIFIED RECIPIENT":
+                    raise ValueError("Unknown recipient requires separate confirmation")
+                extra_confirmation = answer
             self.security.approve(digest)
             self.security.signing(digest)
-            self.session.sign(self.wallet_root)
+            self.session.sign(self.wallet_root, self.policy_profile,
+                              extra_confirmation=extra_confirmation)
             self.security.signed(digest)
         except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
             self._lock_wallet(self.t("locked"))
