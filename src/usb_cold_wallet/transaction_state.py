@@ -190,7 +190,7 @@ class _Journal:
             if os.name == "nt":
                 import msvcrt
                 if os.fstat(fd).st_size == 0:
-                    _write_all(fd, b"\\x00")
+                    _write_all(fd, b"\0")
                 os.lseek(fd, 0, os.SEEK_SET)
                 msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
                 try:
