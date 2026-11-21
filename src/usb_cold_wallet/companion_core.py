@@ -385,7 +385,7 @@ class CompanionSession:
                 raise ValueError("Signed fee or decoded transaction metadata mismatch")
             # Preserve only PUBLIC signed response bytes so a Windows reboot can re-verify
             # the exact canonical response before enabling explicit broadcast.
-            response_envelope = data if isinstance(data, dict) and data.get("format") == FORMAT else pack_envelope("evm-signed", payload)
+            response_envelope = data
             self.pending.update({"stage": "verified", "signed": signed_hex, "tx_hash": tx_hash,
                                  "response_envelope": response_envelope})
             return self.pending_view()
