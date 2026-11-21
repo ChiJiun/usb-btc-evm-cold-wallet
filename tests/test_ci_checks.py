@@ -21,15 +21,15 @@ from scripts import ci_checks
         (["src/usb_cold_wallet/cli.py"], ci_checks.Scope(True, False, False, False)),
         (["requirements/ci.lock"], ci_checks.Scope(True, True, False, False)),
         (["pyproject.toml"], ci_checks.Scope(True, True, False, False)),
-        ([".github/workflows/ci.yml"], ci_checks.Scope(True, True, False, True)),
+        ([".github/workflows/ci.yml"], ci_checks.Scope(True, True, False, True, True)),
         (["infra/wheelhouse.sha256"], ci_checks.Scope(True, True, False, False)),
-        (["scripts/ci_checks.py"], ci_checks.Scope(True, False, False, False)),
+        (["scripts/ci_checks.py"], ci_checks.Scope(True, False, False, False, True)),
         ([".github/workflows/live-usb-build.yml"], ci_checks.Scope(True, True, False, False)),
         (["src/new feature.py", "docs/plan.md"], ci_checks.Scope(True, False, False, False)),
-        ([".github/workflows/metamask-snap.yml"], ci_checks.Scope(True, True, False, False)),
+        ([".github/workflows/metamask-snap.yml"], ci_checks.Scope(True, True, False, False, True)),
         ([".github/workflows/live-usb-fast.yaml"], ci_checks.Scope(True, True, False, False)),
         (["qr-metamask/package-lock.json"], ci_checks.Scope(True, True, False, True)),
-        (["metamask-snap/package.json"], ci_checks.Scope(True, True, False, True)),
+        (["metamask-snap/package.json"], ci_checks.Scope(True, True, False, True, True)),
         (["tools/npm-shrinkwrap.json"], ci_checks.Scope(True, True, False, True)),
         (["frontend/pnpm-lock.yaml"], ci_checks.Scope(True, True, False, True)),
         (["frontend/yarn.lock"], ci_checks.Scope(True, True, False, True)),
@@ -127,9 +127,12 @@ def required_env(**overrides):
         "DEPS": "false",
         "METADATA": "false",
         "NODE": "false",
+        "SNAP": "false",
+        "SNAP_VERIFY": "skipped",
         "NODE_AUDIT": "skipped",
         "QR_TRANSPORT": "skipped",
         "NATIVE_QR": "skipped",
+        "WINDOWS_PORTABLE": "skipped",
         "EVENT_NAME": "pull_request",
         "TESTS": "skipped",
         "REPRODUCIBLE_BUILD": "skipped",
@@ -138,8 +141,12 @@ def required_env(**overrides):
         "DEPENDENCY_REVIEW": "skipped",
     }
     env.update(overrides)
+    if "SNAP_VERIFY" not in overrides:
+        env["SNAP_VERIFY"] = "success" if env.get("SNAP") == "true" else "skipped"
     if "NATIVE_QR" not in overrides:
         env["NATIVE_QR"] = "success" if env.get("CODE") == "true" else "skipped"
+    if "WINDOWS_PORTABLE" not in overrides:
+        env["WINDOWS_PORTABLE"] = "success" if env.get("CODE") == "true" else "skipped"
     return env
 
 
@@ -171,7 +178,7 @@ def required_env(**overrides):
         required_env(
             EVENT_NAME="workflow_dispatch",
             CODE="true", QR_TRANSPORT="success",
-            DEPS="true", NODE="true",
+            DEPS="true", NODE="true", SNAP="true",
             TESTS="success",
             REPRODUCIBLE_BUILD="success",
             AUDIT="success", NODE_AUDIT="success",
@@ -198,6 +205,12 @@ def test_required_gate_accepts_expected_results(env):
           "QR_TRANSPORT": "success", "NATIVE_QR": "skipped"}, "NATIVE_QR"),
         ({"CODE": "true", "TESTS": "success", "REPRODUCIBLE_BUILD": "success",
           "QR_TRANSPORT": "success", "NATIVE_QR": "failure"}, "NATIVE_QR"),
+        ({"CODE": "true", "TESTS": "success", "REPRODUCIBLE_BUILD": "success",
+          "QR_TRANSPORT": "success", "WINDOWS_PORTABLE": "skipped"}, "WINDOWS_PORTABLE"),
+        ({"CODE": "true", "TESTS": "success", "REPRODUCIBLE_BUILD": "success",
+          "QR_TRANSPORT": "success", "WINDOWS_PORTABLE": "failure"}, "WINDOWS_PORTABLE"),
+        ({"CODE": "true", "TESTS": "success", "REPRODUCIBLE_BUILD": "success",
+          "QR_TRANSPORT": "success", "WINDOWS_PORTABLE": "cancelled"}, "WINDOWS_PORTABLE"),
         ({"DEPS": "true"}, "AUDIT"),
         ({"AUDIT": "success"}, "AUDIT"),
         ({"METADATA": "true"}, "WHEEL_SMOKE"),
@@ -208,6 +221,13 @@ def test_required_gate_accepts_expected_results(env):
         ({"NODE_AUDIT": "success"}, "NODE_AUDIT"),
         ({"NODE": "true"}, "NODE scope requires DEPS"),
         ({"NODE": "broken"}, "NODE"),
+        ({"SNAP": "broken"}, "SNAP"),
+        ({"SNAP": "true", "SNAP_VERIFY": "failure", "CODE": "true", "TESTS": "success",
+          "QR_TRANSPORT": "success", "NATIVE_QR": "success",
+          "REPRODUCIBLE_BUILD": "success"}, "SNAP_VERIFY"),
+        ({"SNAP": "true", "SNAP_VERIFY": "skipped", "CODE": "true", "TESTS": "success",
+          "QR_TRANSPORT": "success", "NATIVE_QR": "success",
+          "REPRODUCIBLE_BUILD": "success"}, "SNAP_VERIFY"),
         ({"DEPS": "true", "AUDIT": "success", "NODE": "true",
           "NODE_AUDIT": "success"}, "DEPENDENCY_REVIEW"),
         ({"CODE": "invalid"}, "CODE"),
@@ -433,3 +453,23 @@ def test_required_workflow_wires_real_qr_gate_and_unconditional_dependency_revie
     assert "uses: actions/dependency-review-action@" in content
     assert "dependency-graph/sbom" not in content
     assert "if: steps.dependency-graph.outputs.available" not in content
+
+
+def test_windows_portable_reusable_job_is_in_required_gate():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    windows = (root / ".github/workflows/windows-companion.yml").read_text(encoding="utf-8")
+    assert "  windows_portable:" in ci
+    assert "uses: ./.github/workflows/windows-companion.yml" in ci
+    assert "      - windows_portable" in ci.split("\n  required:", 1)[1]
+    assert "WINDOWS_PORTABLE: ${{ needs.windows_portable.result }}" in ci
+    assert "workflow_call:" in windows
+    assert "pull_request:" not in windows
+    for status in ("failure", "skipped", "cancelled"):
+        env = required_env(
+            CODE="true", TESTS="success",
+            QR_TRANSPORT="success", REPRODUCIBLE_BUILD="success",
+            WINDOWS_PORTABLE=status
+        )
+        assert any("WINDOWS_PORTABLE" in error for error in ci_checks.gate_errors(env))

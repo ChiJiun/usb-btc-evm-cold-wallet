@@ -18,9 +18,10 @@ class Scope:
     deps: bool
     metadata: bool
     node: bool
+    snap: bool = False
 
 
-FULL = Scope(code=True, deps=True, metadata=False, node=True)
+FULL = Scope(code=True, deps=True, metadata=False, node=True, snap=True)
 SCHEDULED = Scope(code=False, deps=True, metadata=False, node=True)
 
 
@@ -101,6 +102,10 @@ def classify_paths(paths: list[str]) -> Scope:
         # pyproject.toml embeds README.md in the distribution's METADATA.
         metadata="README.md" in paths,
         node=any(is_node_input(path) for path in paths),
+        snap=any(path.startswith('metamask-snap/') or path in {
+            '.github/workflows/ci.yml', '.github/workflows/metamask-snap.yml',
+            'scripts/ci_checks.py',
+        } for path in paths),
     )
 
 
@@ -169,6 +174,11 @@ def gate_errors(env: dict[str, str]) -> list[str]:
     deps = env.get("DEPS")
     metadata = env.get("METADATA")
     node = env.get("NODE")
+    snap = env.get("SNAP")
+    if snap not in {'true', 'false'}:
+        errors.append(f'Invalid SNAP scope: {snap!r}')
+    if snap == 'true' and code != 'true':
+        errors.append('SNAP scope requires CODE scope')
     if node not in {"true", "false"}:
         errors.append(f"Invalid NODE scope: {node!r}")
     if node == "true" and deps != "true":
@@ -189,6 +199,11 @@ def gate_errors(env: dict[str, str]) -> list[str]:
     # Native MetaMask QR browser, Keyring, and Python-signer interop are mandatory
     # whenever executable code is changed, never a silently skippable CI job.
     require("NATIVE_QR", "success" if code == "true" else "skipped")
+    # An optional Snap must pass real SES, browser and Python interop tests.
+    # A separate workflow cannot satisfy the required aggregate gate.
+    require("SNAP_VERIFY", "success" if snap == "true" else "skipped")
+    # Real Windows EXE smoke is required for cross-platform code changes.
+    require("WINDOWS_PORTABLE", "success" if code == "true" else "skipped")
 
     require(
         "WHEEL_SMOKE",
@@ -230,7 +245,8 @@ def main() -> int:
         output.write(f"deps={str(scope.deps).lower()}\n")
         output.write(f"metadata={str(scope.metadata).lower()}\n")
         output.write(f"node={str(scope.node).lower()}\n")
-    print(f"CI scope: code={scope.code}, deps={scope.deps}, metadata={scope.metadata}, node={scope.node}")
+        output.write(f"snap={str(scope.snap).lower()}\n")
+    print(f"CI scope: code={scope.code}, deps={scope.deps}, metadata={scope.metadata}, node={scope.node}, snap={scope.snap}")
     return 0
 
 

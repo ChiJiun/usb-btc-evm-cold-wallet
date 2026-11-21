@@ -99,6 +99,8 @@ def test_real_project_offline_wheel_install_contains_no_online_code(tmp_path):
     assert not (installed / "usb_cold_wallet/companion_core.py").exists()
     assert not (installed / "usb_cold_wallet/companion_btc.py").exists()
     assert not (installed / "usb_cold_wallet/companion_web.py").exists()
+    assert not (installed / "usb_cold_wallet/companion_portable.py").exists()
+    assert not (installed / "usb_cold_wallet/companion_envelope.py").exists()
     assert not (installed / "usb_cold_wallet/companion_static").exists()
     assert not (installed / "bin/usb-cold-companion").exists()
 

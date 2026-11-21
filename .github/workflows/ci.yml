@@ -31,6 +31,7 @@ jobs:
       deps: ${{ steps.scope.outputs.deps }}
       metadata: ${{ steps.scope.outputs.metadata }}
       node: ${{ steps.scope.outputs.node }}
+      snap: ${{ steps.scope.outputs.snap }}
     steps:
       - name: Check out source and history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -186,6 +187,63 @@ jobs:
       - name: Audit native QR runtime dependencies
         run: npm audit --prefix qr-metamask --omit=dev --audit-level=high
 
+  metamask_snap:
+    needs: changes
+    if: needs.changes.outputs.snap == 'true'
+    name: MetaMask Snap / Required
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: metamask-snap
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: metamask-snap/package-lock.json
+
+      - name: Setup Python for true Snap-to-offline GUI interoperability
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned Python offline signer and exact Snap dependencies
+        run: |
+          python -m pip install --require-hashes -r ../requirements/ci.lock
+          python -m pip install --no-deps --no-build-isolation -e ..
+          npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify keyring and adversarial protocol
+        run: npm run check
+
+      - name: Verify Python offline GUI bridge to Snap and signed response
+        run: npm run test:python
+
+      - name: Build SES bundle and ensure committed manifest digest matches
+        run: |
+          npm run build
+          git diff --exit-code -- snap.manifest.json
+
+      - name: Build real Companion bundle
+        run: npm run build:companion
+
+      - name: Test Chromium production Companion
+        run: |
+          npx playwright install --with-deps --only-shell chromium
+          npm run test:browser
+
+      - name: Audit Snap production and developer dependencies
+        run: |
+          npm audit --omit=dev --audit-level=high
+          npm audit --audit-level=high
+
   dependency_audit:
     needs: changes
     if: needs.changes.outputs.deps == 'true'
@@ -253,6 +311,14 @@ jobs:
           if [[ "$found" != true ]]; then
             echo "No tracked Node manifests yet; nothing to audit."
           fi
+
+  # The Windows EXE is part of the wallet's core user experience and must
+  # never be optional for code changes. Call a pinned local reusable workflow
+  # so the result is available to the SAME CI / Required graph.
+  windows_portable:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/windows-companion.yml
 
   secret_scan:
     name: Secret scan
@@ -371,6 +437,8 @@ jobs:
       - changes
       - tests
       - metamask_native_qr
+      - metamask_snap
+      - windows_portable
       - dependency_audit
       - node_audit
       - qr_transport
@@ -395,6 +463,9 @@ jobs:
           NODE_AUDIT: ${{ needs.node_audit.result }}
           QR_TRANSPORT: ${{ needs.qr_transport.result }}
           NATIVE_QR: ${{ needs.metamask_native_qr.result }}
+          SNAP: ${{ needs.changes.outputs.snap }}
+          SNAP_VERIFY: ${{ needs.metamask_snap.result }}
+          WINDOWS_PORTABLE: ${{ needs.windows_portable.result }}
           METADATA: ${{ needs.changes.outputs.metadata }}
           EVENT_NAME: ${{ github.event_name }}
           TESTS: ${{ needs.tests.result }}

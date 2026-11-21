@@ -111,7 +111,11 @@ The active [`.github/workflows/metamask-snap.yml`](../.github/workflows/metamask
 runs on Snap-related PR changes using Node.js 24. It installs lockfile-pinned
 dependencies with install scripts disabled, runs TypeScript typechecking and
 adversarial keyring tests, checks Snap SES compatibility, builds the local
-browser Companion, and rejects high/critical production dependency advisories.
+browser Companion, exercises actual Python Offline GUI bridge interoperability
+with a permanently compromised public mnemonic, and rejects high/critical
+production dependency advisories. Additionally, main `CI / Required` contains
+a path-aware `MetaMask Snap / Required` job so a Snap test failure blocks a
+Snap-related pull request independently of GitHub branch settings.
 The checked-in Snap manifest must match the built bundle: CI rejects builds
 that silently change `snap.manifest.json`.
 
@@ -134,7 +138,10 @@ transaction and should never accept an old response after account/state reset.
   type-2 fail-closed validation, v1 #18 QR envelope, signed raw transaction
   binding and recovery, replay/cancel/timeout guards, zh-TW Companion UI.
 - **Snap and browser bundles build:** MetaMask Snaps CLI SES eval succeeds;
-  21 automated adversarial/recovery/Keyring SDK contract tests and TypeScript typecheck pass locally; dedicated CI results must be checked on the latest commit. Production Companion Chromium tests are additionally required in Snap CI.
+  TypeScript, adversarial recovery/SDK contracts, real Python offline GUI QR bridge,
+  and production Companion Chromium tests are required in CI. The Python bridge
+  test uses a permanently compromised public BIP39 fixture; it is not proof of
+  a supported MetaMask extension installation.
 - **Not yet verified:** installation into a compatible real MetaMask client,
   full MetaMask native account selection and transaction/broadcast lifecycle,
   physical dual-machine camera/QR workflow, RPC failure/reorg handling at
@@ -152,6 +159,14 @@ transaction and should never accept an old response after account/state reset.
   (in the upstream MetaMask toolchain). Pinned Vite is 7.3.8 and the
   transitive vulnerable uuid@9 is overridden to uuid@11.1.1, with typecheck,
   SES build, and tests required; do not waive remaining findings for release.
+
+Snap RPC permissions use explicit `endowment:rpc.allowedOrigins` for the two
+localhost Companion origins instead of `dapps:true`. Runtime origin/method
+allowlists remain an independent gate. After MetaMask explicitly calls
+`setSelectedAccounts`, new signing requests are refused for unselected public
+accounts, including after an explicit empty selection. An initial imported
+account is still usable before the first selection callback; this must be
+validated against the real MetaMask developer extension.
 
 The Keyring RPC client requires UUIDv4-shaped account/request identifiers. Earlier
 experimental versions derived a version-5-shaped account ID; new imports use a

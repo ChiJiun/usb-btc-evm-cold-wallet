@@ -17,6 +17,8 @@ export type State = {
   requests: Record<string, StoredRequest>;
   closedIds: string[];
   selected: string[];
+  // Distinguish the initial import (no selection yet) from explicit deselection.
+  selectedInitialized?: boolean;
   // Durable outbox: MetaMask account notifications are not exactly-once.
   accountEvent?: AccountEvent;
   // Persistent monotonic domain separation for QR request IDs, even when
@@ -136,7 +138,8 @@ export class ColdKeyring implements Keyring {
     if (Object.values(this.state.requests).some((r) => !accounts.includes(r.pending.accountId))) {
       throw new Error('Reject pending signature before switching cold accounts');
     }
-    await this.persist({...this.state, selected:[...accounts]});
+    if (new Set(accounts).size !== accounts.length) throw new Error('Duplicate selected cold account');
+    await this.persist({...this.state, selected:[...accounts], selectedInitialized:true});
   }
   async resolveAccountAddress(scope: CaipChainId, request: JsonRpcRequest): Promise<ResolvedAccountAddress | null> {
     if (scope !== 'eip155:11155111' || request.method !== EthMethod.SignTransaction) return null;
@@ -145,6 +148,8 @@ export class ColdKeyring implements Keyring {
     let address: string;
     try { address = checkedAddress(from); } catch { return null; }
     const match = Object.values(this.state.accounts).find((a) => a.address === address);
+    if (match && (this.state.selectedInitialized || this.state.selected.length > 0) &&
+        !this.state.selected.includes(match.id)) return null;
     return match ? {address: `${scope}:${address}` as ResolvedAccountAddress['address']} : null;
   }
   async listRequests(): Promise<KeyringRequest[]> {
@@ -164,6 +169,12 @@ export class ColdKeyring implements Keyring {
   async submitRequest(request: KeyringRequest): Promise<SubmitRequestResponse> {
     if (this.state.accountEvent) throw new Error('Recover account notification before signing');
     const account = await this.getAccount(request.account);
+    // First imported account may be used before MetaMask has sent its initial
+    // selection callback; after an explicit selection, allow only selected IDs.
+    if ((this.state.selectedInitialized || this.state.selected.length > 0) &&
+        !this.state.selected.includes(account.id)) {
+      throw new Error('Cold account is not selected for signing');
+    }
     if (this.state.requests[request.id] || this.state.closedIds.includes(request.id)) throw new Error('Duplicate/replayed request ID');
     if (Object.keys(this.state.requests).length !== 0) throw new Error('Complete or reject existing request before another');
     if (request.scope && request.scope !== 'eip155:11155111') throw new Error('Wrong EVM chain scope');
