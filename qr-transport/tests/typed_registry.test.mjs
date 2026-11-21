@@ -9,7 +9,7 @@ import {makeTypedUR,parseTypedUR,encodeTypedFrames,TypedURScanner,bindTypedToPen
 const rid="1234567890abcdef1234567890abcdef";
 const address="0x000000000000000000000000000000000000dead";
 const tx={network:"sepolia",chainId:11155111,dataType:4,requestId:rid,
- unsignedTxHex:"02c101",address,path:[{index:44,hardened:true},{index:60,hardened:true},{index:0,hardened:true},{index:0,hardened:false},{index:0,hardened:false}],fingerprint:"aabbccdd"};
+ unsignedTxHex:"02ea83aa36a780843b9aca00847735940082520894000000000000000000000000000000000000dead0180c0",address,path:[{index:44,hardened:true},{index:60,hardened:true},{index:0,hardened:true},{index:0,hardened:false},{index:0,hardened:false}],fingerprint:"aabbccdd"};
 const psbtHex="70736274ff01000100";
 const digest=x=>createHash("sha256").update(Buffer.from(x,"hex")).digest("hex");
 const scan=frames=>{const s=new TypedURScanner();for(const f of frames){s.add(f);if(s.done)break;}return s;};
@@ -25,13 +25,17 @@ test("ERC-4527 EIP-2718 typed request uses integer-key CBOR and tagged UUID/keyp
  const ur=makeTypedUR("eth-sign-request",tx);
  assert.equal(ur.toQRString().toLowerCase().startsWith("ur:eth-sign-request/"),true);
  const out=parseTypedUR(UR.parse(ur.toQRString().toLowerCase()));
- assert.deepEqual(out,{type:"eth-sign-request",requestId:rid,unsignedTxHex:"02c101",
+ assert.deepEqual(out,{type:"eth-sign-request",requestId:rid,unsignedTxHex:"02ea83aa36a780843b9aca00847735940082520894000000000000000000000000000000000000dead0180c0",
   dataType:4,chainId:11155111,network:"sepolia",address,
   path:[{index:44,hardened:true},{index:60,hardened:true},{index:0,hardened:true},{index:0,hardened:false},{index:0,hardened:false}],fingerprint:"aabbccdd"});
  assert.deepEqual(scan(encodeTypedFrames("eth-sign-request",tx)).payload,out);
  assert.throws(()=>makeTypedUR("eth-sign-request",{...tx,chainId:1}),/Sepolia/);
  assert.throws(()=>makeTypedUR("eth-sign-request",{...tx,dataType:2}),/typed/);
  assert.throws(()=>makeTypedUR("eth-sign-request",{...tx,unsignedTxHex:"01c101"}),/type-2/);
+ assert.throws(()=>makeTypedUR("eth-sign-request",{...tx,unsignedTxHex:tx.unsignedTxHex.replace("aa36a7","aa36a8")}),/wrong-chain/);
+ assert.throws(()=>makeTypedUR("eth-sign-request",{...tx,unsignedTxHex:tx.unsignedTxHex.replace("02ea","02eb")+"80"}),/Signed or oversized/);
+ assert.throws(()=>makeTypedUR("eth-sign-request",{...tx,unsignedTxHex:tx.unsignedTxHex.replace("0180c0","0181ffc0").replace("02ea","02eb")}),/Unsafe or wrong-chain/);
+ assert.throws(()=>makeTypedUR("eth-sign-request",{...tx,unsignedTxHex:"02c101"}),/nine unsigned|type-2|RLP/);
  assert.throws(()=>makeTypedUR("eth-sign-request",{...tx,path:[{index:2147483648,hardened:false}]}),/path/);
 });
 test("ERC-4527 response contains precisely 65 r,s,v bytes, never a raw signed transaction",()=>{
