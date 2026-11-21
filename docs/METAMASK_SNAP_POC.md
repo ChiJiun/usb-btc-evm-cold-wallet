@@ -105,18 +105,27 @@ or an untrusted/shared computer; do not expose Snap developer endpoints.
    requested `v,r,s` components. Check network, transaction hash and
    broadcast/receipt status through MetaMask or independent testnet explorer.
 
-## CI workflow activation
+## CI execution
 
-The dedicated Node/Snap workflow template is committed as
-[`docs/METAMASK_SNAP_CI_TEMPLATE.yml`](METAMASK_SNAP_CI_TEMPLATE.yml).
-The current VM GitHub OAuth credentials do **not** have the `workflow` scope,
-so GitHub rejected a push that created `.github/workflows/metamask-snap.yml`.
-The template was therefore kept under `docs/` instead of bypassing the
-repository's authorization. A repository administrator with the appropriate
-workflow permission must review and install the template as
-`.github/workflows/metamask-snap.yml`. Until that happens, **GitHub CI does not
-run the Node Snap checks** (the existing Python CI is separate). Run the local
-`npm` checks above for each change and do not claim CI passed without a run.
+The active [`.github/workflows/metamask-snap.yml`](../.github/workflows/metamask-snap.yml)
+runs on Snap-related PR changes using Node.js 24. It installs lockfile-pinned
+dependencies with install scripts disabled, runs TypeScript typechecking and
+adversarial keyring tests, checks Snap SES compatibility, builds the local
+browser Companion, and rejects high/critical production dependency advisories.
+The checked-in Snap manifest must match the built bundle: CI rejects builds
+that silently change `snap.manifest.json`.
+
+Run [GitHub Actions for this PR](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/actions/workflows/metamask-snap.yml)
+and verify `MetaMask Snap / Verify` succeeds on the latest commit. The
+old [CI template](METAMASK_SNAP_CI_TEMPLATE.yml) is historical reference only;
+do not install a second copy.
+
+The pending QR request ID is derived from the MetaMask request ID **and a
+persisted monotonically increasing sequence**. This ensures an old signed QR
+response cannot be accepted if a request ID is reused after the bounded
+closed-ID cache evicts old entries. Removing or resetting Snap state removes
+this counter; the offline signer must still independently authorize each
+transaction and should never accept an old response after account/state reset.
 
 ## Integration status
 
@@ -124,16 +133,16 @@ run the Node Snap checks** (the existing Python CI is separate). Run the local
   public-only state, MetaMask asynchronous Keyring API adapter, Sepolia
   type-2 fail-closed validation, v1 #18 QR envelope, signed raw transaction
   binding and recovery, replay/cancel/timeout guards, zh-TW Companion UI.
-- **Snap and browser bundles build:** MetaMask Snaps CLI SES eval succeeds,
-  TypeScript typecheck and unit tests pass.
+- **Snap and browser bundles build:** MetaMask Snaps CLI SES eval succeeds;
+  11 automated adversarial tests and TypeScript typecheck pass in dedicated CI.
 - **Not yet verified:** installation into a compatible real MetaMask client,
   full MetaMask native account selection and transaction/broadcast lifecycle,
   physical dual-machine camera/QR workflow, RPC failure/reorg handling at
   end-to-end level, successful transfer of real Sepolia test ETH.
-- **Dependencies:** #17 Online Companion and #18 QR transport currently live
-  on separate unmerged branches. They are **not** silently copied into this
-  PR. The Snap emits the #18 protocol directly, but the physical offline
-  signer/GUI (#19) and policy (#21) are external acceptance gates.
+- **Dependencies:** #17 Online Companion is merged into `main`, while #18 QR
+  transport and #19 offline GUI are independent work streams. This PR does not
+  silently include their unmerged changes. The Snap emits the #18 protocol;
+  physical offline signer/GUI and #21 policy remain separate acceptance gates.
 - The generic #18 `ur:bytes` JSON transport is **not yet** ERC-4527
   `eth-sign-request` CBOR interoperability. Signed transactions should never
   be treated as an already-broadcast chain transaction.
