@@ -254,3 +254,8 @@ def test_buildroot_includes_existing_offline_tk_gui_runtime():
     assert "_tkinter" in postbuild
     assert "Xfbdev :0 -nolisten tcp" in launcher
     assert "usb-cold-wallet-gui --lang zh-TW" in launcher
+    # A mounted TX_TRANSFER is mandatory before the locked GUI can import a
+    # cross-boot request. Failure falls back to the audited console.
+    assert "from usb_cold_wallet.appliance import mount_transfer" in launcher
+    assert launcher.index("mount_transfer") < launcher.index("/usr/bin/xinit /usr/bin/usb-cold-wallet-gui")
+    assert "exec /usr/bin/usb-wallet-console" in launcher
