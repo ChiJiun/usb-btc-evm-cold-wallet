@@ -69,13 +69,84 @@ def decrypt_mnemonic(data: dict, passphrase: str) -> str:
         raise ValueError("Incorrect passphrase or corrupted wallet") from exc
 
 
+def atomic_create_at(parent_fd: int, name: str, data: bytes) -> None:
+    """Publish a complete new file under a pinned Linux directory fd.
+
+    Uses same-directory staging and renameat2(RENAME_NOREPLACE), including
+    VFAT volumes. Never expose an incomplete final name or replace any
+    pre-existing file; fail closed when atomic publication is unavailable.
+    """
+    import ctypes
+    import secrets
+    import stat
+
+    if (type(name) is not str or not name or name in (".", "..")
+            or "/" in name or "\x00" in name):
+        raise ValueError("Invalid atomic export filename")
+    if type(data) is not bytes:
+        raise TypeError("Atomic export requires bytes")
+    stage = f".usbwallet-{secrets.token_hex(16)}.partial"
+    fd = None
+    identity = None
+    try:
+        fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                     getattr(os, "O_NOFOLLOW", 0),
+                     0o600, dir_fd=parent_fd)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("Export stage is not regular")
+        identity = (info.st_dev, info.st_ino)
+        offset = 0
+        while offset < len(data):
+            written = os.write(fd, data[offset:])
+            if written <= 0:
+                raise OSError("Short write while staging export")
+            offset += written
+        os.fsync(fd)
+        os.close(fd)
+        fd = None
+        staged = os.stat(stage, dir_fd=parent_fd, follow_symlinks=False)
+        if (not stat.S_ISREG(staged.st_mode) or
+                (staged.st_dev, staged.st_ino) != identity):
+            raise OSError("USB staging file changed during export")
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            raise OSError(38, "renameat2 unavailable; refusing unsafe export")
+        renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                              ctypes.c_char_p, ctypes.c_uint]
+        renameat2.restype = ctypes.c_int
+        if renameat2(parent_fd, os.fsencode(stage), parent_fd,
+                     os.fsencode(name), 1) != 0:
+            err = ctypes.get_errno()
+            raise OSError(err, os.strerror(err), name)
+        os.fsync(parent_fd)
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if identity is not None:
+            try:
+                staged = os.stat(stage, dir_fd=parent_fd, follow_symlinks=False)
+                if (stat.S_ISREG(staged.st_mode) and
+                        (staged.st_dev, staged.st_ino) == identity):
+                    os.unlink(stage, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                # USB removal may prevent cleanup. Never publish .partial.
+                pass
+
+
 def save_vault(path: Path, data: dict) -> None:
-    """Create-only and mode 0600, avoiding silent replacement of an existing wallet."""
+    """Create-only, synced wallet/policy/transfer JSON (no partial final file)."""
     path = Path(path)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as stream:
-        json.dump(data, stream, indent=2)
-        stream.write("\n")
+    raw = (json.dumps(data, indent=2) + "\n").encode("utf-8")
+    parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY |
+                     getattr(os, "O_NOFOLLOW", 0))
+    try:
+        atomic_create_at(parent, path.name, raw)
+    finally:
+        os.close(parent)
 
 
 def load_vault(path: Path, passphrase: str) -> str:
