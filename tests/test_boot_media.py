@@ -38,7 +38,10 @@ def _disk(
     start = 2048
     specs = [
         (media.EFI_TYPE, boot_uuid, media.READ_ONLY, media.BOOT_SECTORS),
-        (media.LINUX_FS_TYPE, vault_uuid, 0, media.VAULT_SECTORS),
+        (
+            media.LINUX_FS_TYPE if include_transfer else media.DATA_TYPE,
+            vault_uuid, 0, media.VAULT_SECTORS,
+        ),
     ]
     if include_transfer:
         specs.append((media.DATA_TYPE, transfer_uuid, 0, media.TRANSFER_SECTORS))
@@ -95,10 +98,17 @@ def _create(
     (location / "queue/logical_block_size").write_text("512\n")
 
     count = 3 if include_transfer else 2
-    for index in range(1, count + 1):
+    cursor = 2048
+    sectors_by_number = [media.BOOT_SECTORS, media.VAULT_SECTORS]
+    if include_transfer:
+        sectors_by_number.append(media.TRANSFER_SECTORS)
+    for index, sectors in enumerate(sectors_by_number, 1):
         partition = location / f"{name}{index}"
         partition.mkdir()
         (partition / "partition").write_text(str(index) + "\n")
+        (partition / "start").write_text(str(cursor) + "\n")
+        (partition / "size").write_text(str(sectors) + "\n")
+        cursor += sectors
         (sys_block / f"{name}{index}").symlink_to(partition, target_is_directory=True)
 
     dev.mkdir(exist_ok=True)
@@ -160,6 +170,9 @@ def test_duplicated_cloned_usb_is_denied(tmp_path):
         "missing_partition",
         "wrong_sector_size",
         "extra_partition",
+        "kernel_start_mismatch",
+        "kernel_size_mismatch",
+        "kernel_partition_number_mismatch",
     ],
 )
 def test_corruption_and_unexpected_media_fail_closed(tmp_path, mutation):
@@ -191,6 +204,12 @@ def test_corruption_and_unexpected_media_fail_closed(tmp_path, mutation):
         (sys_block / "sda3").unlink()
     elif mutation == "wrong_sector_size":
         (sys_block / "sda/queue/logical_block_size").write_text("4096\n")
+    elif mutation == "kernel_start_mismatch":
+        (sys_block / "sda3/start").write_text("2048\n")
+    elif mutation == "kernel_size_mismatch":
+        (sys_block / "sda3/size").write_text(str(media.TRANSFER_SECTORS - 1) + "\n")
+    elif mutation == "kernel_partition_number_mismatch":
+        (sys_block / "sda3/partition").write_text("2\n")
 
     with pytest.raises(ValueError, match="missing|duplicated|inconsistent"):
         media.identify(sys_block, dev)
@@ -229,4 +248,24 @@ def test_spoofed_trusted_identifiers_on_non_usb_disk_lock_down_even_with_valid_u
     _create(sys_block, dev, "sdb", usb=False)
     assert media._usb_mass_storage(sys_block / "sda")
     with pytest.raises(ValueError, match="inconsistent|duplicated"):
+        media.identify(sys_block, dev)
+
+
+def test_gpt_entry_gap_with_valid_checksums_fails_closed(tmp_path):
+    sys_block, dev = tmp_path / "sys", tmp_path / "dev"
+    _create(sys_block, dev)
+    data = bytearray((dev / "sda").read_bytes())
+    # Move entry 3 to entry 4, leaving an unused slot. The Linux sdX naming
+    # cannot be inferred from a filtered list of nonempty GPT entries.
+    entry_start = 1024
+    data[entry_start + 3 * 128:entry_start + 4 * 128] = data[
+        entry_start + 2 * 128:entry_start + 3 * 128
+    ]
+    data[entry_start + 2 * 128:entry_start + 3 * 128] = bytes(128)
+    checksum = zlib.crc32(data[entry_start:entry_start + 128 * 128])
+    struct.pack_into("<I", data, 512 + 88, checksum)
+    struct.pack_into("<I", data, 512 + 16, 0)
+    struct.pack_into("<I", data, 512 + 16, zlib.crc32(data[512:512 + 92]))
+    (dev / "sda").write_bytes(data)
+    with pytest.raises(ValueError, match="missing|duplicated|inconsistent"):
         media.identify(sys_block, dev)
