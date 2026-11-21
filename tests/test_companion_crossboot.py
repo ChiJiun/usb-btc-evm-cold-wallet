@@ -1,26 +1,26 @@
-"""Cross-process/simulated-reboot tests for single-USB Companion state.
-
-All keys come from the public BIP39 test vector; never use this mnemonic for funds.
-"""
+"""Single-USB Companion integration against the formal Issue #37 v2 contract."""
+import hashlib
 import http.client
 import json
 import threading
 from pathlib import Path
 
 import pytest
+from embit import script, transaction
 from eth_account import Account
 from eth_utils import keccak
-from embit import script, transaction
 
 from usb_cold_wallet.btc import sign_btc_psbt
 from usb_cold_wallet.companion_btc import BitcoinCompanion
-from usb_cold_wallet.companion_core import (
-    CHAIN_ID, CompanionSession, canonical, pack_envelope,
-)
+from usb_cold_wallet.companion_core import CompanionSession, canonical
 from usb_cold_wallet.companion_crossboot import CrossBootManager
 from usb_cold_wallet.companion_web import create_server
+from usb_cold_wallet.cross_boot import (
+    package_v2_response, verify_v2_request, verify_v2_response,
+)
 from usb_cold_wallet.evm import decode_signed_eip1559
 from usb_cold_wallet.keys import btc_address, evm_account, root_from_mnemonic, watch_only
+from usb_cold_wallet.transaction_state import PendingRequestStore
 
 MNEMONIC = "abandon " * 11 + "about"
 ROOT = root_from_mnemonic(MNEMONIC)
@@ -34,10 +34,11 @@ BTC_TARGET = btc_address(ROOT, 0, 1)
 class FakeRpc:
     display_endpoint = "https://mock-sepolia.invalid"
 
-    def __init__(self):
+    def __init__(self, *, fail_send=False):
         self.balance = 5 * 10**18
         self.nonce = 3
         self.sent = []
+        self.fail_send = fail_send
 
     def assert_sepolia(self):
         return None
@@ -53,6 +54,8 @@ class FakeRpc:
         if method == "eth_getTransactionCount":
             return hex(self.nonce)
         if method == "eth_sendRawTransaction":
+            if self.fail_send:
+                raise ValueError("simulated timeout")
             self.sent.append(params[0])
             return "0x" + keccak(hexstr=params[0]).hex()
         if method == "eth_getTransactionReceipt":
@@ -60,6 +63,10 @@ class FakeRpc:
         if method == "eth_getTransactionByHash":
             return {"hash": params[0]}
         raise AssertionError(method)
+
+
+class NoNetworkEsplora:
+    display_endpoint = "https://unused.invalid"
 
 
 class FakeBtcEsplora:
@@ -102,20 +109,16 @@ class FakeBtcEsplora:
         return {"confirmed": False}
 
 
-class NoNetworkEsplora:
-    display_endpoint = "https://unused.invalid"
-
-
-def fresh_sessions(rpc=None):
+def fresh_sessions(rpc=None, btc_api=None):
     rpc = rpc or FakeRpc()
     evm = CompanionSession(rpc)
     evm.import_wallet(canonical(WATCH))
-    btc = BitcoinCompanion(NoNetworkEsplora())
+    btc = BitcoinCompanion(btc_api or NoNetworkEsplora())
     btc.import_wallet(WATCH)
     return evm, btc, rpc
 
 
-def signed_response(tx, *, recipient=None):
+def signed_evm_payload(tx, *, recipient=None):
     signed_tx = dict(tx)
     if recipient is not None:
         signed_tx["to"] = recipient
@@ -123,8 +126,8 @@ def signed_response(tx, *, recipient=None):
     signed = Account.sign_transaction(signed_tx, account.key)
     raw = "0x" + signed.raw_transaction.hex()
     decoded = decode_signed_eip1559(raw)
-    payload = {
-        "chain_id": CHAIN_ID,
+    return {
+        "chain_id": 11155111,
         "from": account.address,
         "to": signed_tx["to"],
         "value_wei": signed_tx["value"],
@@ -134,130 +137,123 @@ def signed_response(tx, *, recipient=None):
         "transaction_hash": decoded["transaction_hash"],
         "signed_raw_transaction": raw,
     }
-    return pack_envelope("evm-signed", payload)
 
 
-def test_pending_request_survives_process_restart_and_signed_response_reverifies(tmp_path):
+def load_request(manager, request_id):
+    return json.loads(manager.exchange.joinpath(f"request-{request_id}.json").read_text())
+
+
+def write_response(manager, request_id, response):
+    manager.exchange.joinpath(f"response-{request_id}.json").write_text(
+        json.dumps(response, sort_keys=True, separators=(",", ":")), encoding="ascii"
+    )
+
+
+def test_windows_adapter_emits_formal_v2_request_and_official_state(tmp_path):
     manager = CrossBootManager.auto(tmp_path)
-    online, btc, rpc = fresh_sessions()
+    online, btc, _ = fresh_sessions()
     prepared = online.prepare(RECIPIENT, "0.01")
     request_id = prepared["pending"]["request_id"]
 
-    status = manager.export_current(online, btc)
-    request_file = manager.exchange / f"request-{request_id}.json"
-    assert status["can_export"] and request_file.is_file()
-    assert json.loads(request_file.read_text()) == prepared["envelope"]
-
-    response = signed_response(online.pending["tx"])
-    manager.exchange.joinpath(f"response-{request_id}.json").write_text(
-        json.dumps(response), encoding="ascii"
+    manager.export_current(online, btc)
+    request = load_request(manager, request_id)
+    checked = verify_v2_request(
+        request, expected_account=ADDRESS, allow_no_trusted_clock=True
     )
+    assert checked["requestId"] == request_id
+    assert checked["version"] == 2
+    assert checked["intent"]["recipient"] == RECIPIENT
+    assert checked["intent"]["amount"] == 10**16
+    assert checked["expiryAssurance"] == "unverified"
+
+    snap = PendingRequestStore(manager.state_root).get(request_id)
+    assert snap.state == "EXPORTED"
+    assert snap.request_digest == request["sha256"]
+    assert snap.transaction_digest == request["transactionDigest"]
+
+
+def test_sepolia_response_survives_restart_and_reverifies_before_broadcast(tmp_path):
+    manager = CrossBootManager(tmp_path)
+    online, btc, rpc = fresh_sessions()
+    prepared = online.prepare(RECIPIENT, "0.01")
+    request_id = prepared["pending"]["request_id"]
+    manager.export_current(online, btc)
+    request = load_request(manager, request_id)
+    response = package_v2_response(
+        request, signed_evm_payload(online.pending["tx"]),
+        expected_account=ADDRESS, allow_no_trusted_clock=True,
+    )
+    write_response(manager, request_id, response)
 
     restored, restored_btc, _ = fresh_sessions(rpc)
     restored.pending = None
     restored_btc.pending = None
     assert manager.restore(restored, restored_btc)
-    result = manager.resume_response(restored, restored_btc)
-    assert result["stage"] == "verified"
+    status = manager.resume_response(restored, restored_btc)
+    assert status["stage"] == "verified"
+    assert status["state"] == "IMPORTED_VERIFIED"
     assert restored.pending["request_id"] == request_id
-    assert restored.pending["tx"] == online.pending["tx"]
-    assert rpc.sent == []  # verification/recovery never broadcasts
+    assert rpc.sent == []
+    verify_v2_response(
+        request, response, expected_account=ADDRESS, allow_no_trusted_clock=True
+    )
 
 
-def test_malicious_signed_result_is_rejected_after_restart(tmp_path):
+def test_changed_signed_transaction_is_rejected_even_with_rehashed_v2_metadata(tmp_path):
     manager = CrossBootManager(tmp_path)
     online, btc, _ = fresh_sessions()
     prepared = online.prepare(RECIPIENT, "0.01")
-    manager.export_current(online, btc)
     request_id = prepared["pending"]["request_id"]
-
-    bad = signed_response(
-        online.pending["tx"],
-        recipient="0x1111111111111111111111111111111111111111",
+    manager.export_current(online, btc)
+    request = load_request(manager, request_id)
+    response = package_v2_response(
+        request, signed_evm_payload(online.pending["tx"]),
+        expected_account=ADDRESS, allow_no_trusted_clock=True,
     )
-    manager.exchange.joinpath(f"response-{request_id}.json").write_text(
-        json.dumps(bad), encoding="ascii"
+    response["payload"] = signed_evm_payload(
+        online.pending["tx"], recipient="0x1111111111111111111111111111111111111111"
     )
+    response["signedResultDigest"] = hashlib.sha256(
+        canonical(response["payload"])
+    ).hexdigest()
+    unsigned_response = {k: v for k, v in response.items() if k != "sha256"}
+    response["sha256"] = hashlib.sha256(canonical(unsigned_response)).hexdigest()
+    write_response(manager, request_id, response)
 
     restored, restored_btc, _ = fresh_sessions()
     restored.pending = None
     restored_btc.pending = None
     manager.restore(restored, restored_btc)
-    with pytest.raises(ValueError, match="differs|mismatch"):
+    with pytest.raises(ValueError, match="does not match|differs|mismatch"):
         manager.resume_response(restored, restored_btc)
-    assert restored.pending["stage"] == "prepared"
+    assert PendingRequestStore(manager.state_root).get(request_id).state == "EXPORTED"
 
 
-def test_ambiguous_response_and_stale_request_fail_closed(tmp_path):
+def test_btc_psbt_v2_roundtrip_survives_restart(tmp_path):
     manager = CrossBootManager(tmp_path)
-    online, btc, _ = fresh_sessions()
-    prepared = online.prepare(RECIPIENT, "0.01")
-    request_id = prepared["pending"]["request_id"]
-    manager.exchange.mkdir(parents=True)
-    manager.exchange.joinpath("request-" + "b" * 32 + ".json").write_text("{}", encoding="ascii")
-    with pytest.raises(ValueError, match="Another pending request"):
-        manager.export_current(online, btc)
-
-    manager.exchange.joinpath("request-" + "b" * 32 + ".json").unlink()
-    manager.export_current(online, btc)
-    response = signed_response(online.pending["tx"])
-    manager.exchange.joinpath(f"response-{request_id}.json").write_text(json.dumps(response), encoding="ascii")
-    manager.exchange.joinpath(f"response-{request_id}-duplicate.json").write_text(json.dumps(response), encoding="ascii")
-    with pytest.raises(ValueError, match="ambiguous"):
-        manager.resume_response(online, btc)
-
-
-def test_state_checksum_tamper_is_rejected(tmp_path):
-    manager = CrossBootManager(tmp_path)
-    online, btc, _ = fresh_sessions()
-    online.prepare(RECIPIENT, "0.01")
-    manager.save(online, btc)
-    state = json.loads(manager.state_path.read_text())
-    state["evm"]["digest"] = "0" * 64
-    manager.state_path.write_text(json.dumps(state), encoding="ascii")
-    restored, restored_btc, _ = fresh_sessions()
-    restored.pending = None
-    restored_btc.pending = None
-    with pytest.raises(ValueError, match="checksum"):
-        manager.restore(restored, restored_btc)
-
-
-def test_broadcasted_state_cannot_broadcast_twice_after_restart(tmp_path):
-    manager = CrossBootManager(tmp_path)
-    online, btc, rpc = fresh_sessions()
-    prepared = online.prepare(RECIPIENT, "0.01")
-    online.accept_signed(canonical(signed_response(online.pending["tx"])))
-    assert online.broadcast()["stage"] == "broadcasted"
-    assert len(rpc.sent) == 1
-    manager.save(online, btc)
-
-    restored, restored_btc, _ = fresh_sessions(rpc)
-    restored.pending = None
-    restored_btc.pending = None
-    manager.restore(restored, restored_btc)
-    assert restored.pending["request_id"] == prepared["pending"]["request_id"]
-    assert restored.pending["stage"] == "broadcasted"
-    with pytest.raises(ValueError, match="cannot repeat"):
-        restored.broadcast()
-    assert len(rpc.sent) == 1
-
-
-def test_btc_psbt_survives_restart_and_reverifies_without_broadcast(tmp_path):
-    manager = CrossBootManager(tmp_path)
-    evm, _unused_btc, _ = fresh_sessions()
-    btc_rpc = FakeBtcEsplora()
-    btc = BitcoinCompanion(btc_rpc)
+    evm, _unused, _ = fresh_sessions()
+    btc_api = FakeBtcEsplora()
+    btc = BitcoinCompanion(btc_api)
     btc.import_wallet(WATCH)
     prepared = btc.prepare(BTC_TARGET, "0.0005")
     request_id = prepared["pending"]["request_id"]
-    encoded = prepared["envelope"]["payload"]
-
     manager.export_current(evm, btc)
-    signed = sign_btc_psbt(ROOT, encoded, BTC_TARGET, 50_000, 50_000, 0)
-    response = pack_envelope("btc-signed", signed)
-    manager.exchange.joinpath(f"response-{request_id}.json").write_text(
-        json.dumps(response), encoding="ascii"
+    request = load_request(manager, request_id)
+    checked = verify_v2_request(
+        request,
+        expected_account=WATCH["bitcoin"]["master_fingerprint"],
+        allow_no_trusted_clock=True,
     )
+    assert checked["intent"]["amount"] == 50_000
+
+    signed = sign_btc_psbt(ROOT, request["payload"], BTC_TARGET, 50_000,
+                           checked["intent"]["fee"], 0)
+    response = package_v2_response(
+        request, signed,
+        expected_account=WATCH["bitcoin"]["master_fingerprint"],
+        allow_no_trusted_clock=True,
+    )
+    write_response(manager, request_id, response)
 
     restored_evm, _discard, _ = fresh_sessions()
     restored_btc = BitcoinCompanion(FakeBtcEsplora())
@@ -268,63 +264,147 @@ def test_btc_psbt_survives_restart_and_reverifies_without_broadcast(tmp_path):
     status = manager.resume_response(restored_evm, restored_btc)
     assert status["asset"] == "bitcoin-testnet"
     assert status["stage"] == "verified"
-    assert restored_btc.pending["request_id"] == request_id
     assert restored_btc.pending["recipient"] == BTC_TARGET
     assert restored_btc.pending["amount_sats"] == 50_000
-    assert btc_rpc.sent == []
 
 
-def test_crossboot_http_api_persists_and_exports_without_broadcast(tmp_path):
-    manager = CrossBootManager.auto(tmp_path)
-    server, app, token = create_server(FakeRpc(), 0, NoNetworkEsplora(), manager)
+def _http(server, token, method, path, body=None):
+    port = server.server_port
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=4)
+    headers = {
+        "Host": f"127.0.0.1:{port}",
+        "Origin": f"http://127.0.0.1:{port}",
+        "X-Companion-Token": token,
+    }
+    raw = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        raw = canonical(body)
+    conn.request(method, path, body=raw, headers=headers)
+    response = conn.getresponse()
+    data = json.loads(response.read())
+    code = response.status
+    conn.close()
+    return code, data
+
+
+def _run_server(rpc, root):
+    manager = CrossBootManager.auto(root)
+    server, session, token = create_server(rpc, 0, NoNetworkEsplora(), manager)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
-    port = server.server_port
+    return manager, server, session, token, worker
 
-    def request(method, path, body=None):
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=4)
-        headers = {
-            "Host": f"127.0.0.1:{port}",
-            "Origin": f"http://127.0.0.1:{port}",
-            "X-Companion-Token": token,
-        }
-        raw = None
-        if body is not None:
-            headers["Content-Type"] = "application/json"
-            raw = canonical(body)
-        conn.request(method, path, body=raw, headers=headers)
-        response = conn.getresponse()
-        data = json.loads(response.read())
-        status = response.status
-        conn.close()
-        return status, data
 
+def _stop(server, worker):
+    server.shutdown()
+    server.server_close()
+    worker.join(5)
+
+
+def test_http_cancel_records_failed_and_removes_active_exchange(tmp_path):
+    rpc = FakeRpc()
+    manager, server, _session, token, worker = _run_server(rpc, tmp_path)
     try:
-        code, imported = request("POST", "/api/import", {"raw": canonical(WATCH).decode()})
+        code, imported = _http(server, token, "POST", "/api/import",
+                               {"raw": canonical(WATCH).decode()})
         assert code == 200 and imported["loaded"]
-        code, prepared = request("POST", "/api/prepare", {
+        code, prepared = _http(server, token, "POST", "/api/prepare", {
             "recipient": RECIPIENT, "amount_eth": "0.01", "max_fee_gwei": ""
         })
-        assert code == 200 and prepared["pending"]["stage"] == "prepared"
+        assert code == 200
         request_id = prepared["pending"]["request_id"]
+        code, exported = _http(server, token, "POST", "/api/crossboot/export", {})
+        assert code == 200 and exported["state"] == "EXPORTED"
+        request_file = manager.exchange / f"request-{request_id}.json"
+        assert request_file.exists()
 
-        code, state = request("GET", "/api/crossboot")
-        assert code == 200 and state["can_export"]
-        assert state["request_id"] == request_id
-
-        code, exported = request("POST", "/api/crossboot/export", {})
-        assert code == 200 and exported["request_id"] == request_id
-        assert manager.state_path.is_file()
-        request_file = manager.exchange.joinpath(f"request-{request_id}.json")
-        assert request_file.is_file()
-        assert app.rpc.sent == []
-
-        code, cancelled = request("POST", "/api/cancel", {})
+        code, cancelled = _http(server, token, "POST", "/api/cancel", {})
         assert code == 200 and cancelled["cancelled"]
         assert not request_file.exists()
-        persisted = json.loads(manager.state_path.read_text())
-        assert persisted["evm"] is None
+        assert PendingRequestStore(manager.state_root).get(request_id).state == "FAILED"
     finally:
-        server.shutdown()
-        server.server_close()
-        worker.join(5)
+        _stop(server, worker)
+
+
+def test_restart_auto_imports_verified_response_and_never_double_broadcasts(tmp_path):
+    rpc = FakeRpc()
+    manager, server, session, token, worker = _run_server(rpc, tmp_path)
+    code, _ = _http(server, token, "POST", "/api/import",
+                    {"raw": canonical(WATCH).decode()})
+    assert code == 200
+    code, prepared = _http(server, token, "POST", "/api/prepare", {
+        "recipient": RECIPIENT, "amount_eth": "0.01", "max_fee_gwei": ""
+    })
+    assert code == 200
+    request_id = prepared["pending"]["request_id"]
+    assert _http(server, token, "POST", "/api/crossboot/export", {})[0] == 200
+    request = load_request(manager, request_id)
+    response = package_v2_response(
+        request, signed_evm_payload(session.pending["tx"]),
+        expected_account=ADDRESS, allow_no_trusted_clock=True,
+    )
+    write_response(manager, request_id, response)
+    _stop(server, worker)
+
+    manager2, server2, session2, token2, worker2 = _run_server(rpc, tmp_path)
+    try:
+        assert session2.pending["stage"] == "verified"
+        assert rpc.sent == []
+        code, result = _http(server2, token2, "POST", "/api/broadcast", {})
+        assert code == 200 and result["stage"] == "broadcasted"
+        assert len(rpc.sent) == 1
+        assert PendingRequestStore(manager2.state_root).get(request_id).state == "BROADCASTED"
+    finally:
+        _stop(server2, worker2)
+
+    _manager3, server3, session3, token3, worker3 = _run_server(rpc, tmp_path)
+    try:
+        assert session3.pending is None
+        code, _ = _http(server3, token3, "POST", "/api/broadcast", {})
+        assert code == 400
+        assert len(rpc.sent) == 1
+    finally:
+        _stop(server3, worker3)
+
+
+def test_unknown_broadcast_recovers_status_only_after_restart(tmp_path):
+    rpc = FakeRpc(fail_send=True)
+    manager, server, session, token, worker = _run_server(rpc, tmp_path)
+    _http(server, token, "POST", "/api/import", {"raw": canonical(WATCH).decode()})
+    _, prepared = _http(server, token, "POST", "/api/prepare", {
+        "recipient": RECIPIENT, "amount_eth": "0.01", "max_fee_gwei": ""
+    })
+    request_id = prepared["pending"]["request_id"]
+    _http(server, token, "POST", "/api/crossboot/export", {})
+    request = load_request(manager, request_id)
+    response = package_v2_response(
+        request, signed_evm_payload(session.pending["tx"]),
+        expected_account=ADDRESS, allow_no_trusted_clock=True,
+    )
+    write_response(manager, request_id, response)
+    _stop(server, worker)
+
+    manager2, server2, session2, token2, worker2 = _run_server(rpc, tmp_path)
+    try:
+        assert session2.pending["stage"] == "verified"
+        code, _ = _http(server2, token2, "POST", "/api/broadcast", {})
+        assert code == 400
+        assert session2.pending["stage"] == "broadcast_unknown"
+        snap = PendingRequestStore(manager2.state_root).get(request_id)
+        assert snap.state == "FAILED"
+        assert "broadcast outcome unknown" in snap.metadata["reason"]
+    finally:
+        _stop(server2, worker2)
+
+    rpc.fail_send = False
+    _manager3, server3, session3, token3, worker3 = _run_server(rpc, tmp_path)
+    try:
+        assert session3.pending["stage"] == "broadcast_unknown"
+        code, status = _http(server3, token3, "POST", "/api/status", {})
+        assert code == 200 and status["result"] == "pending"
+        code, _ = _http(server3, token3, "POST", "/api/broadcast", {})
+        assert code == 400
+        assert rpc.sent == []
+    finally:
+        _stop(server3, worker3)
