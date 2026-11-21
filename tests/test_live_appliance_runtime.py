@@ -9,7 +9,10 @@ import pytest
 from usb_cold_wallet import appliance, cli, gui
 
 
-def test_appliance_live_audit_failure_is_visible_and_blocks_menu(monkeypatch):
+def test_appliance_live_audit_failure_is_visible_and_blocks_menu(monkeypatch, tmp_path):
+    boot = tmp_path / "boot-checks.txt"
+    boot.write_text("PASS: synthetic boot checks recorded\n", encoding="utf-8")
+    monkeypatch.setattr(appliance, "BOOT_CHECKS", boot)
     observed = []
     monkeypatch.setattr(
         gui, "runtime_audit",
@@ -22,7 +25,10 @@ def test_appliance_live_audit_failure_is_visible_and_blocks_menu(monkeypatch):
     assert appliance._security_locked(status)
 
 
-def test_appliance_runtime_audit_exception_fails_closed(monkeypatch):
+def test_appliance_runtime_audit_exception_fails_closed(monkeypatch, tmp_path):
+    boot = tmp_path / "boot-checks.txt"
+    boot.write_text("PASS: synthetic boot checks recorded\n", encoding="utf-8")
+    monkeypatch.setattr(appliance, "BOOT_CHECKS", boot)
     monkeypatch.setattr(
         gui, "runtime_audit",
         lambda: (_ for _ in ()).throw(OSError("device vanished")),
