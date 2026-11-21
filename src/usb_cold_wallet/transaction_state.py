@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .cross_boot import _canonical, REQUEST_ID_RE, HEX64_RE
+from .cross_boot import (\n    _canonical, REQUEST_ID_RE, HEX64_RE, verify_v2_request, verify_v2_response,\n)
 
 FORMAT = "usb-cold-wallet-cross-boot-state"
 VERSION = 1
@@ -358,7 +358,20 @@ class PendingRequestStore(_Journal):
             request["requestId"], "EXPORTED", request["sha256"], request["transactionDigest"]
         )
 
-    def import_verified(self, request: dict, response: dict) -> StateSnapshot:
+    def import_verified(
+        self,
+        request: dict,
+        response: dict,
+        *,
+        trusted_time: int | None = None,
+        allow_no_trusted_clock: bool = False,
+    ) -> StateSnapshot:
+        verify_v2_response(
+            request,
+            response,
+            trusted_time=trusted_time,
+            allow_no_trusted_clock=allow_no_trusted_clock,
+        )
         return self._transition(
             request["requestId"], "IMPORTED_VERIFIED", request["sha256"],
             request["transactionDigest"], {"responseDigest": response["sha256"]},
@@ -392,20 +405,42 @@ class ReplayLedger(_Journal):
             if record["transactionDigest"] == request["transactionDigest"]:
                 raise ValueError("Transaction digest already reviewed under another requestId")
 
-    def review_once(self, request: dict, *, expiry_assurance: str) -> StateSnapshot:
-        if expiry_assurance not in {"trusted-time", "unverified"}:
-            raise ValueError("Invalid expiry assurance")
+    def review_once(
+        self,
+        request: dict,
+        *,
+        trusted_time: int | None = None,
+        allow_no_trusted_clock: bool = False,
+    ) -> StateSnapshot:
+        checked = verify_v2_request(
+            request,
+            trusted_time=trusted_time,
+            allow_no_trusted_clock=allow_no_trusted_clock,
+        )
         self._ensure_unseen(request)
         return self._transition(
             request["requestId"], "COLD_REVIEWED", request["sha256"],
             request["transactionDigest"], {
                 "network": request["network"],
                 "account": request["account"],
-                "expiryAssurance": expiry_assurance,
+                "expiryAssurance": checked["expiryAssurance"],
             },
         )
 
-    def mark_signed(self, request: dict, response: dict) -> StateSnapshot:
+    def mark_signed(
+        self,
+        request: dict,
+        response: dict,
+        *,
+        trusted_time: int | None = None,
+        allow_no_trusted_clock: bool = False,
+    ) -> StateSnapshot:
+        verify_v2_response(
+            request,
+            response,
+            trusted_time=trusted_time,
+            allow_no_trusted_clock=allow_no_trusted_clock,
+        )
         return self._transition(
             request["requestId"], "SIGNED", request["sha256"],
             request["transactionDigest"], {"responseDigest": response["sha256"]},
