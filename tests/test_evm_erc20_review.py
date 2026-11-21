@@ -36,12 +36,17 @@ def tx(method="transfer", party=RECIPIENT, amount=123):
 
 
 def review(payload, method="transfer", party=RECIPIENT, amount=123, **kwargs):
-    return review_erc20_transaction(
-        payload, expected_contract=CONTRACT, expected_counterparty=party,
-        expected_amount=amount, expected_method=method, expected_nonce=7,
-        trusted_contracts={CONTRACT},
-        max_fee_wei=FEE_LIMIT, **kwargs,
-    )
+    options = {
+        "expected_contract": CONTRACT,
+        "expected_counterparty": party,
+        "expected_amount": amount,
+        "expected_method": method,
+        "expected_nonce": 7,
+        "trusted_contracts": {CONTRACT},
+        "max_fee_wei": FEE_LIMIT,
+    }
+    options.update(kwargs)
+    return review_erc20_transaction(payload, **options)
 
 
 @pytest.mark.parametrize("method,party,amount", [
@@ -192,7 +197,8 @@ def test_independent_eth_account_signed_bytes_recovered_and_reviewed(method, par
         review_signed_erc20_transaction(
             signed.raw_transaction, expected_sender=signer.address,
             expected_contract=CONTRACT, expected_counterparty=OTHER,
-            expected_amount=amount, trusted_contracts=[CONTRACT], max_fee_wei=FEE_LIMIT,
+            expected_amount=amount, expected_method=method, expected_nonce=7,
+            trusted_contracts=[CONTRACT], max_fee_wei=FEE_LIMIT,
         )
 
 
