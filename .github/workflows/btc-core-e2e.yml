@@ -34,7 +34,7 @@ jobs:
           docker image inspect bitcoin/bitcoin:30.4 --format '{{json .RepoDigests}}' | tee bitcoin-core-image-digests.json
           docker run -d --rm --name btc-issue2-core bitcoin/bitcoin:30.4 -regtest -server -txindex=1 -fallbackfee=0.00001
           for i in $(seq 1 60); do
-            if docker exec btc-issue2-core bitcoin-cli -regtest getblockchaininfo >/dev/null 2>&1; then
+            if docker exec --user bitcoin btc-issue2-core bitcoin-cli -regtest -datadir=/home/bitcoin/.bitcoin getblockchaininfo >/dev/null 2>&1; then
               exit 0
             fi
             sleep 1
