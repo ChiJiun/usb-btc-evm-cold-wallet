@@ -18,7 +18,7 @@
 <button id="download" disabled>下載 unsigned.json 給離線 CLI</button>
 <p class="warning"><strong>必須在離線可信螢幕，根據獨立來源確認完整收款地址、金額及手續費。</strong> QR request 本身不是授權。</p></section>
 <section><h2>③ 載入已簽交易並回傳 MetaMask</h2>
-<p>使用離線 CLI：<code>usb-cold-wallet --vault /offline/wallet.vault sign-evm --tx unsigned.json --to 已獨立確認地址 --wei 已確認整數金額 --out signed.json</code>。不得在連網電腦執行簽署。</p>
+<p>使用離線 CLI：<code>usb-cold-wallet --vault /offline/wallet.vault sign-evm --tx unsigned.json --to 已獨立確認地址 --wei 已確認整數金額 --expected-policy-sha256 已獨立記錄的SHA256 --out signed.json</code>。不得在連網電腦執行簽署。</p>
 <label>簽署後的 signed.json <input id="signed-file" type="file" accept=".json" disabled></label>
 <button id="reply" disabled>檢查後產生 eth-signature QR</button>
 <button id="cancel" class="secondary">取消這筆交易</button>

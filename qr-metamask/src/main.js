@@ -1,13 +1,19 @@
 import { BrowserQRCodeReader } from '@zxing/browser';
 import QRCode from 'qrcode';
 import { CameraLifecycle } from './camera_lifecycle.mjs';
+import { QrFrameDisplay } from './qr_frame_display.mjs';
 import { makePairingUr, decodeMetaMaskRequest, makeSignedResponseUr,
   framesFromUr, unsignedJsonForOffline, validatePublic, MAX_FRAMES } from './adapter.mjs';
 
 const $ = (id) => document.getElementById(id);
 const setStatus = (text) => { $('status').textContent = String(text); };
-let publicInfo = null, active = null, used = false, qrTimer = null;
+let publicInfo = null, active = null, used = false;
 const camera = new CameraLifecycle();
+const qrDisplay = new QrFrameDisplay({
+  encode: (frame, options) => QRCode.toDataURL(frame, options),
+  image: $('qr'), label: $('qr-type'),
+  onError: (err) => setStatus('QR encoding error: ' + err.message),
+});
 const collected = [];
 const decoder = new BrowserQRCodeReader();
 
@@ -32,24 +38,10 @@ function clearSession() {
   $('reply').disabled = true;
   $('signed-file').value = '';
   $('ur-input').value = '';
-  if(qrTimer) clearInterval(qrTimer);
-  qrTimer = null;
-  $('qr').hidden = true;
-  $('qr-type').textContent = '';
+  qrDisplay.clear();
 }
 async function displayUr(ur) {
-  const frames = framesFromUr(ur,220,10);
-  if(qrTimer) clearInterval(qrTimer);
-  qrTimer = null;
-  let index = 0;
-  const show = async () => {
-    const value = frames[index++ % frames.length];
-    $('qr').src = await QRCode.toDataURL(value,{errorCorrectionLevel:'M',margin:1,width:400});
-    $('qr').hidden = false;
-    $('qr-type').textContent = ur.type + ' · ' + ((index-1)%frames.length+1) + '/' + frames.length;
-  };
-  await show();
-  if(frames.length>1) qrTimer = setInterval(() => { void show().catch((e) => setStatus('QR encoding error: '+e.message)); },400);
+  return qrDisplay.show(ur, framesFromUr(ur, 220, 10));
 }
 function download(name,body) {
   const url = URL.createObjectURL(new Blob([body],{type:'application/json'}));
@@ -80,6 +72,7 @@ function acceptRequest(parts) {
   if(active) throw Error('已有待處理請求；請先完成或取消，不可混用 QR 幀');
   const pending=decodeMetaMaskRequest(parts,publicInfo);
   active=pending;used=false;
+  qrDisplay.clear();
   stopCamera();
   displayIntent(pending);
   $('download').disabled = false;
@@ -100,8 +93,9 @@ $('public-file').addEventListener('change',()=>guarded(async()=>{
 $('pair').addEventListener('click',()=>guarded(async()=>{
   if(!publicInfo) throw Error('尚無公開帳戶');
   if(active) throw Error('請先結束當前交易');
-  await displayUr(makePairingUr(publicInfo));
-  setStatus('MetaMask → Connect Hardware Wallet → QR-based，掃描這個 crypto-account 公開 QR。');
+  if (await displayUr(makePairingUr(publicInfo))) {
+    setStatus('MetaMask → Connect Hardware Wallet → QR-based，掃描這個 crypto-account 公開 QR。');
+  }
 }));
 $('scan').addEventListener('click',()=>guarded(async()=>{
   if(!publicInfo || active) throw Error('需先匯入公開帳戶，且沒有現存待處理交易');
@@ -148,14 +142,18 @@ $('download').addEventListener('click',()=>guarded(async()=>{
 }));
 $('reply').addEventListener('click',()=>guarded(async()=>{
   if(!active || used) throw Error('請先掃描新的 MetaMask request');
+  const pendingRequest = active;
   const signed=JSON.parse(await boundedText($('signed-file').files?.[0]));
-  const response=makeSignedResponseUr(active,signed);
+  // Cancel or account change during File.text() must invalidate the response.
+  if (active !== pendingRequest || used) return;
+  const response=makeSignedResponseUr(pendingRequest,signed);
   used=true;
   $('reply').disabled=true;$('download').disabled=true;
-  await displayUr(response);
-  setStatus('簽章符合本次 MetaMask request，可供 MetaMask「Get Signature」掃描。不代表已廣播或確認。');
+  if (await displayUr(response)) {
+    setStatus('簽章符合本次 MetaMask request，可供 MetaMask「Get Signature」掃描。不代表已廣播或確認。');
+  }
 }));
 $('cancel').addEventListener('click',()=>{
   clearSession();setStatus('已清除目前請求與 QR 動畫。若 MetaMask 尚在等待，請在 MetaMask 取消該交易。');
 });
-window.addEventListener('pagehide',()=>{stopCamera();if(qrTimer)clearInterval(qrTimer);});
+window.addEventListener('pagehide',()=>{stopCamera();qrDisplay.clear();});

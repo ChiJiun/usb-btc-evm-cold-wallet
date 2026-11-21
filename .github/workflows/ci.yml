@@ -107,6 +107,13 @@ jobs:
         if: steps.native-qr.outputs.present == 'true'
         run: npm run build --prefix qr-metamask
 
+      - name: Test production browser bundle under its CSP
+        if: steps.native-qr.outputs.present == 'true'
+        working-directory: qr-metamask
+        run: |
+          npx playwright install --with-deps --only-shell chromium
+          npm run test:browser
+
       - name: Audit native QR runtime dependencies
         if: steps.native-qr.outputs.present == 'true'
         run: npm audit --prefix qr-metamask --omit=dev --audit-level=high

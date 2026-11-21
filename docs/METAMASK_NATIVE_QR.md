@@ -119,10 +119,13 @@ MetaMask 原生的 **QR Hardware Wallet Device** 整合已認識以下
      --tx /offline/sepolia-unsigned-REQUEST_ID.json \
      --to 0xINDEPENDENTLY_VERIFIED_RECIPIENT \
      --wei INTEGER_WEI \
+     --expected-policy-sha256 INDEPENDENT_64_HEX_SHA256 \
      --out /offline/sepolia-signed.json
    ```
 
-   CLI 會顯示 Sepolia、完整收款地址、完整 Wei 與費用，並要求人工輸入
+   簽名前須依 [離線政策設定](OFFLINE_POLICY.md) 建立 `<vault>.policy`，
+   並從獨立紙本或可信離線紀錄提供目前政策的完整 SHA-256。
+   缺少政策或驗證值會拒簽。CLI 會顯示 Sepolia、完整收款地址、完整 Wei 與費用，並要求人工輸入
    `SEPOLIA <收款地址後 8 碼> <完整十進位 Wei>`（以 CLI 實際顯示為準）。
    不支援沒有本機確認的自動簽章、不支援 mainnet／EIP-712／ERC-20／盲簽。
 
@@ -147,6 +150,7 @@ MetaMask 原生的 **QR Hardware Wallet Device** 整合已認識以下
   廣播和狀態；其鏈上資料可受到惡意 RPC 影響。
 - 攝影機啟動需等權限回應；按停止／取消後若先前的啟動請求才完成，
   會立即關閉遲到的攝影機控制物件，過期掃描回呼不能接受交易。
+- QR 動畫採序列化渲染與 session generation；取消或新交易會使尚未完成的 QR 編碼失效，舊簽章 QR 不會重新顯示。
 - MetaMask 帳戶列舉會呈現更多公開衍生地址，**不代表它們目前
   能簽署**。只有 index 0 經過本版完整測試；其他地址切勿入金。
 - 目前一般 CI 已要求跑 Node 24 MetaMask QR Keyring／Python 跨語言簽署測試、
@@ -160,6 +164,8 @@ cd qr-metamask
 npm ci --ignore-scripts
 npm test
 npm run build
+npx playwright install --with-deps --only-shell chromium  # CI 或專用測試機
+npm run test:browser  # 以 Chromium 載入實際 dist/ 並檢查 CSP/QR/簽章操作
 PYTHON_BIN=../.venv/bin/python npm run test:python  # Python 套件已裝在專案虛擬環境
 npm audit --omit=dev --audit-level=high
 ```
@@ -177,11 +183,12 @@ EIP-1559 交易，再經 Keystone UR 返回上游 MetaMask
 
 **供應鏈稽核現況（2026-11-21）：** npm audit 生產相依套件為 0 high/critical、2 moderate、3 low；中風險涉及 Keystone Ethereum registry 及傳遞依賴 `uuid`。需留意上游 `elliptic` 安全公告；不得使用可能造成相容性破壞的 `npm audit fix --force` 自動升級。
 `.github/workflows/ci.yml` 已將 Node 24 的 native-QR 測試、
-實際 Python 跨語言測試、build 和 audit 納入 `CI / Required`
-必要條件；缺少 `qr-metamask/` 的舊分支安全略過該部分。
-Browser bundle 能產生，但 Vite 仍有 `vm` Node 相容性提示，
-實際 MetaMask 擴充功能＋鏡頭的瀏覽器運作尚未實測；
-不可把編譯成功等同真實瀏覽器驗證。
+實際 Python 跨語言測試、Vite build、Playwright Chromium 瀏覽器 smoke
+與 npm audit 納入 `CI / Required` 必要條件；缺少 `qr-metamask/`
+的舊分支安全略過該部分。Chromium smoke 以實際 `dist/` 和 CSP
+驗證公開帳戶匯入、配對 QR、交易解析、簽章 QR 及取消。
+**實體 MetaMask 擴充功能、相機權限與雙機離線操作尚未驗收**；
+上游 `vm` polyfill 警告仍存在，瀏覽器 smoke 只證明受測路徑可執行。
 
 依賴的 #18 QR transport 仍使用通用 `ur:bytes`、#19 離線
 GUI 尚未併入，此獨立整合是原生 MetaMask 協定 POC。未來可把
