@@ -221,27 +221,41 @@ def _strict_json(raw: bytes):
 def _bounded_policy_read(path: Path):
     """Atomic fd-based read of an untrusted regular policy file; no symlinks/FIFO."""
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    fd = os.open(path, flags)
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise ValueError("Policy must be a regular file")
-        raw = os.read(fd, MAX_FILE_BYTES + 1)
-        if len(raw) > MAX_FILE_BYTES:
-            raise ValueError("Policy file unexpectedly large")
-        return raw
-    finally:
-        os.close(fd)
+        fd = os.open(path, flags)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ValueError("Policy must be a regular file")
+            raw = os.read(fd, MAX_FILE_BYTES + 1)
+            if len(raw) > MAX_FILE_BYTES:
+                raise ValueError("Policy file unexpectedly large")
+            return raw
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        raise ValueError("Invalid, missing or inaccessible policy file") from exc
 
 
-def load_profile(path: Path, root, password: str, *, expected_sha256: str | None = None) -> dict:
-    path = Path(path)
+def read_policy_snapshot(path: Path, expected_sha256: str) -> bytes:
+    """Read and verify the independently recorded ciphertext anchor BEFORE unlocking.
+
+    Return the exact authenticated file bytes. Consumers decrypt this snapshot,
+    never a second read from possibly swapped removable media.
+    """
+    if (type(expected_sha256) is not str or
+            not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)):
+        raise ValueError("A current independent policy SHA-256 anchor is required")
+    raw = _bounded_policy_read(path)
+    if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected_sha256):
+        raise ValueError("Invalid, corrupted or mismatched policy anchor")
+    return raw
+
+
+def load_policy_snapshot(raw_file: bytes, root, password: str) -> dict:
+    """Decrypt and bind a previously validated single-read ciphertext snapshot."""
     try:
-        raw_file = _bounded_policy_read(path)
-        if expected_sha256 is not None:
-            if (type(expected_sha256) is not str or
-                    not re.fullmatch(r"[0-9a-f]{64}", expected_sha256) or
-                    not hmac.compare_digest(hashlib.sha256(raw_file).hexdigest(), expected_sha256)):
-                raise ValueError("Policy file hash does not match independently stored anchor")
+        if type(raw_file) is not bytes or len(raw_file) > MAX_FILE_BYTES:
+            raise ValueError("Invalid policy snapshot")
         container = _strict_json(raw_file)
         if set(container) != {"format", "version", "salt", "nonce", "ciphertext"}:
             raise ValueError("Unsupported policy container")
@@ -254,12 +268,36 @@ def load_profile(path: Path, root, password: str, *, expected_sha256: str | None
             raise ValueError("Malformed policy ciphertext")
         raw = AESGCM(_key(password, salt)).decrypt(nonce, ciphertext, AAD)
         return validate_profile(_strict_json(raw), root)
-    except (KeyError, TypeError, UnicodeError, ValueError) as exc:
-        raise ValueError("Invalid, corrupted or mismatched policy") from exc
     except Exception as exc:
-        # InvalidTag and invalid crypto containers must fail closed.
+        # InvalidTag and hostile JSON/crypto containers must fail closed.
         raise ValueError("Invalid, corrupted or mismatched policy") from exc
 
+
+def load_profile(path: Path, root, password: str, *, expected_sha256: str | None = None) -> dict:
+    # Policy maintenance can read without an independent anchor; signing
+    # must always use read_policy_snapshot(), before wallet key material enters RAM.
+    raw_file = (read_policy_snapshot(path, expected_sha256)
+                if expected_sha256 is not None else _bounded_policy_read(path))
+    return load_policy_snapshot(raw_file, root, password)
+
+
+def enforce_review_policy(profile: dict, root, review: dict, *, kind: str) -> tuple[TransactionIntent, PolicyDecision]:
+    """Common fail-closed policy boundary for CLI and future GUI/QR signers.
+
+    Pass only a chain-specific validated review, never an online supplied
+    'decision' or intent. Caller MUST separately enforce any additional
+    confirmation and final sign approval.
+    """
+    if kind == "evm":
+        intent = evm_intent(root, review)
+    elif kind == "btc":
+        intent = btc_intent(root, review)
+    else:
+        raise ValueError("Unsupported policy signing kind")
+    decision = decide(profile, root, intent)
+    if decision.status == "DENY":
+        raise ValueError(f"Offline policy denied {kind} transaction: {'; '.join(decision.reasons)}")
+    return intent, decision
 
 def evm_intent(root, review: dict) -> TransactionIntent:
     tx = review["transaction"]
@@ -324,28 +362,3 @@ def decide(profile: dict, root, intent: TransactionIntent) -> PolicyDecision:
     if label is None:
         return PolicyDecision("REQUIRE_EXTRA_CONFIRMATION", ("Unverified recipient; compare full address offline",), None)
     return PolicyDecision("ALLOW_FOR_REVIEW", ("Verified address label; compare full address anyway",), label)
-
-
-def authorize_review(root, vault: Path, password: str, expected_sha256: str,
-                     review: dict, network: str) -> tuple[TransactionIntent, PolicyDecision]:
-    """Shared CLI/GUI/QR fail-closed policy gate for already reviewed transactions.
-
-    The complete wallet-bound, encrypted policy must be loaded from beside
-    the vault. The SHA-256 must come from an independently retained anchor.
-    Authorization does not replace explicit human confirmation or signing.
-    """
-    if type(expected_sha256) is not str or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
-        raise ValueError("An independently verified policy SHA-256 anchor is mandatory")
-    vault = Path(vault)
-    policy_path = vault.with_name(vault.name + ".policy")
-    profile = load_profile(policy_path, root, password, expected_sha256=expected_sha256)
-    if network == "sepolia":
-        intent = evm_intent(root, review)
-    elif network == "bitcoin-testnet":
-        intent = btc_intent(root, review)
-    else:
-        raise ValueError("Unsupported signing network")
-    decision = decide(profile, root, intent)
-    if decision.status == "DENY":
-        raise ValueError("Offline policy denied transaction: " + "; ".join(decision.reasons))
-    return intent, decision

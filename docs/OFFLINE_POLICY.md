@@ -77,14 +77,15 @@ hash from the same potentially replaced USB drive defeats the protection.
 A compromised offline host, co-replaced paper record or a forged operator
 prompt can still undermine this process.
 
-**Shared policy entry point:** `usb_cold_wallet.policy.authorize_review(root, vault,
-password, expected_sha256, reviewed, network)` is the common fail-closed gate
-for CLI and future GUI/QR signers. It loads the current wallet-bound encrypted
-profile from `<vault>.policy`, verifies the externally supplied SHA-256 and
-returns an evaluated intent/decision; a `DENY` raises before signing.
-Individual callers still require explicit human confirmation. GUI (#25/#29)
-and QR (#27) must invoke this gate for **every** signature and have independent
-missing-policy, wrong-hash, and over-limit regression tests before merger.
+**Shared policy signing gate:** callers first load the single-read encrypted
+policy with `read_policy_snapshot(<vault>.policy, independent_hash)` **before
+unlocking**, then after deriving the wallet root call
+`load_policy_snapshot(snapshot, root, password)` and
+`enforce_review_policy(profile, root, validated_review, kind="evm"|"btc")`.
+A DENY aborts signing; unknown recipients require extra confirmation.
+CLI already enforces this sequence. GUI (#25/#29) and QR (#27) must invoke the
+same gate for **every** signature and have independent missing-policy,
+wrong-hash and over-limit regression tests before merger.
 
 **Remaining Issue #21 follow-up:** GUI integration (#19); independently
 reviewed token/typed-data decoder and display (#3); hardware-backed or
