@@ -157,6 +157,8 @@ def _validate_watch_only(payload):
     addrs = btc["receive_addresses"]
     if type(addrs) is not list or not 1 <= len(addrs) <= 20:
         raise ValueError("Watch-only address count out of bounds")
+    if any(type(addr) is not str for addr in addrs):
+        raise ValueError("Invalid Bitcoin watch-only receive address")
     if len(set(addrs)) != len(addrs):
         raise ValueError("Duplicate Bitcoin address")
     for index, addr in enumerate(addrs):
@@ -286,7 +288,7 @@ def _validate_payload(kind, payload):
 
 
 def package(kind: str, payload):
-    if kind not in KINDS:
+    if type(kind) is not str or kind not in KINDS:
         raise ValueError("Unrecognized exchange kind")
     _validate_payload(kind, payload)
     content = {"format": FORMAT, "version": VERSION, "kind": kind,
@@ -304,7 +306,7 @@ def verify(data, expected_kind=None):
         raise ValueError("Invalid exchange envelope fields")
     kind = data["kind"]
     if (data["format"] != FORMAT or type(data["version"]) is not int or
-            data["version"] != VERSION or kind not in KINDS or
+            data["version"] != VERSION or type(kind) is not str or kind not in KINDS or
             data["network"] != KINDS[kind] or
             (expected_kind is not None and kind != expected_kind)):
         raise ValueError("Exchange format, type, or network mismatch")
