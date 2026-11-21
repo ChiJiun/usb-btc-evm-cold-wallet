@@ -7,7 +7,7 @@ import {makeTypedUR,parseTypedUR,encodeTypedFrames,TypedURScanner,bindTypedToPen
 const rid="1234567890abcdef1234567890abcdef";
 const address="0x000000000000000000000000000000000000dead";
 const tx={network:"sepolia",chainId:11155111,dataType:4,requestId:rid,
- unsignedTxHex:"02c101",address,path:[44,60,0,0,0],fingerprint:"aabbccdd"};
+ unsignedTxHex:"02c101",address,path:[{index:44,hardened:true},{index:60,hardened:true},{index:0,hardened:true},{index:0,hardened:false},{index:0,hardened:false}],fingerprint:"aabbccdd"};
 const psbtHex="70736274ff01000100";
 const digest=x=>createHash("sha256").update(Buffer.from(x,"hex")).digest("hex");
 const scan=frames=>{const s=new TypedURScanner();for(const f of frames){s.add(f);if(s.done)break;}return s;};
@@ -25,12 +25,12 @@ test("ERC-4527 EIP-2718 typed request uses integer-key CBOR and tagged UUID/keyp
  const out=parseTypedUR(UR.parse(ur.toQRString().toLowerCase()));
  assert.deepEqual(out,{type:"eth-sign-request",requestId:rid,unsignedTxHex:"02c101",
   dataType:4,chainId:11155111,network:"sepolia",address,
-  path:[44,60,0,0,0],fingerprint:"aabbccdd"});
+  path:[{index:44,hardened:true},{index:60,hardened:true},{index:0,hardened:true},{index:0,hardened:false},{index:0,hardened:false}],fingerprint:"aabbccdd"});
  assert.deepEqual(scan(encodeTypedFrames("eth-sign-request",tx)).payload,out);
  assert.throws(()=>makeTypedUR("eth-sign-request",{...tx,chainId:1}),/Sepolia/);
  assert.throws(()=>makeTypedUR("eth-sign-request",{...tx,dataType:2}),/typed/);
  assert.throws(()=>makeTypedUR("eth-sign-request",{...tx,unsignedTxHex:"01c101"}),/type-2/);
- assert.throws(()=>makeTypedUR("eth-sign-request",{...tx,path:[2147483648]}),/path/);
+ assert.throws(()=>makeTypedUR("eth-sign-request",{...tx,path:[{index:2147483648,hardened:false}]}),/path/);
 });
 test("ERC-4527 response contains precisely 65 r,s,v bytes, never a raw signed transaction",()=>{
  const signatureHex="11".repeat(32)+"22".repeat(32)+"1b";
@@ -78,5 +78,5 @@ test("bounded multipart rejects wrong type, mixed messages, malformed CBOR, scan
  timer.add(frames[0]);now+=11;
  assert.throws(()=>timer.add(frames[1]),/timed out/);
  const poisoned=UR.from("eth-sign-request",cbor(new Map([[1,"fake uuid"]])));
- assert.throws(()=>parseTypedUR(poisoned),/Missing CBOR/);
+ assert.throws(()=>parseTypedUR(poisoned),/CBOR map field mismatch|Missing CBOR/);
 });

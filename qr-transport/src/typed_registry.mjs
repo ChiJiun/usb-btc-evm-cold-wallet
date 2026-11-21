@@ -47,13 +47,17 @@ const readUuid = node => {
 };
 function keypath(path, fingerprint) {
   if (!Array.isArray(path) || path.length < 1 || path.length > 10 ||
-      !path.every(v => Number.isSafeInteger(v) && v >= 0 && v < 0x80000000)) {
+      !path.every(v => v && typeof v === "object" && !Array.isArray(v) &&
+        Object.keys(v).sort().join(",") === "hardened,index" &&
+        Number.isSafeInteger(v.index) && v.index >= 0 && v.index < 0x80000000 &&
+        typeof v.hardened === "boolean")) {
     throw Error("Invalid bounded EVM derivation path");
   }
   const fp = bytes(fingerprint, 4, "fingerprint");
   const f = new DataView(fp.buffer).getUint32(0, false);
+  if (f === 0) throw Error("Zero fingerprint not permitted");
   return taggedValue(304, map([
-    [1, path.flatMap(v=>[v,false])], [2,f], [3,path.length]
+    [1, path.flatMap(v=>[v.index,v.hardened])], [2,f], [3,path.length]
   ]));
 }
 function readKeypath(node) {
@@ -68,8 +72,7 @@ function readKeypath(node) {
   for (let i=0;i<values.length;i+=2) {
     if (!Number.isInteger(values[i]) || values[i]<0 || values[i]>=0x80000000 ||
         typeof values[i+1] !== "boolean") throw Error("Unsupported keypath component");
-    if (values[i+1]) throw Error("Hardened keypath must be explicitly reviewed offline");
-    path.push(values[i]);
+    path.push({index:values[i],hardened:values[i+1]});
   }
   return {path, fingerprint:fp.toString(16).padStart(8,"0")};
 }
