@@ -414,3 +414,97 @@ def test_failed_export_cleanup_keeps_preexisting_or_replaced_files(tmp_path):
     (tmp_path / "alias").symlink_to(target)
     app._cleanup_failed_export(tmp_path / "alias", (info.st_dev, info.st_ino))
     assert target.read_bytes() == b"unrelated existing content"
+
+
+def test_signed_export_not_visible_until_atomic_publish(monkeypatch, tmp_path):
+    app = _signed_test_gui(tmp_path)
+    target = tmp_path / "signed.json"
+    original = gui._atomic_rename_noreplace
+    seen = []
+
+    def observe(parent, staging, final):
+        assert not target.exists()
+        assert staging.endswith(".partial")
+        with os.fdopen(os.open(staging, os.O_RDONLY, dir_fd=parent), "rb") as f:
+            assert json.load(f)["kind"] == "evm-signed"
+        seen.append(staging)
+        original(parent, staging, final)
+
+    monkeypatch.setattr(gui, "_atomic_rename_noreplace", observe)
+    app._write_transfer_signed(target)
+    assert seen and json.loads(target.read_text())["kind"] == "evm-signed"
+    assert not list(tmp_path.glob(".*.partial"))
+
+
+def test_signed_export_short_write_is_retried(monkeypatch, tmp_path):
+    app = _signed_test_gui(tmp_path)
+    actual = gui.os.write
+    calls = []
+
+    def short_once(fd, data):
+        calls.append(len(data))
+        return actual(fd, data[:13] if len(calls) == 1 else data)
+
+    with monkeypatch.context() as m:
+        m.setattr(gui.os, "write", short_once)
+        app._write_transfer_signed(tmp_path / "signed.json")
+    assert len(calls) >= 2
+    assert json.loads((tmp_path / "signed.json").read_text())["kind"] == "evm-signed"
+
+
+def test_signed_export_enospc_cleans_stage_and_can_retry(monkeypatch, tmp_path):
+    app = _signed_test_gui(tmp_path)
+    actual = gui.os.write
+    target = tmp_path / "signed.json"
+    calls = []
+
+    def fail_after_partial(fd, data):
+        calls.append(len(data))
+        if len(calls) == 1:
+            actual(fd, data[:17])
+        raise OSError(28, "simulated USB full during write")
+
+    with monkeypatch.context() as m:
+        m.setattr(gui.os, "write", fail_after_partial)
+        with pytest.raises(OSError, match="USB full"):
+            app._write_transfer_signed(target)
+    assert not target.exists()
+    assert not list(tmp_path.glob(".*.partial"))
+    app._write_transfer_signed(target)
+    assert json.loads(target.read_text())["kind"] == "evm-signed"
+
+
+def test_signed_export_rename_collision_never_overwrites(monkeypatch, tmp_path):
+    app = _signed_test_gui(tmp_path)
+    target = tmp_path / "exists.json"
+    target.write_bytes(b"keep existing data")
+    with pytest.raises(FileExistsError):
+        app._write_transfer_signed(target)
+    assert target.read_bytes() == b"keep existing data"
+    assert not list(tmp_path.glob(".*.partial"))
+
+
+def test_signed_export_rename_unavailable_fails_closed(monkeypatch, tmp_path):
+    app = _signed_test_gui(tmp_path)
+    target = tmp_path / "no-atomic.json"
+
+    def unavailable(*args):
+        raise OSError(38, "renameat2 unavailable")
+
+    monkeypatch.setattr(gui, "_atomic_rename_noreplace", unavailable)
+    with pytest.raises(OSError, match="renameat2 unavailable"):
+        app._write_transfer_signed(target)
+    assert not target.exists()
+    assert not list(tmp_path.glob(".*.partial"))
+
+
+def test_signed_export_rejects_final_symlink(tmp_path):
+    app = _signed_test_gui(tmp_path)
+    outside = tmp_path.parent / (tmp_path.name + "-existing.txt")
+    outside.write_bytes(b"untouched")
+    target = tmp_path / "alias.json"
+    target.symlink_to(outside)
+    with pytest.raises((ValueError, FileExistsError, OSError)):
+        app._write_transfer_signed(target)
+    assert outside.read_bytes() == b"untouched"
+    assert not list(tmp_path.glob(".*.partial"))
