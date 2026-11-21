@@ -37,6 +37,10 @@ MAX_CASE_BYTES = 200_001
 MAX_CORPUS = 256
 
 
+class CaseTimeout(BaseException):
+    """Out-of-band bound: cannot be normalized into a parser ValueError."""
+
+
 @dataclass(frozen=True)
 class Observation:
     coverage: frozenset[int]
@@ -126,7 +130,7 @@ def main() -> int:
     has_timer = hasattr(signal, "setitimer")
 
     def alarm_handler(_signum, _frame):
-        raise TimeoutError("PSBT parser/policy exceeded per-case wall-time bound")
+        raise CaseTimeout("PSBT parser/policy exceeded per-case wall-time bound")
 
     original_alarm_handler = signal.getsignal(signal.SIGALRM) if has_timer else None
     rng = random.Random(args.seed)
@@ -150,7 +154,7 @@ def main() -> int:
             signal.setitimer(signal.ITIMER_REAL, args.case_timeout_ms / 1000)
         try:
             result = execute(case)
-        except Exception as exc:
+        except (Exception, CaseTimeout) as exc:
             crashes += 1
             digest = hashlib.sha256(case).hexdigest()
             if args.artifact_dir is not None:
