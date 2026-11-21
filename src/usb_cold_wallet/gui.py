@@ -439,6 +439,7 @@ class OfflineReviewApp:
         self._active_usb_file = None
         self._active_usb_identity = None
         self._active_usb_digest = None
+        self._active_request_id = None
         self._active_qr_request = None
         self._signed_qr_text = None
         self.policy_profile = None
@@ -580,6 +581,7 @@ class OfflineReviewApp:
         self.ttk.Label(self.container, text="Session: " + self.security.state.value + f" · Idle auto-lock: {self.idle_seconds}s · Python RAM zeroization cannot be guaranteed", wraplength=780).pack(fill="x", pady=4)
         self.ttk.Button(self.container, text="Lock now / 立即鎖定", command=self._cancel_to_home).pack(fill="x", pady=4)
         self.ttk.Button(self.container, text="Exit signer / 離開（不等於電腦關機）", command=self._close).pack(fill="x", pady=4)
+        self.ttk.Button(self.container, text="單 USB：自動載入唯一待簽 Request", command=self._import_single_usb).pack(fill="x", pady=8, ipady=8)
         choices = self.ttk.Frame(self.container)
         choices.pack(fill="x", expand=True, pady=12)
         self.ttk.Button(
@@ -791,6 +793,49 @@ class OfflineReviewApp:
         finally:
             os.close(parent)
 
+    def _import_single_usb(self):
+        """Load exactly one Companion request-<id>.json without a file picker."""
+        base = self.transfer_dir / ".usb-cold-wallet" / "exchange"
+        try:
+            candidates = sorted(base.glob("request-*.json"))
+            if len(candidates) != 1:
+                raise ValueError("單 USB 交換區必須恰好有一筆 request-<RequestID>.json")
+            path = candidates[0]
+            match = re.fullmatch(r"request-([0-9a-f]{32})\.json", path.name)
+            if match is None:
+                raise ValueError("單 USB Request 檔名不合法")
+            raw, identity = self._read_transfer_snapshot(path)
+            envelope = _decode_envelope_text(raw.decode("utf-8"), None)
+            kind = envelope.get("kind")
+            if kind not in ("btc-request", "evm-request"):
+                raise ValueError("單 USB 交換區不是可簽署 BTC/Sepolia Request")
+            digest = hashlib.sha256(raw).digest()
+        except (ValueError, OSError, UnicodeError, KeyError, TypeError) as exc:
+            self._lock_wallet(self.t("locked"))
+            self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
+            self._render_home()
+            return
+        self.selected_kind = kind
+        if self.wallet_root is None and not self._unlock():
+            self._render_home()
+            return
+        try:
+            plan = build_review_plan(envelope, self.wallet_root, kind)
+            self._active_usb_file = path
+            self._active_usb_identity = identity
+            self._active_usb_digest = digest
+            self._active_request_id = match.group(1)
+            self._active_qr_request = None
+            self._signed_qr_text = None
+            if not self._transport_available():
+                raise ValueError("USB request changed during unlock")
+        except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
+            self._lock_wallet(self.t("locked"))
+            self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
+            self._render_home()
+            return
+        self._start_review(plan)
+
     def _import_usb(self):
         kind = self.selected_kind
         filename = self.filedialog.askopenfilename(
@@ -829,6 +874,7 @@ class OfflineReviewApp:
             self._active_usb_file = path
             self._active_usb_identity = identity
             self._active_usb_digest = digest
+            self._active_request_id = None
             self._active_qr_request = None
             self._signed_qr_text = None
             if not self._transport_available():
@@ -1089,21 +1135,27 @@ class OfflineReviewApp:
     def _export_signed(self):
         if not self.session:
             return
-        filename = self.filedialog.asksaveasfilename(
-            parent=self.root,
-            initialdir=str(self.transfer_dir),
-            defaultextension=".json",
-            filetypes=(("JSON exchange", "*.json"),),
-            title=self.t("export"),
-        )
-        if not filename:
-            return
-        path = Path(filename)
+        if self._active_request_id:
+            path = self.transfer_dir / ".usb-cold-wallet" / "exchange" / f"response-{self._active_request_id}.json"
+        else:
+            filename = self.filedialog.asksaveasfilename(
+                parent=self.root,
+                initialdir=str(self.transfer_dir),
+                defaultextension=".json",
+                filetypes=(("JSON exchange", "*.json"),),
+                title=self.t("export"),
+            )
+            if not filename:
+                return
+            path = Path(filename)
         if not self._path_allowed(path):
             self.messagebox.showerror(self.t("error"), "Signed response must be written to TX_TRANSFER.", parent=self.root)
             return
         try:
             self._write_transfer_signed(path)
+            if self._active_request_id:
+                self.status_message = "已寫入單 USB 簽章回覆。請關機後回 Windows；Companion 會重新驗證，再等待人工 Broadcast。"
+                self.messagebox.showinfo(self.t("signed"), self.status_message, parent=self.root)
         except FileExistsError:
             self.messagebox.showerror(self.t("error"), self.t("output_exists"), parent=self.root)
         except (ValueError, OSError, KeyError, TypeError) as exc:
