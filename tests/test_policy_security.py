@@ -198,3 +198,23 @@ def test_policy_cli_prints_exact_current_digest_for_independent_record(tmp_path,
     printed = capsys.readouterr().out
     assert hashlib.sha256(policy.read_bytes()).hexdigest() in printed
     assert "record independently" in printed
+
+
+def test_cli_policy_mutation_emits_new_trusted_anchor(tmp_path, monkeypatch, capsys):
+    wallet = tmp_path / "wallet.vault"
+    policy = tmp_path / "wallet.vault.policy"
+    monkeypatch.setattr(cli, "_wallet_root", lambda _args: ROOT)
+    monkeypatch.setattr(cli, "_password", lambda: PASSWORD)
+    monkeypatch.setattr(cli, "_approve", lambda _text: None)
+    prefix = ["--vault", str(wallet), "policy", "--file", str(policy)]
+    assert cli.main([*prefix, "--action", "init"]) == 0
+    first = hashlib.sha256(policy.read_bytes()).hexdigest()
+    assert first in capsys.readouterr().out
+    assert cli.main([
+        *prefix, "--action", "set-limit", "--field", "evm_max_value_wei",
+        "--value", "12345",
+    ]) == 0
+    second = hashlib.sha256(policy.read_bytes()).hexdigest()
+    assert first != second
+    output = capsys.readouterr().out
+    assert second in output and "record independently" in output
