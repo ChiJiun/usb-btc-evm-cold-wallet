@@ -117,6 +117,7 @@ def test_good_release_verifies_pinned_tag_and_build_provenance():
     assert attest[attest.index("--source-ref") + 1] == f"refs/tags/{TAG}"
     assert attest[attest.index("--source-digest") + 1] == COMMIT
     assert attest[attest.index("--signer-workflow") + 1] == RELEASE_WORKFLOW
+    assert attest[attest.index("--signer-digest") + 1] == COMMIT
     assert attest[attest.index("--predicate-type") + 1] == "https://slsa.dev/provenance/v1"
     assert sum(a[:2] == ["release", "verify-asset"] for a in fake.calls) == 2
 
@@ -311,6 +312,8 @@ def test_release_workflow_has_pinned_actions_and_separated_permissions():
     assert "permissions: {}" in workflow
     assert 'default: false' in workflow
     assert 'test "$GITHUB_REF" = "refs/heads/main"' in workflow
+    assert 'test "$GITHUB_SHA" = "$SOURCE_SHA"' in workflow
+    assert workflow.count('ref: ${{ github.sha }}') >= 3
 
     use_lines = [line.strip() for line in workflow.splitlines() if "uses:" in line]
     assert use_lines
