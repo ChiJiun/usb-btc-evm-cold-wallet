@@ -147,7 +147,7 @@ VAULT_TYPE="$(awk '$2 == "/mnt/cold-vault" { print $3; exit }' /proc/mounts 2>/d
 VAULT_OPTS="$(awk '$2 == "/mnt/cold-vault" { print $4; exit }' /proc/mounts 2>/dev/null || true)"
 if [ "$VAULT_TYPE" = "vfat" ] && [ -n "$VAULT_DEVICE" ] && [ "$VAULT_SOURCE" = "$VAULT_DEVICE" ]; then
 	pass "COLD_VAULT mounted from verified PARTUUID device as vfat"
-	for option in rw noexec nodev nosuid sync; do
+	for option in rw noexec nodev nosuid sync fmask=0177 dmask=0077; do
 		case ",$VAULT_OPTS," in
 			*",$option,"*) ;;
 			*) fail "COLD_VAULT missing mount option: $option" ;;
