@@ -12,6 +12,8 @@ let animation = null;
 let index = 0;
 let scanner = new BoundedURScanner();
 let readerControls = null;
+let cameraOpening = false;
+let cameraEpoch = 0;
 let scanned = null;
 
 function stopAnimation() {
@@ -56,6 +58,8 @@ el("prepare").addEventListener("click", async () => {
 el("stopAnimation").addEventListener("click", stopAnimation);
 el("resumeAnimation").addEventListener("click", startAnimation);
 function stopCamera() {
+  // Also invalidate a camera permission/open request still awaiting resolution.
+  cameraEpoch++;
   readerControls?.stop();
   readerControls = null;
   const video = el("preview");
@@ -78,15 +82,17 @@ el("resetScan").addEventListener("click", () => {
   status("已重置，等待新的 QR 掃描。");
 });
 el("startScan").addEventListener("click", async () => {
-  if (readerControls) return;
+  if (readerControls || cameraOpening) return;
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
     return status("無法使用攝影機：請使用 HTTPS / localhost 安全環境，或 USB-B 備援。");
   }
   if (scanner.done) return status("請先按重新掃描以建立新的掃描 session。");
   const reader = new BrowserQRCodeReader(undefined, { delayBetweenScanAttempts: 150 });
+  const epoch = ++cameraEpoch;
+  cameraOpening = true;
   try {
-    readerControls = await reader.decodeFromVideoDevice(undefined, el("preview"), (result, error) => {
-      if (!result) return;
+    const controls = await reader.decodeFromVideoDevice(undefined, el("preview"), (result, error) => {
+      if (epoch !== cameraEpoch || !result) return;
       try {
         const progress = scanner.add(result.getText());
         el("progress").value = Math.round(progress.progress * 100);
@@ -102,10 +108,21 @@ el("startScan").addEventListener("click", async () => {
         status(`掃描失敗：${e.message}。請重設掃描，或採 USB-B 備援。`);
       }
     });
+    // A successful scan or user cancellation may precede this await resolving.
+    // In that case, close the late-arriving controls instead of leaking camera access.
+    if (epoch !== cameraEpoch || scanner.done) {
+      controls.stop();
+      return;
+    }
+    readerControls = controls;
     status("攝影機已啟動，僅限離線主機的本機可信任攝影機。");
   } catch (e) {
-    stopCamera();
-    status(`攝影機不可用：${e.message}。改用 USB-B 備援。`);
+    if (epoch === cameraEpoch) {
+      stopCamera();
+      status(`攝影機不可用：${e.message}。改用 USB-B 備援。`);
+    }
+  } finally {
+    cameraOpening = false;
   }
 });
 el("save").addEventListener("click", () => {
