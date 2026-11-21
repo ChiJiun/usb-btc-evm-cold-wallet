@@ -311,7 +311,7 @@ def test_release_workflow_has_pinned_actions_and_separated_permissions():
     assert "pull_request:" not in workflow
     assert "permissions: {}" in workflow
     assert 'default: false' in workflow
-    assert 'test "$GITHUB_REF" = "refs/heads/main"' in workflow
+    assert 'test "$GITHUB_REF" = "refs/tags/$TAG"' in workflow
     assert 'test "$GITHUB_SHA" = "$SOURCE_SHA"' in workflow
     assert workflow.count('ref: ${{ github.sha }}') >= 3
 
@@ -341,5 +341,6 @@ def test_release_workflow_has_pinned_actions_and_separated_permissions():
 
     assert "contents: write" in publish
     assert "needs: gate" in publish
+    assert "startsWith(github.ref, 'refs/tags/')" in publish
     assert "needs.gate.result == 'success'" in publish
     assert "--clobber" not in publish
