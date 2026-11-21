@@ -5,9 +5,11 @@
 ## 0. Identify exact verified image
 
 - [ ] Open the successful **Live USB image verification** run for this PR's **exact HEAD SHA**. Confirm the reproducibility step, `Boot generated USB image using UEFI OVMF/QEMU (TCG)`, `Verify exact image bytes against reproducibility evidence`, and image upload step all succeeded. Do not use a failed, cancelled or different-commit run.
-- [ ] Download `testnet-only-NOT-A-RELEASE-usb-cold-wallet` artifact from that run (3-day retention). This is an unsigned CI artifact, **not** a release or proof of GitHub/host provenance. It contains `usb-cold-wallet.img` and `usb-cold-wallet.img.sha256`.
-- [ ] Record: repository commit SHA, workflow run URL/id, artifact name/id, image size in bytes, SHA-256 from the artifact, download date. Rehash after download. On Linux, from the unzipped artifact directory: `sha256sum -c usb-cold-wallet.img.sha256`. The same image hash must appear in the run's `run-1.sha256` and `run-2.sha256` evidence.
-- [ ] If artifact is absent/expired or any hash differs, **STOP**. Rebuild and rerun full validation for the new exact commit; do not substitute a similarly named or unverified image.
+- [ ] Download `testnet-only-NOT-A-RELEASE-usb-cold-wallet` artifact from that run (3-day retention). This is an unsigned CI artifact, **not** a release or proof of GitHub/host provenance. It contains the raw `usb-cold-wallet.img`, deterministic `usb-cold-wallet.img.xz`, both SHA-256 files, `run-1.sha256`, `run-2.sha256`, and `ARTIFACT-MANIFEST.txt`.
+- [ ] Open `ARTIFACT-MANIFEST.txt` and confirm `classification=TESTNET ONLY / NOT A RELEASE`, `commit_sha` and `event_head_sha` equal the PR's exact HEAD, and `workflow_run_id` equals the run being downloaded. Record artifact name/id, image byte size, image SHA-256 and download date.
+- [ ] Recompute all artifact checks on another trusted Linux machine from the unzipped directory: `sha256sum -c usb-cold-wallet.img.sha256`, `sha256sum -c usb-cold-wallet.img.xz.sha256`, `xz --test usb-cold-wallet.img.xz`, and `xz -dc usb-cold-wallet.img.xz | cmp - usb-cold-wallet.img`. Confirm the raw image SHA-256 is identical in `usb-cold-wallet.img.sha256`, `run-1.sha256`, `run-2.sha256`, and `image_sha256=` in the manifest.
+- [ ] To reproduce the compressed representation, use the manifest's recorded xz version and exact parameters: `xz --threads=1 --check=crc64 -9e --keep --stdout usb-cold-wallet.img > recomputed.img.xz`, then compare `sha256sum recomputed.img.xz usb-cold-wallet.img.xz`. A different xz version is allowed to produce different compressed bytes; the decompressed raw image SHA-256 remains the authoritative image identity.
+- [ ] If artifact is absent/expired, manifest binding is wrong, decompression differs, or any authoritative raw-image hash differs, **STOP**. Rebuild and rerun full validation for the new exact commit; do not substitute a similarly named or unverified image.
 
 ## 1. Prepare and record physical media
 
