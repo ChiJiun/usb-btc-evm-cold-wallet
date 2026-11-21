@@ -8,6 +8,7 @@ store back.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib
 import json
@@ -209,7 +210,20 @@ class _Journal:
             os.close(fd)
 
     def _reload(self):
-        self._records, self.recovery_warnings = self._load()
+        # A live process can detect the disappearance/rewrite of previously
+        # observed records even if no external monotonic anchor is configured.
+        observed = {
+            (entry["requestId"], entry["counter"], entry["recordDigest"])
+            for entry in self._records
+        }
+        updated, warnings = self._load()
+        available = {
+            (entry["requestId"], entry["counter"], entry["recordDigest"])
+            for entry in updated
+        }
+        if not observed.issubset(available):
+            raise RollbackDetected("Previously observed journal history was removed or rewritten")
+        self._records, self.recovery_warnings = updated, warnings
         self._validate_chains()
 
     def _load(self):
@@ -331,7 +345,7 @@ class _Journal:
             transaction_digest=record["transactionDigest"],
             record_digest=record["recordDigest"],
             previous_digest=record["previousDigest"],
-            metadata=record["metadata"],
+            metadata=copy.deepcopy(record["metadata"]),
         )
 
     def _transition(
@@ -362,6 +376,7 @@ class _Journal:
         metadata = {} if metadata is None else metadata
         if type(metadata) is not dict:
             raise ValueError("State metadata must be an object")
+        metadata = copy.deepcopy(metadata)
         current = self.get(request_id)
         transitions = ONLINE_TRANSITIONS if self.owner == "online" else COLD_TRANSITIONS
         previous_state = None if current is None else current.state

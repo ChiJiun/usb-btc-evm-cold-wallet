@@ -201,7 +201,7 @@ def test_online_state_survives_restarts_and_prevents_double_broadcast(tmp_path):
     assert store.broadcasted(request, signed["transaction_hash"]).state == "BROADCASTED"
     store = PendingRequestStore(root)
     assert store.get(request["requestId"]).state == "BROADCASTED"
-    with pytest.raises(ValueError, match="durable pre-broadcast|transition"):
+    with pytest.raises(ValueError, match="durable pre-broadcast"):
         store.broadcasted(request, signed["transaction_hash"])
 
 
@@ -227,6 +227,22 @@ def test_stale_online_instances_cannot_recreate_or_rebroadcast(tmp_path):
     first.create(request)
     with pytest.raises(ValueError, match="transition"):
         stale.create(request)
+
+
+def test_journal_snapshot_metadata_cannot_mutate_reserved_txid(tmp_path):
+    request = evm_request()
+    signed = sign_evm(ROOT, request["payload"], EVM_RECIPIENT, request["intent"]["amount"])
+    response = package_v2_response(request, signed, trusted_time=100)
+    store = PendingRequestStore(tmp_path / "state")
+    store.create(request)
+    store.exported(request)
+    store.import_verified(request, response, trusted_time=100)
+    snapshot = store.broadcast_requested(request, signed["transaction_hash"])
+    fake = "0x" + "ff" * 32
+    snapshot.metadata["txid"] = fake
+    with pytest.raises(ValueError, match="durable pre-broadcast"):
+        store.broadcasted(request, fake)
+    assert store.get(request["requestId"]).metadata["txid"] == signed["transaction_hash"]
 
 
 def test_partial_journal_write_blocks_new_broadcast_attempt(tmp_path):
@@ -288,23 +304,19 @@ def test_replay_ledger_rejects_same_btc_outpoint_with_changed_payment(tmp_path):
         first, expected_account=ROOT.my_fingerprint.hex(), trusted_time=100
     )
     parsed = psbt.PSBT.parse(base64.b64decode(btc_psbt()))
+    original = parsed.tx
     changed_tx = transaction.Transaction(
-        version=parsed.tx.version,
-        vin=list(parsed.tx.vin),
+        version=original.version, vin=original.vin,
         vout=[
-            transaction.TransactionOutput(
-                60_001, script.address_to_scriptpubkey(BTC_RECIPIENT)
-            ),
-            transaction.TransactionOutput(
-                88_499, parsed.tx.vout[1].script_pubkey
-            ),
+            transaction.TransactionOutput(60_001, original.vout[0].script_pubkey),
+            transaction.TransactionOutput(88_499, original.vout[1].script_pubkey),
         ],
-        locktime=parsed.tx.locktime,
+        locktime=original.locktime,
     )
     changed_psbt = psbt.PSBT(changed_tx)
     changed_psbt.inputs[0].witness_utxo = parsed.inputs[0].witness_utxo
     changed_psbt.inputs[0].non_witness_utxo = parsed.inputs[0].non_witness_utxo
-    changed_psbt.inputs[0].bip32_derivations = dict(parsed.inputs[0].bip32_derivations)
+    changed_psbt.inputs[0].bip32_derivations = parsed.inputs[0].bip32_derivations.copy()
     changed = package_v2_request(
         "btc-request", changed_psbt.to_base64(), request_id="82" * 16,
         account=ROOT.my_fingerprint.hex(), recipient=BTC_RECIPIENT, amount=60_001,
@@ -349,6 +361,18 @@ def test_corrupt_published_state_fails_closed(tmp_path):
     published.write_bytes(b'{"corrupt":true}\n')
     with pytest.raises(StateCorruptionError):
         PendingRequestStore(root)
+
+
+def test_running_journal_detects_removed_previously_observed_record(tmp_path):
+    request = evm_request()
+    root = tmp_path / "state"
+    store = PendingRequestStore(root)
+    store.create(request)
+    store.exported(request)
+    latest = sorted(root.glob("*.json"))[-1]
+    latest.unlink()
+    with pytest.raises(RollbackDetected, match="Previously observed"):
+        store.exported(request)
 
 
 def test_external_tip_anchor_detects_whole_store_rollback(tmp_path):
