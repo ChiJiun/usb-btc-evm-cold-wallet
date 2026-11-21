@@ -1,6 +1,13 @@
 name: Bitcoin PSBT coverage-guided fuzz
 
 on:
+  pull_request:
+    paths:
+      - 'src/usb_cold_wallet/btc.py'
+      - 'tools/fuzz_btc_psbt.py'
+      - 'tests/test_btc_*'
+      - 'tests/fixtures/btc_psbt_crashes/**'
+      - '.github/workflows/btc-psbt-fuzz.yml'
   workflow_dispatch:
   schedule:
     - cron: "40 3 * * 0"
@@ -39,9 +46,14 @@ jobs:
           FUZZ_SEED: ${{ github.run_id }}
         run: |
           set -euo pipefail
+          # Linux virtual-address-space bound (768 MiB); overall job and per-case
+          # time are bounded independently. Exit code propagates through pipefail.
+          ulimit -v 786432
           python tools/fuzz_btc_psbt.py \
             --seconds 180 \
             --max-cases 50000 \
+            --case-timeout-ms 250 \
+            --replay-dir tests/fixtures/btc_psbt_crashes \
             --seed "$FUZZ_SEED" \
             --artifact-dir btc-psbt-crashes | tee btc-psbt-fuzz-result.json
 
