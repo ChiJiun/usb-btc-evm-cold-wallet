@@ -501,9 +501,29 @@ class ReplayLedger(_Journal):
         self._reload()
         if self.get(request["requestId"]) is not None:
             raise ValueError("Duplicate requestId already reviewed")
+        intent = request["intent"]
+        requested_outpoints = {
+            (item["txid"], item["vout"]) for item in intent["utxos"]
+        }
         for record in self._records:
             if record["transactionDigest"] == request["transactionDigest"]:
                 raise ValueError("Transaction digest already reviewed under another requestId")
+            if record["state"] != "COLD_REVIEWED":
+                continue
+            prior = record["metadata"]
+            if request["network"] == "sepolia" and (
+                prior.get("network") == "sepolia" and
+                prior.get("account") == request["account"] and
+                prior.get("nonce") == intent["nonce"]
+            ):
+                raise ValueError("EVM account nonce already reserved by an earlier request")
+            if request["network"] == "bitcoin-testnet" and (
+                prior.get("network") == "bitcoin-testnet" and
+                requested_outpoints.intersection(
+                    tuple(point) for point in prior.get("outpoints", [])
+                )
+            ):
+                raise ValueError("Bitcoin UTXO already reserved by an earlier request")
 
     def review_once(
         self,
@@ -522,13 +542,17 @@ class ReplayLedger(_Journal):
             allow_no_trusted_clock=allow_no_trusted_clock,
         )
         with self._locked():
-            self._ensure_unseen(request)
+            self._ensure_unseen(checked)
             return self._transition_locked(
                 request["requestId"], "COLD_REVIEWED", request["sha256"],
                 request["transactionDigest"], {
                     "network": request["network"],
                     "account": request["account"],
                     "expiryAssurance": checked["expiryAssurance"],
+                    "nonce": checked["intent"]["nonce"],
+                    "outpoints": [
+                        [item["txid"], item["vout"]] for item in checked["intent"]["utxos"]
+                    ],
                 },
             )
 
