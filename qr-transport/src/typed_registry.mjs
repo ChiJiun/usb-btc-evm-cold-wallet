@@ -76,6 +76,67 @@ function readKeypath(node) {
   }
   return {path, fingerprint:fp.toString(16).padStart(8,"0")};
 }
+// Strict, bounded EIP-2718 type-2 *unsigned* RLP shape; this is a
+// transport precondition, never a substitute for offline signing-policy review.
+function rlpHead(data, offset) {
+  if (offset>=data.length) throw Error("Truncated RLP");
+  const head=data[offset];
+  if (head<0x80) return {kind:"bytes",start:offset,length:1,next:offset+1};
+  const kind=head<0xc0?"bytes":"list";
+  const small=head<0xc0?0x80:0xc0, cutoff=head<0xc0?0xb7:0xf7;
+  let length,start;
+  if(head<=cutoff){length=head-small;start=offset+1;}
+  else {
+    const width=head-cutoff;
+    if(width>3||offset+1+width>data.length||data[offset+1]===0)
+      throw Error("Noncanonical RLP length");
+    length=0;
+    for(let i=0;i<width;i++) length=length*256+data[offset+1+i];
+    if(length<56)throw Error("Noncanonical long RLP length");
+    start=offset+1+width;
+  }
+  if(start+length>data.length)throw Error("RLP overflow");
+  if(kind==="bytes" && length===1 && data[start]<0x80)
+    throw Error("Noncanonical single-byte RLP");
+  return {kind,start,length,next:start+length};
+}
+function rlpUnsignedInteger(data, part) {
+  if(part.kind!=="bytes"||part.length>32||
+     (part.length>0&&data[part.start]===0))
+    throw Error("Noncanonical RLP integer");
+  let n=0n;
+  for(let i=part.start;i<part.next;i++)n=n*256n+BigInt(data[i]);
+  return n;
+}
+function validateUnsignedType2(raw) {
+  if(raw.length<3||raw.length>MAX_PAYLOAD||raw[0]!==2)
+    throw Error("Only bounded unsigned type-2 tx");
+  const root=rlpHead(raw,1);
+  if(root.kind!=="list"||root.next!==raw.length)
+    throw Error("Expected exact unsigned EIP-1559 RLP list");
+  const fields=[];
+  for(let p=root.start;p<root.next;) {
+    if(fields.length>=9)throw Error("Signed or oversized EIP-1559 payload");
+    const item=rlpHead(raw,p);
+    if(item.next>root.next)throw Error("RLP subfield overrun");
+    fields.push(item);p=item.next;
+  }
+  if(fields.length!==9)throw Error("Expected nine unsigned EIP-1559 fields");
+  const chain=rlpUnsignedInteger(raw,fields[0]);
+  const nonce=rlpUnsignedInteger(raw,fields[1]);
+  const priority=rlpUnsignedInteger(raw,fields[2]);
+  const maxFee=rlpUnsignedInteger(raw,fields[3]);
+  const gas=rlpUnsignedInteger(raw,fields[4]);
+  const to=fields[5], value=rlpUnsignedInteger(raw,fields[6]);
+  const data=fields[7],accessList=fields[8];
+  if(chain!==BigInt(ETH_CHAIN)||nonce>0xffffffffffffffffn||
+     priority>maxFee||maxFee===0n||gas!==21000n||value<=0n||
+     to.kind!=="bytes"||to.length!==20||
+     data.kind!=="bytes"||data.length!==0||
+     accessList.kind!=="list"||accessList.length!==0)
+    throw Error("Unsafe or wrong-chain unsigned EIP-1559 transfer");
+}
+
 export function makeTypedUR(type, data) {
   if (!TYPES.has(type)) throw Error("Unsupported typed UR");
   let body;
@@ -86,7 +147,7 @@ export function makeTypedUR(type, data) {
   } else if (type === "eth-sign-request") {
     if (data.chainId !== ETH_CHAIN || data.network !== network || data.dataType !== 4) throw Error("Only Sepolia typed EIP-2718 tx allowed");
     const raw = bytes(data.unsignedTxHex,undefined,"unsigned typed tx");
-    if (raw.length < 3 || raw.length > MAX_PAYLOAD || raw[0] !== 2) throw Error("Only bounded unsigned type-2 tx");
+    validateUnsignedType2(raw);
     const account = bytes(data.address,20,"EVM address");
     if (account.length !== 20) throw Error("Missing EVM signer");
     body = cbor(map([
@@ -119,7 +180,8 @@ export function parseTypedUR(ur) {
   }
   const raw=expectBytes(m.getOrThrow(2),3,MAX_PAYLOAD,"EIP-2718 tx");
   const chain=field(m,4), dataType=field(m,3);
-  if (raw[0]!==2 || chain!==ETH_CHAIN || dataType!==4) throw Error("Unsupported transaction type/chain");
+  if (chain!==ETH_CHAIN || dataType!==4) throw Error("Unsupported transaction type/chain");
+  validateUnsignedType2(raw);
   const signer=expectBytes(m.getOrThrow(6),20,20,"signer");
   const kp=readKeypath(m.getOrThrow(5));
   if (m.has(7)) {
