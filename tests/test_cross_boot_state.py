@@ -304,10 +304,21 @@ def test_replay_ledger_rejects_same_btc_outpoint_with_changed_payment(tmp_path):
         first, expected_account=ROOT.my_fingerprint.hex(), trusted_time=100
     )
     parsed = psbt.PSBT.parse(base64.b64decode(btc_psbt()))
-    parsed.tx.vout[0].value += 1
-    parsed.tx.vout[1].value -= 1
+    original = parsed.tx
+    changed_tx = transaction.Transaction(
+        version=original.version, vin=original.vin,
+        vout=[
+            transaction.TransactionOutput(60_001, original.vout[0].script_pubkey),
+            transaction.TransactionOutput(88_499, original.vout[1].script_pubkey),
+        ],
+        locktime=original.locktime,
+    )
+    changed_psbt = psbt.PSBT(changed_tx)
+    changed_psbt.inputs[0].witness_utxo = parsed.inputs[0].witness_utxo
+    changed_psbt.inputs[0].non_witness_utxo = parsed.inputs[0].non_witness_utxo
+    changed_psbt.inputs[0].bip32_derivations = parsed.inputs[0].bip32_derivations.copy()
     changed = package_v2_request(
-        "btc-request", parsed.to_base64(), request_id="82" * 16,
+        "btc-request", changed_psbt.to_base64(), request_id="82" * 16,
         account=ROOT.my_fingerprint.hex(), recipient=BTC_RECIPIENT, amount=60_001,
         expiry={"mode": "trusted-time", "notAfter": 200},
     )
