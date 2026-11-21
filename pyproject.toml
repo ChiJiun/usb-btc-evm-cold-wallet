@@ -29,9 +29,13 @@ dev = [
 
 [project.scripts]
 usb-cold-wallet = "usb_cold_wallet.cli:main"
+usb-cold-companion = "usb_cold_wallet.companion_web:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+usb_cold_wallet = ["companion_static/*.html", "companion_static/*.css", "companion_static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
