@@ -165,6 +165,72 @@ def test_closed_pr_cancels_only_its_automatic_live_usb_runs():
     assert ".head_repository.full_name == $source" in workflow
     assert ".head_branch == $branch" in workflow
     assert ".number == $number" in workflow
+    assert "pull_requests | length" not in workflow
     assert "Live USB image verification" in workflow
     assert "Live USB fast boot diagnostics" in workflow
     assert "gh api --method POST" in workflow
+
+
+def test_pr_close_jq_filter_requires_positive_pr_identity():
+    """Run the exact checked-in jq expression against conflicting API records."""
+    import json
+    import re
+    from pathlib import Path
+
+    workflow = (
+        Path(__file__).resolve().parents[1]
+        / ".github/workflows/live-usb-pr-close.yml"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"(?ms)^          filter='\\n(.*?)^          '$", workflow
+    )
+    assert match, "The workflow's actual jq program was not found"
+    expression = match.group(1)
+    same_repo = {"full_name": "ChiJiun/usb-btc-evm-cold-wallet"}
+    other_repo = {"full_name": "another-user/usb-btc-evm-cold-wallet"}
+
+    def run_item(id, *, pr_numbers, name="Live USB image verification",
+                 event="pull_request", branch="shared-feature",
+                 source=same_repo):
+        return {
+            "id": id,
+            "name": name,
+            "event": event,
+            "head_branch": branch,
+            "head_repository": source,
+            "pull_requests": (
+                None if pr_numbers is None
+                else [{"number": number} for number in pr_numbers]
+            ),
+        }
+
+    fixture = {
+        "workflow_runs": [
+            run_item(101, pr_numbers=[38]),  # only correct PR
+            run_item(102, pr_numbers=[7]),  # same branch and repo, different PR
+            run_item(103, pr_numbers=[]),  # closed PR association disappeared
+            run_item(104, pr_numbers=None),  # API omits PR association
+            run_item(105, pr_numbers=[38], source=other_repo),
+            run_item(106, pr_numbers=[38], branch="different-feature"),
+            run_item(107, pr_numbers=[38], event="workflow_dispatch"),
+            run_item(108, pr_numbers=[38], name="CI"),
+            run_item(109, pr_numbers=[38], name="Live USB fast boot diagnostics"),
+            run_item(110, pr_numbers=[7, 38]),  # explicit positive match
+            run_item(111, pr_numbers=[], branch="different-feature"),
+            run_item(112, pr_numbers=[38], source=None),
+        ]
+    }
+    output = subprocess.run(
+        [
+            "jq", "-r",
+            "--arg", "branch", "shared-feature",
+            "--arg", "source", "ChiJiun/usb-btc-evm-cold-wallet",
+            "--argjson", "number", "38",
+            expression,
+        ],
+        input=json.dumps(fixture),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert output.stdout.splitlines() == ["101", "109", "110"]

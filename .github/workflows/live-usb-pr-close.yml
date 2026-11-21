@@ -26,16 +26,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Match this PR's source repository + branch. GitHub can return an
-          # empty pull_requests array after a PR closes, so an empty array is
-          # permitted only after matching those two fields.
+          # Only cancel a run whose GitHub API payload explicitly links
+          # it to this PR. Closed PRs may yield pull_requests: []; that is
+          # insufficient evidence and must be skipped (fail closed).
           filter='
             .workflow_runs[]?
             | select(.event == "pull_request")
             | select(.name == "Live USB image verification" or .name == "Live USB fast boot diagnostics")
             | select(.head_branch == $branch)
             | select(.head_repository.full_name == $source)
-            | select((.pull_requests | length) == 0 or any(.pull_requests[]; .number == $number))
+            | select(any(.pull_requests[]?; .number == $number))
             | .id
           '
 
