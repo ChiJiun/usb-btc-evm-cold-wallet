@@ -55,6 +55,31 @@ test('public-only account import; immutable, export forbidden; account switching
   await keyring.setSelectedAccounts([account.id]);
   assert.deepEqual(state.selected,[account.id]);
 });
+
+
+test('selected-account policy allows initial import but denies deselected imported account', async () => {
+  const {keyring, state} = setup();
+  const extra = new Wallet('0x' + '11'.repeat(32));
+  const first = await keyring.createAccount({address:wallet.address});
+  const second = await keyring.createAccount({address:extra.address});
+  assert.equal(state.selectedInitialized,undefined);
+  // MetaMask has not yet called setSelectedAccounts after the first import.
+  assert.equal((await keyring.submitRequest(request(first.id))).pending,true);
+  await keyring.rejectRequest('mm-1');
+  await keyring.setSelectedAccounts([first.id]);
+  assert.equal(state.selectedInitialized,true);
+  await assert.rejects(() => keyring.submitRequest(request(second.id,'mm-2',{...intent,from:extra.address})),/not selected/);
+  await keyring.setSelectedAccounts([second.id]);
+  await assert.rejects(() => keyring.submitRequest(request(first.id,'mm-3')),/not selected/);
+  assert.equal((await keyring.submitRequest(request(second.id,'mm-4',{...intent,from:extra.address}))).pending,true);
+  await assert.rejects(() => keyring.setSelectedAccounts([first.id]),/pending signature/);
+  await keyring.rejectRequest('mm-4');
+  await keyring.setSelectedAccounts([]);
+  await assert.rejects(() => keyring.submitRequest(request(first.id,'mm-5')),/not selected/);
+  await assert.rejects(() => keyring.submitRequest(request(second.id,'mm-6',{...intent,from:extra.address})),/not selected/);
+  await assert.rejects(() => keyring.setSelectedAccounts([first.id,first.id]),/Duplicate selected/);
+});
+
 test('strict unsigned policy rejects chain, account, contract, arbitrary methods, fee, gas and fields', async () => {
   const {keyring} = setup();
   const account = await keyring.createAccount({address:wallet.address});

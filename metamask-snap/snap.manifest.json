@@ -7,7 +7,7 @@
     "url": "https://github.com/ChiJiun/usb-btc-evm-cold-wallet.git"
   },
   "source": {
-    "shasum": "PhX++gbhBm60lQTQcCjbsbxKyNRvwsk3XCMnnB6U44s=",
+    "shasum": "0KiZ/zWILukSsPlMZjFPgVSq+dgl42AU3IG6JIvglHM=",
     "location": {
       "npm": {
         "filePath": "dist/bundle.js",
@@ -21,7 +21,7 @@
       "allowedOrigins": ["http://localhost:8000", "http://127.0.0.1:8000"]
     },
     "endowment:rpc": {
-      "dapps": true
+      "allowedOrigins": ["http://localhost:8000", "http://127.0.0.1:8000"]
     },
     "snap_manageAccounts": {},
     "snap_manageState": {}
