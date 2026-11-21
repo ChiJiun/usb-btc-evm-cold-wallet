@@ -9,6 +9,7 @@ PUBLIC = "\n".join([
     "'usb_cold_wallet.companion_btc'",
     "'usb_cold_wallet.companion_web'",
     "'usb_cold_wallet.companion_portable'",
+    "'usb_cold_wallet.companion_envelope'",
 ])
 
 
