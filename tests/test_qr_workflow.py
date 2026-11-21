@@ -9,7 +9,7 @@ from usb_cold_wallet.keys import btc_address, btc_key, evm_account, root_from_mn
 from usb_cold_wallet.qr_workflow import (
     prepare_evm_qr, prepare_btc_qr, sign_offline, verify_evm_response, verify_btc_response,
 )
-from usb_cold_wallet.qr_session import QRSession
+from usb_cold_wallet.qr_session import QRSession, make_response
 
 
 @pytest.fixture(scope="module")
@@ -91,3 +91,32 @@ def test_btc_testnet_qr_psbt_signed_and_correlated(root):
     with pytest.raises(ValueError):
         sign_offline(root, request, recipient=target, amount=60000,
                      max_fee_sats=1500, change_index=1)
+
+    # The signed PSBT remains correct while attacker changes the separate
+    # transaction to be broadcast and recomputes the transport digest.
+    invalid_raw = copy.deepcopy(response["payload"])
+    invalid_raw["finalized_tx_hex"] = "00"
+    with pytest.raises(ValueError, match="verification"):
+        verify_btc_response(request, make_response(request, invalid_raw))
+    invalid_raw = copy.deepcopy(response["payload"])
+    canonical_raw = bytes.fromhex(invalid_raw["finalized_tx_hex"])
+    invalid_raw["finalized_tx_hex"] = (canonical_raw[:-1] + bytes([canonical_raw[-1] ^ 1])).hex()
+    with pytest.raises(ValueError, match="verification"):
+        verify_btc_response(request, make_response(request, invalid_raw))
+
+
+
+def test_sepolia_qr_rejects_metadata_tamper_with_matching_transport_digest(root):
+    tx = evm_tx()
+    request = prepare_evm_qr(tx, evm_account(root).address, tx["to"], tx["value"])
+    genuine = sign_offline(root, request, recipient=tx["to"], amount=tx["value"])
+    for key, value in (
+        ("transaction_hash", "0x" + "a" * 64),
+        ("max_fee_wei", genuine["payload"]["max_fee_wei"] + 1),
+        ("max_total_wei", genuine["payload"]["max_total_wei"] + 1),
+        ("decoded_transaction", {"type": 2}),
+    ):
+        payload = copy.deepcopy(genuine["payload"])
+        payload[key] = value
+        with pytest.raises(ValueError, match="verification"):
+            verify_evm_response(request, make_response(request, payload))
