@@ -162,3 +162,20 @@ def test_gui_quota_locks_after_third_signature():
             app._next_transaction()
     assert app.wallet_root is None
     assert app.security.state == State.LOCKED
+
+
+def test_qr_reader_never_blocks_with_unlocked_wallet_root():
+    app, _ = ui_fixture()
+    app.selected_kind = "evm-request"
+    snapshots = []
+
+    def stuck_camera():
+        # The GUI event loop cannot run a timer while this callback blocks.
+        snapshots.append((app.wallet_root, app.security.state))
+        raise gui.CameraUnavailable("camera unavailable")
+
+    app.qr_reader = stuck_camera
+    app._import_qr()
+    assert snapshots == [(None, State.LOCKED)]
+    assert app.wallet_root is None
+    assert app.security.state == State.LOCKED
