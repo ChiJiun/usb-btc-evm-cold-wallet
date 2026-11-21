@@ -73,6 +73,27 @@ def fat_label(partition: Path) -> str:
     return raw.decode("ascii").rstrip(" ")
 
 
+def _usb_mass_storage(entry: Path) -> bool:
+    """Require a USB sysfs transport ancestry for an sdX block device.
+
+    A SATA/SCSI/virtio-backed sdX can copy all public GPT and FAT identifiers.
+    USB transport is necessary but does not authenticate firmware or contents.
+    """
+    try:
+        resolved = entry.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    parts = resolved.parts
+    # Genuine Linux sysfs USB topology includes usbN/<port id>, e.g.
+    # .../usb1/1-2/1-2:1.0/host0/.../block/sda. An sdX name alone proves
+    # only the SCSI block driver, not USB ancestry.
+    for i in range(len(parts) - 1):
+        if (re.fullmatch(r"usb[0-9]+", parts[i]) and
+                re.fullmatch(r"[0-9]+-[0-9]+(?:\.[0-9]+)*", parts[i + 1])):
+            return True
+    return False
+
+
 def identify(sys_block: Path = Path("/sys/class/block"),
              dev_root: Path = Path("/dev")) -> tuple[str, str, str]:
     matches = []
@@ -93,6 +114,11 @@ def identify(sys_block: Path = Path("/sys/class/block"),
             continue
         part_ids = {part[1] for part in parts}
         if disk_id != DISK_UUID and not (part_ids & {BOOT_UUID, VAULT_UUID}):
+            continue
+        # A forged copy on a non-USB SCSI/SATA bus is an ambiguous trusted
+        # identifier: lock down, even if another genuine USB is also present.
+        if not _usb_mass_storage(entry):
+            unsafe_duplicate = True
             continue
         boot, vault = dev_root / (name + "1"), dev_root / (name + "2")
         if (disk_id != DISK_UUID or len(parts) != 2 or
