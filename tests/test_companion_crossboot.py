@@ -2,7 +2,9 @@
 
 All keys come from the public BIP39 test vector; never use this mnemonic for funds.
 """
+import http.client
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ from usb_cold_wallet.companion_core import (
     CHAIN_ID, CompanionSession, canonical, pack_envelope,
 )
 from usb_cold_wallet.companion_crossboot import CrossBootManager
+from usb_cold_wallet.companion_web import create_server
 from usb_cold_wallet.evm import decode_signed_eip1559
 from usb_cold_wallet.keys import btc_address, evm_account, root_from_mnemonic, watch_only
 
@@ -269,3 +272,52 @@ def test_btc_psbt_survives_restart_and_reverifies_without_broadcast(tmp_path):
     assert restored_btc.pending["recipient"] == BTC_TARGET
     assert restored_btc.pending["amount_sats"] == 50_000
     assert btc_rpc.sent == []
+
+
+def test_crossboot_http_api_persists_and_exports_without_broadcast(tmp_path):
+    manager = CrossBootManager.auto(tmp_path)
+    server, app, token = create_server(FakeRpc(), 0, NoNetworkEsplora(), manager)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    port = server.server_port
+
+    def request(method, path, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=4)
+        headers = {
+            "Host": f"127.0.0.1:{port}",
+            "Origin": f"http://127.0.0.1:{port}",
+            "X-Companion-Token": token,
+        }
+        raw = None
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            raw = canonical(body)
+        conn.request(method, path, body=raw, headers=headers)
+        response = conn.getresponse()
+        data = json.loads(response.read())
+        status = response.status
+        conn.close()
+        return status, data
+
+    try:
+        code, imported = request("POST", "/api/import", {"raw": canonical(WATCH).decode()})
+        assert code == 200 and imported["loaded"]
+        code, prepared = request("POST", "/api/prepare", {
+            "recipient": RECIPIENT, "amount_eth": "0.01", "max_fee_gwei": ""
+        })
+        assert code == 200 and prepared["pending"]["stage"] == "prepared"
+        request_id = prepared["pending"]["request_id"]
+
+        code, state = request("GET", "/api/crossboot")
+        assert code == 200 and state["can_export"]
+        assert state["request_id"] == request_id
+
+        code, exported = request("POST", "/api/crossboot/export", {})
+        assert code == 200 and exported["request_id"] == request_id
+        assert manager.state_path.is_file()
+        assert manager.exchange.joinpath(f"request-{request_id}.json").is_file()
+        assert app.rpc.sent == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(5)
