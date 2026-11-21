@@ -1,0 +1,79 @@
+name: Windows portable Companion
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/windows-companion.yml"
+      - "src/usb_cold_wallet/**"
+      - "scripts/windows_companion.py"
+      - "scripts/smoke_windows_companion.py"
+      - "tests/test_companion_portable.py"
+      - "pyproject.toml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/windows-companion.yml"
+      - "src/usb_cold_wallet/**"
+      - "scripts/windows_companion.py"
+      - "scripts/smoke_windows_companion.py"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-portable-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-portable:
+    name: Windows Portable EXE / real HTTP smoke
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12 x64
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+
+      - name: Install project and pinned bundler
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check --no-input .
+          python -m pip install --disable-pip-version-check --no-input "pyinstaller==6.22.3"
+          python -m pip check
+
+      - name: Build Windows x64 single EXE
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --console --name USBColdCompanion --paths src --add-data "src/usb_cold_wallet/companion_static;usb_cold_wallet/companion_static" scripts/windows_companion.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Smoke actual EXE, browser UI and API isolation
+        shell: pwsh
+        run: |
+          python scripts/smoke_windows_companion.py dist/USBColdCompanion.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Record executable checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist/USBColdCompanion.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  USBColdCompanion.exe" | Out-File -FilePath dist/SHA256SUMS.txt -Encoding ascii
+
+      - name: Upload unsigned review artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Windows-Portable-Companion-unsigned
+          path: |
+            dist/USBColdCompanion.exe
+            dist/SHA256SUMS.txt
+          retention-days: 7
+          if-no-files-found: error
