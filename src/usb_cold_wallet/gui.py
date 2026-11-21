@@ -274,7 +274,7 @@ def _current_mount_evidence(
         findings.append("FAIL: live root filesystem is not uniquely RAM-backed")
     else:
         findings.append("PASS: live RAM-backed root")
-    required = {"rw", "nodev", "nosuid", "noexec", "sync"}
+    required = {"rw", "nodev", "nosuid", "noexec", "sync", "fmask=0177", "dmask=0077"}
     vault_disk = _mounted_disk(vault[0], sys_dev_block) if len(vault) == 1 else None
 
     # Pin the kernel block-device instance that passed boot-time GPT/FAT checks.
