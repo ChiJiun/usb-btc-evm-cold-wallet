@@ -185,5 +185,3 @@ usb-cold-wallet --help
 ## 授權
 
 專案原創程式碼採 **MIT License**；所使用的第三方依賴與元件遵循各自授權。
-
-<!-- Temporary CI scope verification: README wheel metadata smoke. -->
