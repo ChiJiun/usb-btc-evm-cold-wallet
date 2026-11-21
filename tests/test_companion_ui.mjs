@@ -56,6 +56,7 @@ function harness(){
       else{evmPending={...evmPending,stage:"broadcasted"};data=evmPending;}
     }
     else if(path==="/api/btc/broadcast"){btcPending={...btcPending,stage:"broadcasted"};data=btcPending;}
+    else if(path==="/api/lookup"){data={asset:payload.asset,txid:payload.txid,result:"pending",untrusted_rpc:true};}
     else if(path==="/api/status"){data={...evmPending,result:"pending"};}
     else if(path==="/api/btc/status"){data={...btcPending,result:"pending"};}
     else if(path==="/api/cancel"){evmPending=null;data={cancelled:true};}
@@ -143,4 +144,19 @@ test("RPC failure never implies balance is valid, cancellation clears prior appr
   h.element("cancelBtn").dispatch("click");await h.tick();
   assert.equal(h.element("downloadBtn").disabled,true);
   assert.equal(h.element("broadcastBtn").disabled,true);
+});
+
+test("public transaction lookup rejects wrong network syntax and never grants broadcast",async()=>{
+  const h=harness();await h.tick();
+  h.element("lookupAsset").value="sepolia";
+  h.element("lookupHash").value="0xnot-a-hash";
+  h.element("lookupForm").dispatch("submit");await h.tick();
+  assert.equal(h.calls.filter(c=>c.path==="/api/lookup").length,0);
+  assert.match(h.element("message").textContent,/Tx Hash/);
+  h.element("lookupHash").value="0x"+"a".repeat(64);
+  h.element("lookupForm").dispatch("submit");await h.tick();
+  assert.equal(h.calls.filter(c=>c.path==="/api/lookup").length,1);
+  assert.match(h.element("lookupResult").textContent,/等待鏈上確認/);
+  assert.equal(h.element("broadcastBtn").disabled,true);
+  assert.equal(h.calls.filter(c=>c.path==="/api/broadcast").length,0);
 });
