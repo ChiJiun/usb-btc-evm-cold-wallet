@@ -48,7 +48,7 @@ test("ERC-4527 response contains precisely 65 r,s,v bytes, never a raw signed tr
 });
 test("immutable pending context binds chain/account/request/digest and refuses stale, wrong or replayed QR",()=>{
  const parsed=parseTypedUR(makeTypedUR("eth-sign-request",tx));
- const pending={type:parsed.type,chainId:11155111,address,requestId:rid,
+ const pending={type:parsed.type,chainId:11155111,address,requestId:rid,path:tx.path,fingerprint:tx.fingerprint,network:"sepolia",
    unsignedDigest:digest(tx.unsignedTxHex),createdAt:1000,ttlMs:5000};
  assert.deepEqual(bindTypedToPending(parsed,pending,{now:2000}),parsed);
  for(const changed of [{requestId:"f".repeat(32)},{chainId:1},{address:"0x"+"ff".repeat(20)},
@@ -59,12 +59,14 @@ test("immutable pending context binds chain/account/request/digest and refuses s
  const sig=parseTypedUR(makeTypedUR("eth-signature",{requestId:rid,signatureHex:"11".repeat(64)+"1b"}));
  assert.throws(()=>bindTypedToPending(sig,pending,{now:2000}),/Independent EIP-1559/);
  assert.deepEqual(bindTypedToPending(sig,pending,{now:2000,verifySignature:()=>true}),sig);
+ assert.equal(pending.consumed,true);
+ assert.throws(()=>bindTypedToPending(sig,pending,{now:2000,verifySignature:()=>true}),/closed/);
  assert.throws(()=>bindTypedToPending(sig,{...pending,unsignedDigest:undefined},{now:2000,verifySignature:()=>true}),/Independent EIP-1559/);
  assert.throws(()=>bindTypedToPending(sig,pending,{now:2000,verifySignature:()=>false}),/Independent EIP-1559/);
 });
 test("binding rejects missing mandatory fields even when called without the UR parser",()=>{
  const parsed=parseTypedUR(makeTypedUR("eth-sign-request",tx));
- const pending={type:"eth-sign-request",chainId:11155111,address,requestId:rid,
+ const pending={type:"eth-sign-request",chainId:11155111,address,requestId:rid,path:tx.path,fingerprint:tx.fingerprint,network:"sepolia",
    unsignedDigest:digest(tx.unsignedTxHex),createdAt:1000,ttlMs:5000};
  for(const omission of ["requestId","chainId","network","address","unsignedTxHex"]) {
    const incomplete={...parsed};delete incomplete[omission];
@@ -75,7 +77,7 @@ test("binding rejects missing mandatory fields even when called without the UR p
    const incomplete={...sig};delete incomplete[omission];
    assert.throws(()=>bindTypedToPending(incomplete,pending,{now:2000,verifySignature:()=>true}),/Incomplete/);
  }
- const btcPending={type:"crypto-psbt",phase:"unsigned",psbtDigest:digest(psbtHex),
+ const btcPending={type:"crypto-psbt",phase:"unsigned",network:"bitcoin-testnet",accountFingerprint:"aabbccdd",accountId:"testnet:acct-0",psbtDigest:digest(psbtHex),
    createdAt:1000,ttlMs:5000};
  assert.throws(()=>bindTypedToPending({type:"crypto-psbt"},btcPending,{now:2000}),/Incomplete/);
  assert.throws(()=>bindTypedToPending({type:"crypto-psbt",psbtHex:"70736274ff"},btcPending,{now:2000}),/Incomplete/);
@@ -152,12 +154,59 @@ test("Bitcoin Core/Sparrow shared external BIP174 PSBT fixture is preserved byte
 });
 
 test("signed crypto-psbt cannot be confused with unsigned request without independent verifier",()=>{
- const pending={type:"crypto-psbt",phase:"signed",createdAt:1000,ttlMs:5000,
+ const pending={type:"crypto-psbt",phase:"signed",network:"bitcoin-testnet",accountFingerprint:"aabbccdd",accountId:"testnet:acct-0",createdAt:1000,ttlMs:5000,
   psbtDigest:digest(psbtHex),requestId:rid};
  const signed=parseTypedUR(makeTypedUR("crypto-psbt",{psbtHex:"70736274ff"+"aa".repeat(80)}));
  assert.throws(()=>bindTypedToPending(signed,pending,{now:2000}),/Independent signed PSBT/);
  assert.throws(()=>bindTypedToPending(signed,pending,{now:2000,verifySignedPsbt:()=>false}),/Independent signed PSBT/);
  assert.deepEqual(bindTypedToPending(signed,pending,{now:2000,verifySignedPsbt:()=>true}),signed);
+ assert.equal(pending.consumed,true);
+ assert.throws(()=>bindTypedToPending(signed,pending,{now:2000,verifySignedPsbt:()=>true}),/closed/);
  const unsigned={...pending,phase:"unsigned"};
  assert.throws(()=>bindTypedToPending(signed,unsigned,{now:2000}),/PSBT bytes differ/);
+});
+
+test("EVM request keypath and fingerprint substitutions fail closed",()=>{
+ const parsed=parseTypedUR(makeTypedUR("eth-sign-request",tx));
+ const pending={type:"eth-sign-request",network:"sepolia",chainId:11155111,address,requestId:rid,
+  path:tx.path,fingerprint:tx.fingerprint,unsignedDigest:digest(tx.unsignedTxHex),createdAt:1000,ttlMs:5000};
+ assert.deepEqual(bindTypedToPending(parsed,pending,{now:2000}),parsed);
+ const pathSub=parseTypedUR(makeTypedUR("eth-sign-request",{...tx,path:[...tx.path.slice(0,4),{index:1,hardened:false}]}));
+ assert.throws(()=>bindTypedToPending(pathSub,pending,{now:2000}),/mismatch/);
+ const fpSub=parseTypedUR(makeTypedUR("eth-sign-request",{...tx,fingerprint:"aabbccde"}));
+ assert.throws(()=>bindTypedToPending(fpSub,pending,{now:2000}),/mismatch/);
+ for(const name of ["path","fingerprint","network"]) {
+  const missing={...pending};delete missing[name];
+  assert.throws(()=>bindTypedToPending(parsed,missing,{now:2000}),/trusted/);
+ }
+});
+test("bare PSBT requires trusted testnet/account context in both phases",()=>{
+ const parsed=parseTypedUR(makeTypedUR("crypto-psbt",{psbtHex}));
+ const base={type:"crypto-psbt",phase:"unsigned",network:"bitcoin-testnet",
+  accountFingerprint:"aabbccdd",accountId:"testnet:acct-0",psbtDigest:digest(psbtHex),
+  createdAt:1000,ttlMs:5000};
+ assert.deepEqual(bindTypedToPending(parsed,base,{now:2000}),parsed);
+ for(const field of ["network","accountFingerprint","accountId"]) {
+  const altered={...base};delete altered[field];
+  assert.throws(()=>bindTypedToPending(parsed,altered,{now:2000}),/trusted/);
+ }
+ assert.throws(()=>bindTypedToPending(parsed,{...base,network:"bitcoin-mainnet"},{now:2000}),/trusted/);
+ assert.throws(()=>bindTypedToPending(parsed,{...base,phase:"signed",accountId:null},
+  {now:2000,verifySignedPsbt:()=>true}),/trusted/);
+});
+test("eth-signature optional origin cannot carry nested or oversized data",()=>{
+ const signature=Buffer.from("11".repeat(64)+"1b","hex");
+ for(const origin of [new Map([[1,"nested"]]),new Uint8Array([1,2]),"x".repeat(129),"bad\norigin"]) {
+  const u=UR.from("eth-signature",cbor(new Map([[1,makeTypedUR("eth-signature",{requestId:rid,signatureHex:signature.toString("hex")}).cbor.value.getOrThrow(1)],[2,signature],[3,origin]])));
+  assert.throws(()=>parseTypedUR(u),/origin|CBOR/i);
+ }
+});
+test("synchronous signed response guard rejects repeated submissions",()=>{
+ const sig=parseTypedUR(makeTypedUR("eth-signature",{requestId:rid,signatureHex:"11".repeat(64)+"1b"}));
+ const p={type:"eth-sign-request",network:"sepolia",chainId:11155111,address,requestId:rid,
+  path:tx.path,fingerprint:tx.fingerprint,unsignedDigest:digest(tx.unsignedTxHex),createdAt:1000,ttlMs:5000};
+ let calls=0;const verify=()=>{calls++;return true;};
+ bindTypedToPending(sig,p,{now:2000,verifySignature:verify});
+ assert.throws(()=>bindTypedToPending(sig,p,{now:2000,verifySignature:verify}),/closed/);
+ assert.equal(calls,1);
 });
