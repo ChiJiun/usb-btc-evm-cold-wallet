@@ -7,6 +7,8 @@ base. All transaction semantics come from :mod:`usb_cold_wallet.review`.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -17,8 +19,9 @@ import sys
 import time
 from typing import Callable
 
+from .exchange import decode_envelope, read_bounded
 from .keys import btc_address, evm_account, root_from_mnemonic
-from .review import ReviewPlan, ReviewSession, load_review_file, load_review_qr
+from .review import ReviewPlan, ReviewSession, build_review_plan, load_review_qr
 from .signer_session import SignerSession, State, DEFAULT_IDLE_SECONDS
 from .vault import load_vault
 
@@ -28,6 +31,7 @@ BOOT_CHECKS = Path("/run/usb-wallet/boot-checks.txt")
 LOCKDOWN = Path("/run/usb-wallet/lockdown")
 MOUNTINFO = Path("/proc/self/mountinfo")
 VAULT_DEVICE = Path("/run/usb-wallet/vault-device")
+SYS_DEV_BLOCK = Path("/sys/dev/block")
 IDLE_SECONDS = DEFAULT_IDLE_SECONDS
 PUBLIC_TEST_EVM = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
 PUBLIC_TEST_BTC = "tb1q6rz28mcfaxtmd6v789l9rrlrusdprr9pqcpvkl"
@@ -195,7 +199,20 @@ def _is_public_test_root(root) -> bool:
         return False
 
 
-def _current_mount_evidence(mountinfo: Path, vault_device: Path) -> list[str]:
+def _mounted_disk(mount: dict, sys_dev_block: Path) -> Path | None:
+    """Resolve mountinfo major:minor to the real disk, not just its /dev path."""
+    try:
+        disk_device = (sys_dev_block / mount["device"]).resolve(strict=True)
+        if disk_device.name != Path(mount["source"]).name:
+            return None
+        return disk_device.parent if (disk_device / "partition").is_file() else disk_device
+    except (OSError, ValueError):
+        return None
+
+
+def _current_mount_evidence(
+    mountinfo: Path, vault_device: Path, sys_dev_block: Path = SYS_DEV_BLOCK
+) -> list[str]:
     """Revalidate current kernel mount identities; boot PASS lines are historical."""
     try:
         source_expected = vault_device.read_text(encoding="ascii").strip()
@@ -213,6 +230,7 @@ def _current_mount_evidence(mountinfo: Path, vault_device: Path) -> list[str]:
             if len(left_cols) < 6 or len(right_cols) < 3:
                 raise ValueError("Malformed mountinfo")
             mounts.append({
+                "device": left_cols[2],
                 "target": left_cols[4], "options": set(left_cols[5].split(",")),
                 "type": right_cols[0], "source": right_cols[1],
                 "super": set(right_cols[2].split(",")),
@@ -229,8 +247,9 @@ def _current_mount_evidence(mountinfo: Path, vault_device: Path) -> list[str]:
     else:
         findings.append("PASS: live RAM-backed root")
     required = {"rw", "nodev", "nosuid", "noexec", "sync"}
+    vault_disk = _mounted_disk(vault[0], sys_dev_block) if len(vault) == 1 else None
     if (len(vault) != 1 or vault[0]["type"] != "vfat"
-            or vault[0]["source"] != source_expected
+            or vault[0]["source"] != source_expected or vault_disk is None
             or not required <= (vault[0]["options"] | vault[0]["super"])):
         findings.append("FAIL: live COLD_VAULT source, type or mount options changed")
     else:
@@ -238,10 +257,13 @@ def _current_mount_evidence(mountinfo: Path, vault_device: Path) -> list[str]:
 
     # TX_TRANSFER is mounted only during imports/exports. If present, require
     # separate media and restrictive flags; it must not replace the vault.
-    if transfer and (len(transfer) != 1 or transfer[0]["type"] != "vfat"
-                     or transfer[0]["source"] == source_expected
-                     or not required <= (transfer[0]["options"] | transfer[0]["super"])):
-        findings.append("FAIL: live TX_TRANSFER mount has unsafe identity or options")
+    if transfer:
+        transfer_disk = _mounted_disk(transfer[0], sys_dev_block) if len(transfer) == 1 else None
+        if (len(transfer) != 1 or transfer[0]["type"] != "vfat"
+                or transfer_disk is None or vault_disk is None
+                or transfer_disk == vault_disk
+                or not required <= (transfer[0]["options"] | transfer[0]["super"])):
+            findings.append("FAIL: live TX_TRANSFER must be a separate physical disk with safe flags")
     safe_pseudo = {
         "rootfs", "tmpfs", "proc", "sysfs", "devtmpfs", "devpts",
         "cgroup2", "pstore", "tracefs",
@@ -265,6 +287,7 @@ def runtime_audit(
     proc_swaps: Path = Path("/proc/swaps"),
     proc_mountinfo: Path = MOUNTINFO,
     vault_device: Path = VAULT_DEVICE,
+    sys_dev_block: Path = SYS_DEV_BLOCK,
 ) -> tuple[bool, tuple[str, ...]]:
     """Check historical boot evidence AND live kernel state before every unlock/sign."""
     findings: list[str] = []
@@ -302,7 +325,7 @@ def runtime_audit(
         findings.append("PASS: no active swap" if len(swaps) <= 1 else "FAIL: active swap detected")
     except OSError:
         findings.append("FAIL: unable to inspect swap")
-    findings.extend(_current_mount_evidence(proc_mountinfo, vault_device))
+    findings.extend(_current_mount_evidence(proc_mountinfo, vault_device, sys_dev_block))
     ok = bool(findings) and not any(line.startswith("FAIL:") for line in findings)
     return ok, tuple(findings)
 
@@ -395,6 +418,7 @@ class OfflineReviewApp:
         self.wallet_root = None
         self._active_usb_file = None
         self._active_usb_identity = None
+        self._active_usb_digest = None
         self.last_activity = time.monotonic()
         self.security = SignerSession(
             audit=lambda: self.development_mode or (self.audit_ok and runtime_audit()[0]),
@@ -445,14 +469,20 @@ class OfflineReviewApp:
             return True
         try:
             info = self._active_usb_file.lstat()
-            return stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == self._active_usb_identity
-        except OSError:
+            if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != self._active_usb_identity:
+                return False
+            if self._active_usb_digest is None:
+                return False
+            raw = read_bounded(self._active_usb_file)
+            return hmac.compare_digest(hashlib.sha256(raw).digest(), self._active_usb_digest)
+        except (OSError, ValueError):
             return False
 
     def _drop_wallet_references(self):
         self.wallet_root = None
         self._active_usb_file = None
         self._active_usb_identity = None
+        self._active_usb_digest = None
         if self.session and not self.session.signed:
             self.session.cancel()
             self.session = None
@@ -536,8 +566,8 @@ class OfflineReviewApp:
         ).pack(side="left", fill="both", expand=True, padx=(8, 0), ipady=24)
 
     def _choose_kind(self, kind: str):
-        if not self._unlock():
-            return
+        # Select the source first; never ask for a passphrase before camera/USB
+        # selection. QR capture must always happen while locked.
         self.selected_kind = kind
         self.session = None
         self.page_index = 0
@@ -627,8 +657,7 @@ class OfflineReviewApp:
         return common == str(self.transfer_dir.absolute())
 
     def _import_usb(self):
-        if self.wallet_root is None and not self._unlock():
-            return
+        kind = self.selected_kind
         filename = self.filedialog.askopenfilename(
             parent=self.root,
             initialdir=str(self.transfer_dir),
@@ -646,20 +675,34 @@ class OfflineReviewApp:
             self._render_home()
             return
         try:
-            plan = load_review_file(path, self.wallet_root, self.selected_kind)
-        except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
+            # One bounded read supplies both reviewed snapshot and its file hash.
+            # No attacker-controlled second read after vault unlock.
+            raw = read_bounded(path)
+            envelope = decode_envelope(raw.decode("utf-8"), kind)
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("Transfer request is not a regular file")
+            identity = (info.st_dev, info.st_ino)
+            digest = hashlib.sha256(raw).digest()
+        except (ValueError, OSError, KeyError, TypeError, OverflowError, UnicodeError) as exc:
             self._lock_wallet(self.t("locked"))
             self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
             self._render_home()
             return
+        if self.wallet_root is None and not self._unlock():
+            self._render_home()
+            return
         try:
-            info = path.lstat()
-            if not stat.S_ISREG(info.st_mode):
-                raise ValueError("Transfer request is not a regular file")
+            plan = build_review_plan(envelope, self.wallet_root, kind)
+            self.selected_kind = kind
             self._active_usb_file = path
-            self._active_usb_identity = (info.st_dev, info.st_ino)
-        except (OSError, ValueError):
+            self._active_usb_identity = identity
+            self._active_usb_digest = digest
+            if not self._transport_available():
+                raise ValueError("USB request changed during unlock")
+        except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
             self._lock_wallet(self.t("locked"))
+            self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
             self._render_home()
             return
         self._start_review(plan)
@@ -678,7 +721,6 @@ class OfflineReviewApp:
             text = self.qr_reader()
             if not text:
                 raise CameraUnavailable("empty QR capture")
-            from .exchange import decode_envelope
             decode_envelope(text, requested_kind)  # Validate untrusted data before unlock.
         except CameraUnavailable:
             self._lock_wallet(self.t("locked"))
@@ -703,6 +745,7 @@ class OfflineReviewApp:
         self.selected_kind = requested_kind
         self._active_usb_file = None
         self._active_usb_identity = None
+        self._active_usb_digest = None
         self._start_review(plan)
 
     def _start_review(self, plan: ReviewPlan):
