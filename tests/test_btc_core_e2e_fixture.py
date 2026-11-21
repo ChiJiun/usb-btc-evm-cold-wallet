@@ -77,7 +77,7 @@ def test_core_fixture_policy_substitution_denied(mutation):
     if mutation == "recipient":
         p.tx.vout[0].value += 1
     elif mutation == "change":
-        p.tx.vout[1].script_pubkey = script.Script(b"\\x00\\x14" + b"\\xaa" * 20)
+        p.tx.vout[1].script_pubkey = script.Script(b"\x00\x14" + b"\xaa" * 20)
     elif mutation == "fee":
         p.tx.vout[1].value -= 1_001
     elif mutation == "rbf":
