@@ -6,7 +6,9 @@ from eth_account.messages import encode_typed_data
 from eth_utils import keccak
 
 from usb_cold_wallet.evm_eip712 import DOMAIN_FIELDS
-from usb_cold_wallet.review import build_eip712_review_pages
+from usb_cold_wallet.review import build_eip712_review_pages, build_eip712_policy_pages
+from usb_cold_wallet.keys import root_from_mnemonic, evm_account
+from usb_cold_wallet.policy import default_profile, decide_eip712
 
 CONTRACT = "0x1111111111111111111111111111111111111111"
 OWNER = "0x2222222222222222222222222222222222222222"
@@ -68,3 +70,35 @@ def test_typed_data_schema_and_replay_fail_closed(mutate):
     mutate(message)
     with pytest.raises(ValueError):
         build_eip712_review_pages(message, trusted_approval=approved())
+
+
+def test_typed_policy_uses_wallet_bound_rules_and_exact_deadline():
+    wallet = root_from_mnemonic("abandon " * 11 + "about")
+    msg = typed()
+    msg["message"]["owner"] = evm_account(wallet).address
+    policy = default_profile(wallet)
+    policy["typed_rules"] = [{
+        "contract": CONTRACT, "schema": "WalletTransferIntent",
+        "counterparty": PARTY, "max_amount": 123, "expected_nonce": 9,
+        "deadline": DEADLINE,
+    }]
+    pages, decision = build_eip712_policy_pages(msg, wallet, policy, now_timestamp=NOW)
+    assert decision.status == "REQUIRE_EXTRA_CONFIRMATION"
+    display = {f.key: f.value for p in pages for f in p.fields}
+    assert display["signing_enabled"] == "false"
+    assert display["schema"] == "WalletTransferIntent"
+    assert display["nonce"] == "9"
+    assert display["deadline"] == str(DEADLINE)
+
+    msg["message"]["nonce"] = 8
+    assert decide_eip712(policy, wallet, msg, now_timestamp=NOW)[1].status == "DENY"
+    msg["message"]["nonce"] = 9
+    msg["message"]["amount"] = 124
+    assert decide_eip712(policy, wallet, msg, now_timestamp=NOW)[1].status == "DENY"
+    msg["message"]["amount"] = 123
+    msg["message"]["deadline"] = DEADLINE + 1
+    assert decide_eip712(policy, wallet, msg, now_timestamp=NOW)[1].status == "DENY"
+    msg["message"]["deadline"] = DEADLINE
+    assert decide_eip712(policy, wallet, msg, now_timestamp=DEADLINE)[1].status == "DENY"
+    policy["typed_rules"] = []
+    assert decide_eip712(policy, wallet, msg, now_timestamp=NOW)[1].status == "DENY"
