@@ -1,62 +1,48 @@
-# CI and repository security controls
+# CI 與儲存庫安全控制
 
-Issue #4 enables a defense-in-depth CI baseline for this prototype.  The
-workflow is intentionally read-only and does not receive deployment secrets.
+`.github/workflows/ci.yml` 是主要驗證流程。分流程式為
+`scripts/ci_checks.py`，固定合併門檻為 `CI / Required`。
 
-## Required CI gate
+## 驗證範圍
 
-The authoritative workflow is `.github/workflows/ci.yml`.  It runs:
+| 變更或觸發條件 | 必要驗證 |
+| --- | --- |
+| 純文件（README.en、docs） | 變更分類、完整歷史 Secret scan、Required |
+| README.md | 以上檢查，以及一次 wheel build 與 Python package metadata 驗證 |
+| Python／其他程式碼、QR Transport JS | Python 3.12/3.13 pytest、可重現 wheel 雙次建置、QR Transport Node 24 單元測試／bundle build／Python↔QR 互通測試、Required |
+| 依賴 manifest、lockfile、任何 `.github/workflows/*.yml/.yaml` | 上述程式碼驗證，另執行 Python `pip-audit`；PR 必須通過實際 GitHub Dependency Review |
+| npm manifest／lockfile 或 CI workflow 變更 | 額外執行全部 tracked npm 專案的 production `npm ci --ignore-scripts`、`npm audit --omit=dev --audit-level=high` |
+| 每日 schedule（02:20 UTC） | Secret scan、Python `pip-audit`、Node production audit；其他非排程必要工作依變更分類規則 |
+| workflow_dispatch | 完整驗證（包含 QR Transport、Python/Node 稽核） |
 
-- pytest on CPython 3.12 and 3.13 using a hash-locked dependency set;
-- `pip check` and `pip-audit`;
-- Gitleaks over repository history;
-- GitHub dependency review on pull requests;
-- two clean wheel builds with a fixed `SOURCE_DATE_EPOCH`, requiring identical
-  SHA-256 output.
+QR Transport 的功能驗證在程式碼變更時不能被跳過，且
+`CI / Required` 必須確認 QR job 實際成功。QR 的建置工作還額外
+對 **dev/build dependencies** 執行 `npm audit --audit-level=high`；
+Node production audit 則只包含正式執行依賴。完整 Node 稽核目前
+使用 npm lockfile；雖然 pnpm/yarn 依賴檔會觸發檢查，尚未支援
+pnpm/yarn 的獨立 audit，沒有可用 npm lockfile 時會拒絕通過。
 
-Third-party GitHub Actions are pinned to full commit SHAs and checkout disables
-credential persistence.  The stable status check for branch protection is
-`CI / Required`.
+## Dependency Review 的失敗政策
 
-## Dependency lock
+PR 變更依賴／workflow 時，`Dependency Review` 必須真正執行。
+`scripts/dependency_review_guard.py` 對 Dependency Graph API 200 放行
+並接續執行 pinned `actions/dependency-review-action`，403／404
+（Graph 未啟用或 Token 無權限）以及任何其他非 200 結果均
+**失敗（fail-closed）**。不以 `pip-audit` 或 `npm audit`
+代替 GitHub Actions／manifest 變更的差異審查；請在儲存庫
+Security/Code security 設定啟用 Dependency Graph 並確認存取權限。
 
-`requirements/ci.lock` pins the complete CI dependency graph and records
-SHA-256 hashes for source distributions plus Linux x86_64 wheels relevant to
-CPython 3.12/3.13.
+## Lockfile 與受保護分支
 
-Regenerate it only as an intentional dependency change:
+`requirements/ci.lock` 是 Python 的 hash-locked 依賴樹，依賴更新
+須重新產生並審查雜湊差異。第三方 Actions 釘選完整 commit SHA，
+checkout 不持續保存憑證。
 
-```bash
-python -m pip install -e ".[dev]"
-python scripts/refresh_ci_lock.py
-```
+保護 `main`：要求 PR、`CI / Required` 成功、先同步預設分支、
+解決 Review 討論串，禁止 force push 與刪除主要分支。Gitleaks
+獨立掃描完整歷史，另建議啟用 GitHub Secret scanning / Push
+protection。
 
-Review the resulting dependency and hash diff before merging.  Dependabot is
-configured for both Python dependencies and GitHub Actions.
-
-## Main branch protection
-
-After the workflow exists on GitHub and has completed successfully at least
-once, protect `main` with these minimum settings:
-
-- require a pull request before merging;
-- require the `CI / Required` status check and require the branch to be up to
-  date before merging;
-- require conversation resolution;
-- block force pushes and branch deletion.
-
-For a single-maintainer repository, zero required approving reviews is
-reasonable; the security boundary here is the required CI gate, not a fake
-self-approval.
-
-GitHub native secret scanning and push protection should also be enabled in the
-repository security settings.  Gitleaks remains in CI as an independent
-history scan.
-
-GitHub Dependency Graph should be enabled as well.  Until it is enabled, the
-workflow detects the unsupported API and skips only GitHub's dependency-review
-action; hash-locked installation and `pip-audit` remain mandatory.  Once the
-graph is enabled, moderate-or-higher dependency-review findings fail CI.
-
-Do not weaken these controls merely to merge a failing change.  Investigate the
-failing job or update the locked dependency/action pins in a reviewed PR.
+`live-usb-pr-close.yml` 在 PR 關閉時取消可確認屬於該 PR 的
+過時 Live USB 自動建置；只有 GitHub API 明確列出 PR 身分才會
+取消。這項 workflow 與每日排程在合併至 `main` 後才會生效。

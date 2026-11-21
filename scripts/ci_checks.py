@@ -76,7 +76,7 @@ DEPENDENCY_INPUT_NAMES = NODE_INPUT_NAMES | frozenset({
 
 
 def is_node_input(path: str) -> bool:
-    return path.rsplit("/", 1)[-1] in NODE_INPUT_NAMES
+    return path == ".github/workflows/ci.yml" or path.rsplit("/", 1)[-1] in NODE_INPUT_NAMES
 
 
 def is_dependency_input(path: str) -> bool:
@@ -183,6 +183,8 @@ def gate_errors(env: dict[str, str]) -> list[str]:
     require("REPRODUCIBLE_BUILD", "success" if code == "true" else "skipped")
     require("AUDIT", "success" if deps == "true" else "skipped")
     require("NODE_AUDIT", "success" if node == "true" else "skipped")
+    # Executable QR/bridge changes MUST run the actual JS + Python interop job.
+    require("QR_TRANSPORT", "success" if code == "true" else "skipped")
 
     require(
         "WHEEL_SMOKE",

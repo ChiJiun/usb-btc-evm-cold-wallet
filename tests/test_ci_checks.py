@@ -19,7 +19,7 @@ from scripts import ci_checks
         (["src/usb_cold_wallet/cli.py"], ci_checks.Scope(True, False, False, False)),
         (["requirements/ci.lock"], ci_checks.Scope(True, True, False, False)),
         (["pyproject.toml"], ci_checks.Scope(True, True, False, False)),
-        ([".github/workflows/ci.yml"], ci_checks.Scope(True, True, False, False)),
+        ([".github/workflows/ci.yml"], ci_checks.Scope(True, True, False, True)),
         (["infra/wheelhouse.sha256"], ci_checks.Scope(True, True, False, False)),
         (["scripts/ci_checks.py"], ci_checks.Scope(True, False, False, False)),
         ([".github/workflows/live-usb-build.yml"], ci_checks.Scope(True, True, False, False)),
@@ -101,6 +101,7 @@ def required_env(**overrides):
         "METADATA": "false",
         "NODE": "false",
         "NODE_AUDIT": "skipped",
+        "QR_TRANSPORT": "skipped",
         "EVENT_NAME": "pull_request",
         "TESTS": "skipped",
         "REPRODUCIBLE_BUILD": "skipped",
@@ -118,10 +119,10 @@ def required_env(**overrides):
         required_env(),  # docs-only
         required_env(METADATA="true", WHEEL_SMOKE="success"),  # README.md
         required_env(
-            CODE="true", TESTS="success", REPRODUCIBLE_BUILD="success"
+            CODE="true", QR_TRANSPORT="success", TESTS="success", REPRODUCIBLE_BUILD="success"
         ),  # Python-only
         required_env(
-            CODE="true",
+            CODE="true", QR_TRANSPORT="success",
             DEPS="true",
             TESTS="success",
             REPRODUCIBLE_BUILD="success",
@@ -130,7 +131,7 @@ def required_env(**overrides):
         ),  # full CI
         required_env(
             EVENT_NAME="pull_request",
-            CODE="true", DEPS="true", NODE="true",
+            CODE="true", QR_TRANSPORT="success", DEPS="true", NODE="true",
             TESTS="success", REPRODUCIBLE_BUILD="success",
             AUDIT="success", NODE_AUDIT="success",
             DEPENDENCY_REVIEW="success",
@@ -139,7 +140,7 @@ def required_env(**overrides):
                      AUDIT="success", NODE_AUDIT="success"),  # daily
         required_env(
             EVENT_NAME="workflow_dispatch",
-            CODE="true",
+            CODE="true", QR_TRANSPORT="success",
             DEPS="true", NODE="true",
             TESTS="success",
             REPRODUCIBLE_BUILD="success",
@@ -158,6 +159,11 @@ def test_required_gate_accepts_expected_results(env):
         ({"SECRET_SCAN": "skipped"}, "SECRET_SCAN"),
         ({"TESTS": "success"}, "TESTS"),  # docs-only expected skipped
         ({"CODE": "true"}, "TESTS"),  # code-only expected success
+        ({"CODE": "true", "TESTS": "success", "REPRODUCIBLE_BUILD": "success"}, "QR_TRANSPORT"),
+        ({"CODE": "true", "TESTS": "success", "REPRODUCIBLE_BUILD": "success",
+          "QR_TRANSPORT": "failure"}, "QR_TRANSPORT"),
+        ({"CODE": "true", "TESTS": "success", "REPRODUCIBLE_BUILD": "success",
+          "QR_TRANSPORT": "cancelled"}, "QR_TRANSPORT"),
         ({"DEPS": "true"}, "AUDIT"),
         ({"AUDIT": "success"}, "AUDIT"),
         ({"METADATA": "true"}, "WHEEL_SMOKE"),
@@ -277,7 +283,7 @@ def test_dependency_review_cannot_be_skipped_on_action_or_node_lock_change(path)
     assert scope.deps is True
     assert scope.code is True
     env = required_env(
-        CODE="true", DEPS="true",
+        CODE="true", QR_TRANSPORT="success", DEPS="true",
         NODE="true" if scope.node else "false",
         NODE_AUDIT="success" if scope.node else "skipped",
         TESTS="success", REPRODUCIBLE_BUILD="success", AUDIT="success",
@@ -287,3 +293,62 @@ def test_dependency_review_cannot_be_skipped_on_action_or_node_lock_change(path)
                for error in ci_checks.gate_errors(env))
     env["DEPENDENCY_REVIEW"] = "success"
     assert ci_checks.gate_errors(env) == []
+
+
+@pytest.mark.parametrize("path", [
+    "qr-transport/src/ur_transport.mjs",
+    "qr-transport/tests/ur_transport.test.mjs",
+    "src/usb_cold_wallet/qr_cli.py",
+    "src/usb_cold_wallet/qr_workflow.py",
+    "src/usb_cold_wallet/qr_session.py",
+    "src/usb_cold_wallet/exchange.py",
+])
+def test_qr_js_and_python_bridge_changes_must_run_qr_integration(path):
+    scope = ci_checks.classify_paths([path])
+    assert scope.code is True
+    env = required_env(
+        CODE="true", TESTS="success", REPRODUCIBLE_BUILD="success",
+        QR_TRANSPORT="skipped",
+        AUDIT="success" if scope.deps else "skipped",
+        DEPENDENCY_REVIEW="success" if scope.deps else "skipped",
+        DEPS="true" if scope.deps else "false",
+    )
+    assert any("QR_TRANSPORT" in error for error in ci_checks.gate_errors(env))
+    env["QR_TRANSPORT"] = "success"
+    assert ci_checks.gate_errors(env) == []
+
+
+@pytest.mark.parametrize(("status", "expected_ok"), [
+    ("200", True), ("403", False), ("404", False),
+    ("401", False), ("429", False), ("500", False),
+])
+def test_dependency_review_guard_http_status(status, expected_ok):
+    from scripts.dependency_review_guard import dependency_graph_status_error
+
+    assert (dependency_graph_status_error(status) is None) is expected_ok
+
+
+def test_required_security_review_must_not_accept_skipped_on_dependency_change():
+    env = required_env(
+        CODE="true", QR_TRANSPORT="success",
+        DEPS="true", AUDIT="success",
+        NODE="true", NODE_AUDIT="success",
+        TESTS="success", REPRODUCIBLE_BUILD="success",
+        DEPENDENCY_REVIEW="skipped",
+    )
+    assert any("DEPENDENCY_REVIEW" in error for error in ci_checks.gate_errors(env))
+    env["DEPENDENCY_REVIEW"] = "success"
+    assert ci_checks.gate_errors(env) == []
+
+
+def test_required_workflow_wires_real_qr_gate_and_unconditional_dependency_review():
+    from pathlib import Path
+    content = (
+        Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
+    ).read_text(encoding="utf-8")
+    assert "QR_INTEROP=1 python -m pytest -q tests/test_qr_interop.py" in content
+    assert "npm run build" in content
+    assert "npm audit --audit-level=high" in content
+    assert "QR_TRANSPORT: ${{ needs.qr_transport.result }}" in content
+    assert "python3 scripts/dependency_review_guard.py" in content
+    assert "if: steps.dependency-graph.outputs.available" not in content
