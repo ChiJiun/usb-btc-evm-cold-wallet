@@ -216,13 +216,31 @@ export function bindTypedToPending(parsed,pending,{
       now<pending.createdAt ||
       now-pending.createdAt>Math.min(pending.ttlMs??MAX_SCAN_MS,MAX_SCAN_MS) ||
       pending.consumed || pending.cancelled) throw Error("Expired or closed signing session");
+  // Do not let a caller-supplied partial object bypass mandatory UR bindings.
+  // The typed parser normally supplies these fields, but this exported guard
+  // must also fail closed when invoked directly by an application adapter.
+  if (!parsed || !TYPES.has(parsed.type) || parsed.type === "eth-signature" &&
+      (!/^[0-9a-f]{32}$/.test(parsed.requestId ?? "") ||
+       !/^[0-9a-f]{128}(?:00|01|1b|1c)$/.test(parsed.signatureHex ?? "")) ||
+      parsed.type === "eth-sign-request" &&
+      (!/^[0-9a-f]{32}$/.test(parsed.requestId ?? "") ||
+       parsed.chainId !== ETH_CHAIN || parsed.network !== network ||
+       typeof parsed.address !== "string" ||
+       !/^0x[0-9a-f]{40}$/i.test(parsed.address) ||
+       typeof parsed.unsignedTxHex !== "string") ||
+      parsed.type === "crypto-psbt" &&
+      (typeof parsed.psbtHex !== "string" ||
+       !/^70736274ff(?:[0-9a-f]{2})+$/i.test(parsed.psbtHex) ||
+       parsed.psbtHex.length / 2 > MAX_PAYLOAD)) {
+    throw Error("Incomplete or invalid typed UR payload");
+  }
   const signatureResponse=parsed.type==="eth-signature" && pending.type==="eth-sign-request";
   if (!(parsed.type===pending.type || signatureResponse) ||
-      (parsed.requestId!==undefined && parsed.requestId!==pending.requestId) ||
-      (parsed.chainId!==undefined && parsed.chainId!==pending.chainId) ||
-      (parsed.address!==undefined && parsed.address.toLowerCase()!==pending.address?.toLowerCase()) ||
-      (parsed.unsignedTxHex!==undefined &&
-        hex(sha256(bytes(parsed.unsignedTxHex)))!==pending.unsignedDigest)) {
+      (parsed.type !== "crypto-psbt" && parsed.requestId !== pending.requestId) ||
+      (parsed.type === "eth-sign-request" &&
+       (parsed.chainId !== pending.chainId ||
+        parsed.address.toLowerCase() !== pending.address?.toLowerCase() ||
+        hex(sha256(bytes(parsed.unsignedTxHex))) !== pending.unsignedDigest))) {
     throw Error("Typed UR mismatches immutable pending request");
   }
   if (signatureResponse) {
