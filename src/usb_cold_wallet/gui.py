@@ -889,13 +889,6 @@ class OfflineReviewApp:
             if not self._transport_available():
                 raise ValueError("USB request changed during unlock")
         except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
-            if replay_reviewed and replay_ledger is not None and self._active_v2_request is not None:
-                try:
-                    current = replay_ledger.get(self._active_v2_request["requestId"])
-                    if current is not None and current.state == "COLD_REVIEWED":
-                        replay_ledger.failed(self._active_v2_request, "local signing flow failed")
-                except (ValueError, OSError):
-                    pass
             self._lock_wallet(self.t("locked"))
             self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
             self._render_home()
@@ -1187,6 +1180,13 @@ class OfflineReviewApp:
                     self._active_qr_request, signed, self.session.plan.signed_kind)
             self.security.signed(digest)
         except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
+            if replay_reviewed and replay_ledger is not None and self._active_v2_request is not None:
+                try:
+                    current = replay_ledger.get(self._active_v2_request["requestId"])
+                    if current is not None and current.state == "COLD_REVIEWED":
+                        replay_ledger.failed(self._active_v2_request, "local signing flow failed")
+                except (ValueError, OSError):
+                    pass
             self._lock_wallet(self.t("locked"))
             self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
             self._render_home()
