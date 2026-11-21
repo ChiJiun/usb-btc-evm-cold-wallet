@@ -439,3 +439,29 @@ $("lookupForm").addEventListener("submit",(event)=>{
     }
   });
 });
+
+
+async function refreshCrossboot(){
+  const data=await api("/api/crossboot");
+  const lines=[data.available?"✓ 已唯一辨識 TX_TRANSFER："+data.root:"✗ "+(data.error||"目前沒有可用交換分割區")];
+  if(data.request_id) lines.push("Request ID："+data.request_id,"資產："+data.asset,"階段："+data.stage);
+  if(data.guidance) lines.push(data.guidance);
+  $("crossbootStatus").textContent=lines.join("\n");
+  $("crossbootExportBtn").disabled=!data.can_export;
+  $("crossbootResumeBtn").disabled=!data.can_resume;
+  return data;
+}
+$("crossbootRefreshBtn").addEventListener("click",()=>action(refreshCrossboot));
+$("crossbootExportBtn").addEventListener("click",()=>action(async()=>{
+  const data=await api("/api/crossboot/export",{});
+  await refreshCrossboot();
+  message("Pending Request "+data.request_id+" 已保存；請關閉 Companion 並重新開機進入 USB Offline GUI。");
+}));
+$("crossbootResumeBtn").addEventListener("click",()=>action(async()=>{
+  await api("/api/crossboot/resume",{});
+  renderWallet(await api("/api/wallet"));
+  await refreshBtc();
+  await refreshCrossboot();
+  message("離線回覆已重新驗證；Broadcast 仍需人工確認。");
+}));
+action(refreshCrossboot);
