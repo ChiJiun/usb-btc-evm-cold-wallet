@@ -422,10 +422,8 @@ class BitcoinCompanion:
                 raise
             except Exception as exc:
                 raise ValueError("Invalid PSBT signatures or finalization") from exc
-            response_envelope = obj if isinstance(obj, dict) and obj.get("format") else pack_envelope("btc-signed", payload)
-
+            response_envelope = obj
             self.pending.update({"stage": "verified", "signed_tx": final_hex, "txid": txid,
-
                                  "response_envelope": response_envelope})
             return self.pending_view()
 
