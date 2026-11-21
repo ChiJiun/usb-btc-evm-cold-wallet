@@ -139,7 +139,7 @@ claiming the Issue's long-running fuzz acceptance is complete.
 ## Bounded fuzz campaign and replay (Issue #2)
 
 The Linux workflow uses `ulimit -v 786432` (768 MiB process virtual memory),
-a 240-second external watchdog, a 180-second mutation deadline, and a
+a 12-minute GitHub job watchdog, a 180-second mutation deadline, and a
 250-millisecond per-case POSIX timer. Timeout failures are raised outside
 the parser's normal `ValueError` boundary and saved as crash artifacts.
 The report records random seed, accepted/rejected parser and policy cases,
