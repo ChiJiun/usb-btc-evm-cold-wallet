@@ -62,8 +62,34 @@ def _read_raw_map(stream: BytesIO, forbidden_keys: set[bytes], context: str) -> 
         entries[key] = _read_exact(stream, value_len)
 
 
+def _preflight_unsigned_tx_counts(unsigned_tx: bytes) -> tuple[int, int]:
+    """Bound v0 transaction scope counts before allocating an embit Transaction.
+
+    Parse only the fixed-width inputs and canonical CompactSize lengths needed
+    to locate the output count. A PSBTv0 global unsigned transaction must have
+    empty input scriptSig, so skip no attacker-controlled scripts here.
+    """
+    stream = BytesIO(unsigned_tx)
+    _read_exact(stream, 4)  # Transaction version.
+    inputs = _read_compact_size(stream)
+    if not 1 <= inputs <= _MAX_INPUTS:
+        raise ValueError("PSBT input count exceeds supported limit")
+    for _ in range(inputs):
+        _read_exact(stream, 36)  # prevout txid + output index.
+        script_len = _read_compact_size(stream)
+        if script_len:
+            raise ValueError("PSBT unsigned transaction must have empty scriptSig")
+        _read_exact(stream, 4)  # sequence.
+    outputs = _read_compact_size(stream)
+    if not 1 <= outputs <= _MAX_OUTPUTS:
+        raise ValueError("PSBT output count exceeds supported limit")
+    return inputs, outputs
+
+
 def _validate_raw_psbt(raw: bytes) -> bytes | None:
     """Check BIP174 v0 invariants before embit can normalize or merge PSBT fields."""
+    if type(raw) is not bytes or len(raw) > _MAX_PSBT_BYTES:
+        raise ValueError("PSBT exceeds size limit")
     stream = BytesIO(raw)
     if _read_exact(stream, len(_PSBT_MAGIC)) != _PSBT_MAGIC:
         raise ValueError("Invalid PSBT magic")
@@ -76,18 +102,19 @@ def _validate_raw_psbt(raw: bytes) -> bytes | None:
     # fields are rejected above even when a malicious payload omits version=2.
     if unsigned_tx is None:
         return None
+    if len(unsigned_tx) > _MAX_PSBT_BYTES:
+        raise ValueError("PSBT global unsigned transaction exceeds size limit")
+    expected_inputs, expected_outputs = _preflight_unsigned_tx_counts(unsigned_tx)
     try:
         raw_tx = transaction.Transaction.parse(unsigned_tx)
     except Exception as exc:
         raise ValueError("Malformed global unsigned transaction") from exc
     if raw_tx.serialize() != unsigned_tx:
         raise ValueError("Non-canonical global unsigned transaction")
-    # Bound attacker-controlled counts before iterating their PSBT maps or
-    # allowing the library parser to allocate matching input/output scopes.
-    if not 1 <= len(raw_tx.vin) <= _MAX_INPUTS:
-        raise ValueError("PSBT input count exceeds supported limit")
-    if not 1 <= len(raw_tx.vout) <= _MAX_OUTPUTS:
-        raise ValueError("PSBT output count exceeds supported limit")
+    # Fail closed if the library interpreted different scope counts from
+    # the canonical raw CompactSize preflight (e.g. witness marker ambiguity).
+    if len(raw_tx.vin) != expected_inputs or len(raw_tx.vout) != expected_outputs:
+        raise ValueError("PSBT unsigned transaction count mismatch")
     if any(vin.script_sig.data or vin.witness.items for vin in raw_tx.vin):
         raise ValueError("PSBT unsigned transaction must have empty scriptSig and witness")
 
