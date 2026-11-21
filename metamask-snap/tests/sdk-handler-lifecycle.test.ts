@@ -75,7 +75,7 @@ test('SDK keyring RPC: durable account notifications, selection and concurrent c
     data:'0x',accessList:[],
   };
   const signing = {id:'12345678-1234-4123-8123-123456789016',
-    account:accounts[0].id,scope:'eip155:11155111',
+    account:accounts[0].id,origin:'https://dapp.example',scope:'eip155:11155111',
     request:{method:'eth_signTransaction',params:[tx]}};
   const submitted = await keyring('metamask','keyring_submitRequest',signing) as {pending:boolean};
   assert.equal(submitted.pending,true);
