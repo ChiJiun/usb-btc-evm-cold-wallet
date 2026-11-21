@@ -295,7 +295,7 @@ def main() -> int:
     os.environ["HISTFILE"] = "/dev/null"
     while True:
         print("\n=== USB BTC + EVM COLD WALLET ===")
-        print("TESTNET RESEARCH APPLIANCE — NOT AUDITED FOR REAL FUNDS")
+        print("TESTNET DEVELOPMENT BUILD — NOT APPROVED FOR MAINNET ASSETS")
         status = security_status()
         for item in status:
             print(item)
