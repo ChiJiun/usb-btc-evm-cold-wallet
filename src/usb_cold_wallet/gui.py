@@ -1216,6 +1216,46 @@ class OfflineReviewApp:
             self.ttk.Button(self.container, text="Review next transaction / 下一筆重新審核", command=self._next_transaction).pack(fill="x", pady=8)
         self.ttk.Button(self.container, text=self.t("done"), command=self._done).pack(pady=(24, 0))
 
+    def _recover_existing_v2_response(self, path: Path) -> bool:
+        """Recover a completed response published before the cold journal fsync."""
+        if self._active_v2_request is None or self.session is None or self.wallet_root is None:
+            return False
+        raw, _identity = self._read_transfer_snapshot(path)
+        response = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
+        expected_account = (
+            evm_account(self.wallet_root).address
+            if self._active_v2_request["kind"] == "evm-request"
+            else self.wallet_root.my_fingerprint.hex()
+        )
+        payload = verify_v2_response(
+            self._active_v2_request,
+            response,
+            expected_account=expected_account,
+            allow_no_trusted_clock=True,
+        )
+        local_payload = verify(
+            json.loads(self.session.signed_envelope_text(), object_pairs_hook=_unique_object),
+            self.session.plan.signed_kind,
+        )
+        if payload != local_payload:
+            raise ValueError("Existing response differs from the locally reviewed signature")
+        ledger = ReplayLedger(self.transfer_dir / ".usb-cold-wallet" / "state" / "cold")
+        current = ledger.get(self._active_v2_request["requestId"])
+        if current is None:
+            raise ValueError("Existing response has no durable COLD_REVIEWED record")
+        if current.state == "COLD_REVIEWED":
+            ledger.mark_signed(
+                self._active_v2_request,
+                response,
+                allow_no_trusted_clock=True,
+            )
+        elif current.state == "SIGNED":
+            if current.metadata.get("responseDigest") != response["sha256"]:
+                raise ValueError("Existing response disagrees with durable SIGNED record")
+        else:
+            raise ValueError("Existing response belongs to a failed replay state")
+        return True
+
     def _export_signed(self):
         if not self.session:
             return
@@ -1241,6 +1281,18 @@ class OfflineReviewApp:
                 self.status_message = "已寫入單 USB 簽章回覆。請關機後回 Windows；Companion 會重新驗證，再等待人工 Broadcast。"
                 self.messagebox.showinfo(self.t("signed"), self.status_message, parent=self.root)
         except FileExistsError:
+            if self._active_v2_request is not None:
+                try:
+                    self._recover_existing_v2_response(path)
+                    self.status_message = (
+                        "既有完整回覆已重新驗證並完成 replay ledger 恢復；"
+                        "請關機後回 Windows，Companion 仍會再次驗證。"
+                    )
+                    self.messagebox.showinfo(self.t("signed"), self.status_message, parent=self.root)
+                    return
+                except (ValueError, OSError, KeyError, TypeError) as exc:
+                    self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
+                    return
             self.messagebox.showerror(self.t("error"), self.t("output_exists"), parent=self.root)
         except (ValueError, OSError, KeyError, TypeError) as exc:
             self._lock_wallet(self.t("locked"))
