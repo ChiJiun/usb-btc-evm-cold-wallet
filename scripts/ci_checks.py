@@ -90,7 +90,10 @@ def select_scope(
             stderr=subprocess.DEVNULL,
         )
         raw = subprocess.check_output(
-            ["git", "diff", "--name-only", "-z", base, "HEAD", "--"],
+            # Keep both old and new paths of a rename. With rename detection,
+            # moving src/signer.py -> docs/signer.py reports only the docs
+            # destination, incorrectly skipping all executable-code checks.
+            ["git", "diff", "--name-only", "-z", "--no-renames", base, "HEAD", "--"],
             stderr=subprocess.DEVNULL,
         )
     except (OSError, subprocess.CalledProcessError):
