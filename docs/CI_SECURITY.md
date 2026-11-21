@@ -12,13 +12,13 @@
 | Python／其他程式碼、QR Transport JS | Python 3.12/3.13 pytest、可重現 wheel 雙次建置、QR Transport Node 24 單元測試／bundle build／Python↔QR 互通測試、Required |
 | 依賴 manifest、lockfile、任何 `.github/workflows/*.yml/.yaml` | 上述程式碼驗證，另執行 Python `pip-audit`；PR 必須通過實際 GitHub Dependency Review |
 | npm manifest／lockfile 或 CI workflow 變更 | 額外執行全部 tracked npm 專案的 production `npm ci --ignore-scripts`、`npm audit --omit=dev --audit-level=high` |
-| 每日 schedule（02:20 UTC） | Secret scan、Python `pip-audit`、Node production audit；其他非排程必要工作依變更分類規則 |
+| 每日 schedule（02:20 UTC） | Secret scan、Python `pip-audit`、所有 npm lockfile 的 production 及 dev/build dependency audit；QR 建置等其他昂貴檢查不執行 |
 | workflow_dispatch | 完整驗證（包含 QR Transport、Python/Node 稽核） |
 
 QR Transport 的功能驗證在程式碼變更時不能被跳過，且
 `CI / Required` 必須確認 QR job 實際成功。QR 的建置工作還額外
 對 **dev/build dependencies** 執行 `npm audit --audit-level=high`；
-Node production audit 則只包含正式執行依賴。完整 Node 稽核目前
+Node 排程稽核則先分別檢查 production 相依，再針對**完整 lockfile（含 dev/build dependencies）** 執行 `npm audit --audit-level=high`，避免每日不跑 QR bundle 時遺漏建置工具的新增漏洞。完整 Node 稽核目前
 使用 npm lockfile；雖然 pnpm/yarn 依賴檔會觸發檢查，尚未支援
 pnpm/yarn 的獨立 audit，沒有可用 npm lockfile 時會拒絕通過。
 

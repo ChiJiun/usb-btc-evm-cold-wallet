@@ -46,6 +46,31 @@ def test_scheduled_scan_requires_dependency_audit():
     assert ci_checks.SCHEDULED.node and ci_checks.SCHEDULED.deps
 
 
+
+def test_scheduled_node_audit_checks_production_and_build_dependencies():
+    """The daily code=false scope must still audit dev/build dependencies."""
+    from pathlib import Path
+
+    assert ci_checks.select_scope("schedule") == ci_checks.Scope(
+        code=False, deps=True, metadata=False, node=True
+    )
+    workflow = (
+        Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
+    ).read_text(encoding="utf-8")
+    node_job = workflow.split("\n  node_audit:", 1)[1].split("\n  secret_scan:", 1)[0]
+    assert "if: needs.changes.outputs.node == 'true'" in node_job
+    assert 'npm ci --prefix "$dir" --ignore-scripts --omit=dev' in node_job
+    assert 'npm audit --prefix "$dir" --omit=dev --audit-level=high' in node_job
+    assert 'npm audit --prefix "$dir" --audit-level=high' in node_job
+
+    env = required_env(
+        EVENT_NAME="schedule", DEPS="true", NODE="true",
+        AUDIT="success", NODE_AUDIT="skipped"
+    )
+    assert any("NODE_AUDIT" in error for error in ci_checks.gate_errors(env))
+    env["NODE_AUDIT"] = "success"
+    assert ci_checks.gate_errors(env) == []
+
 def test_manual_dispatch_runs_full_suite():
     assert ci_checks.select_scope("workflow_dispatch") == ci_checks.FULL
 

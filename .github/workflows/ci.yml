@@ -186,6 +186,10 @@ jobs:
             echo "Auditing Node production dependencies: $dir"
             npm ci --prefix "$dir" --ignore-scripts --omit=dev --no-fund --no-audit
             npm audit --prefix "$dir" --omit=dev --audit-level=high
+            # Daily schedule skips the QR build job. Also audit dev/build
+            # dependencies from the complete lockfile (e.g. Vite).
+            echo "Auditing Node build and development dependencies: $dir"
+            npm audit --prefix "$dir" --audit-level=high
           done < <(git ls-files -z -- 'package.json' '*/package.json')
 
           if [[ "$found" != true ]]; then
