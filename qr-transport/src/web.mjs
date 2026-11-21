@@ -87,6 +87,10 @@ el("startScan").addEventListener("click", async () => {
     return status("無法使用攝影機：請使用 HTTPS / localhost 安全環境，或 USB-B 備援。");
   }
   if (scanner.done) return status("請先按重新掃描以建立新的掃描 session。");
+  // A scan with no received frames starts fresh even when the page has been
+  // open longer than the scan deadline. A partial scan retains its deadline.
+  if (scanner.count === 0) scanner.reset();
+  scanner.start();
   const reader = new BrowserQRCodeReader(undefined, { delayBetweenScanAttempts: 150 });
   const epoch = ++cameraEpoch;
   cameraOpening = true;
