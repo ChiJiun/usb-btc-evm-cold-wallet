@@ -1,4 +1,4 @@
-# Online Companion (Issue #17, Phase 1)
+# Online Companion (Issue #17, Phase 1+2)
 
 > **Experimental Sepolia / Bitcoin testnet-only research prototype. No audit; do not use with real funds.**
 > This program is intentionally **ONLINE** and handles **public information only**. It does not import, create, recover or export a mnemonic, vault or private key.
@@ -18,15 +18,47 @@
 
 Do **not** plug the private-key-bearing USB-A or its vault into the online computer. An ordinary USB does not have a Secure Element or its own trusted display. A malicious online computer can change the request and recalculate the exchange checksum; **only the offline human review is authorization**. USB-B must carry data files only, not programs to execute.
 
+## Release packaging boundary — offline image must exclude Online Companion
+
+This repository's default development wheel includes both the online UI and
+the offline signer for integration testing. **Do not install the default wheel
+in the trusted offline Live USB image.** Before creating the appliance, build
+a separate network-free wheel from a verified development wheel:
+
+```bash
+python -m build --no-isolation --wheel --outdir dist
+python scripts/build_offline_wheel.py dist/*.whl dist/offline
+```
+
+The offline-only wheel retains the reviewed signing modules and the
+`usb-cold-wallet` command; it excludes `companion_core.py`,
+`companion_btc.py`, `companion_web.py`, bundled browser assets, and
+`usb-cold-companion`. The builder uses a strict allowlist of cold-side
+Python modules: any newly added wallet module fails the release build until
+explicitly security reviewed. It regenerates and verifies the wheel RECORD.
+
+The unit tests validate the offline wheel filtering and reject unreviewed
+modules; **the CI workflow does not yet build and install the sanitized wheel
+as a release gate**. The separate Live USB builder (#7) must consume only
+this verified offline wheel, and CI must prove its installed contents and
+entry points, before an offline boot image can be accepted. The current
+prototype has not established that appliance-level guarantee. Online RPC,
+Esplora, HTTP server, and web assets are never valid cold-side runtime
+dependencies.
+
+The Online Companion's `pack_envelope` / `unpack_envelope` now use the
+same #11 strict validators as the offline signer. A SHA-256 exchange digest
+is an integrity check, **never permission to sign or broadcast**.
+
 ## 1. Prepare a public watch-only export
 
-In the current `main` offline signer, on **trusted isolated hardware only**, after creating a test-only wallet:
+On a **trusted physically isolated** signer, after creating a test-only wallet:
 
 ```bash
 usb-cold-wallet --vault /offline/wallet.vault addresses --count 3 > /transport/watch-only.json
 ```
 
-Issue #5's pending PR adds an integrity-only envelope export:
+The merged #11 USB exchange interface provides integrity-only envelope export:
 
 ```bash
 usb-cold-wallet --vault /offline/wallet.vault export-watch-only \

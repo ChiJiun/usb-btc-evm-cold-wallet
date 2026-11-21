@@ -13,6 +13,7 @@ from usb_cold_wallet.companion_btc import (
 )
 from usb_cold_wallet.companion_core import canonical, pack_envelope, unpack_envelope, parse_watch_only
 from usb_cold_wallet.keys import root_from_mnemonic, watch_only, btc_address, btc_key
+from usb_cold_wallet.exchange import package as strict_exchange_package, verify as strict_exchange_verify
 
 MNEMONIC = "abandon " * 11 + "about"  # PUBLIC known-compromised vector only
 ROOT = root_from_mnemonic(MNEMONIC)
@@ -131,6 +132,20 @@ def test_btc_full_psbt_offline_sign_verify_broadcast_and_chain_status():
     rpc.status_data = {"confirmed": False}
     assert online.check_status()["result"] == "reorg_suspected"
     assert online.check_status()["reorg_warning"]
+
+
+def test_main_exchange_btc_psbt_signed_result_and_broadcast_are_compatible():
+    """Use the same #11 strict PSBT validator and #26 pending-transaction binding."""
+    online, rpc = companion()
+    request = online.prepare(TARGET, "0.0005")["envelope"]
+    encoded = strict_exchange_verify(request, "btc-request")
+    assert strict_exchange_package("btc-request", encoded) == request
+    signed = sign_btc_psbt(ROOT, encoded, TARGET, 50_000, MAX_FEE_SATS, 0)
+    response = strict_exchange_package("btc-signed", signed)
+    assert strict_exchange_verify(response, "btc-signed") == signed
+    assert online.accept_signed(canonical(response))["stage"] == "verified"
+    assert online.broadcast()["stage"] == "broadcasted"
+    assert len(rpc.sent) == 1
 
 
 def test_hardened_signer_output_with_finalized_transaction_is_checked():
