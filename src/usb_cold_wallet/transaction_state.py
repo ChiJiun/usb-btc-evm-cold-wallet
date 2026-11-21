@@ -210,7 +210,20 @@ class _Journal:
             os.close(fd)
 
     def _reload(self):
-        self._records, self.recovery_warnings = self._load()
+        # A live process can detect the disappearance/rewrite of previously
+        # observed records even if no external monotonic anchor is configured.
+        observed = {
+            (entry["requestId"], entry["counter"], entry["recordDigest"])
+            for entry in self._records
+        }
+        updated, warnings = self._load()
+        available = {
+            (entry["requestId"], entry["counter"], entry["recordDigest"])
+            for entry in updated
+        }
+        if not observed.issubset(available):
+            raise RollbackDetected("Previously observed journal history was removed or rewritten")
+        self._records, self.recovery_warnings = updated, warnings
         self._validate_chains()
 
     def _load(self):
