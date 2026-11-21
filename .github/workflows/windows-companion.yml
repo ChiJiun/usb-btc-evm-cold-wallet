@@ -54,6 +54,8 @@ jobs:
         run: |
           python scripts/smoke_windows_companion.py dist/USBColdCompanion.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/smoke_windows_companion_flow.py dist/USBColdCompanion.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Record executable checksum and build provenance
         shell: pwsh
