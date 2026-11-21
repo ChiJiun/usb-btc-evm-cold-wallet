@@ -149,6 +149,20 @@ def security_status() -> list[str]:
         )
     except OSError:
         status.append("FAIL: unable to inspect live swap state")
+
+    # A successful boot audit is historical evidence only. A user may insert,
+    # remove or remount USB media after S01airgap has finished; the console must
+    # re-check the same live mount and block-device boundaries as the Tk signer.
+    try:
+        from .gui import runtime_audit
+        safe, findings = runtime_audit()
+        if safe:
+            status.append("PASS: current RAM root, vault and transfer mounts audited")
+        else:
+            status.extend(line for line in findings if line.startswith("FAIL:"))
+            status.append("FAIL: live appliance runtime audit rejected signing")
+    except Exception:
+        status.append("FAIL: unable to complete live appliance runtime audit")
     return status
 
 
@@ -176,9 +190,15 @@ def unmount_transfer() -> None:
 
 
 def _run_cli(arguments: list[str]) -> None:
+    # Revalidate after user prompts/media selection, not only when the menu
+    # was drawn. The child also rechecks while handling sensitive operations.
+    if _security_locked(security_status()):
+        print("LOCKDOWN: live USB safety audit failed; operation cancelled.")
+        return
     subprocess.run(
         [sys.executable, "-m", "usb_cold_wallet.cli", "--vault", str(VAULT), *arguments],
         check=False,
+        env={**os.environ, "USB_WALLET_APPLIANCE": "1"},
     )
 
 
