@@ -70,17 +70,27 @@ be normalized to `ValueError`.
 `tests/test_btc_independent_bip143.py` re-computes the native P2WPKH
 BIP143 `SIGHASH_ALL` preimage with Python `hashlib` and verifies the DER
 signature using `cryptography`'s independent secp256k1 ECDSA implementation.
-It verifies the exported signed PSBT and finalized witness agree, checks the
-1000-satoshi fee, and independently rejects a modified input UTXO value or
-recipient output. This is a **locally generated public-mnemonic** vector, not
+It independently binds the signed PSBT's non-witness transaction TXID and
+indexed prevout to the spending outpoint, requires identical witness UTXO value
+and script, validates P2WPKH ScriptPubKey = `0x0014 || HASH160(witness_pubkey)`,
+and requires exact signed-PSBT partial-signature bytes to match the finalized
+witness. It checks the 1000-satoshi fee and rejects changed prevout values,
+recipient amounts, scripts, public keys, and substituted witness/PSBT signatures. This is a **locally generated public-mnemonic** vector, not
 a Bitcoin Core/Sparrow independently generated fixture.
 
 The coverage-guided `tools/fuzz_btc_psbt.py` mutates a public PSBT seed with
 byte flips, splices, inserts/deletions and hostile CompactSize-like bytes.
 It retains inputs exposing previously unseen Python lines in `btc.py` and
-exercises `_read_psbt` plus the wallet-specific offline review policy. The
-corpus and input buffers are bounded, uncaught exceptions cause non-zero exit,
-and the seed/case count/covered-line count/crashes are printed as JSON.
+exercises `_read_psbt` plus the wallet-specific offline review policy. Every
+campaign **first executes the unmodified public valid PSBT** and fails if its
+full offline review is rejected. Additional parse-valid policy-denial seeds
+exercise wrong recipient amounts and excessive fees. The JSON report separately
+counts `parser_accepted`, `parser_rejected`, `policy_accepted`, and
+`policy_rejected`; `baseline_policy_accepted` is an explicit success gate.
+The `cases` count includes initial seeds. Trace state is restored after every
+case, including unexpected exceptions. The corpus and input buffers are bounded,
+uncaught exceptions cause non-zero exit, and seed/cases/covered lines/crashes
+are included in the report.
 
 Reproduce a local short run (only public test keys):
 
