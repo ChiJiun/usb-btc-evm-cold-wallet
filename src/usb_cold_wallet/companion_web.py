@@ -238,7 +238,10 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                 elif self.path == "/api/cancel":
                     if data:
                         raise ValueError("Cancel does not accept overrides")
+                    request_id = session.pending.get("request_id") if session.pending else None
                     result = session.cancel()
+                    if crossboot is not None and crossboot.available and request_id:
+                        crossboot.remove_exchange(request_id)
                 elif self.path == "/api/crossboot/export":
                     if data or crossboot is None:
                         raise ValueError("Cross-boot export requires TX_TRANSFER and accepts no overrides")
