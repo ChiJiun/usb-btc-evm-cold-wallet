@@ -8,17 +8,80 @@ import argparse
 import hmac
 import html
 import json
+import re
 import secrets
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .companion_core import CompanionSession, JsonRpc, MAX_EXCHANGE_BYTES
+from .companion_core import CompanionSession, JsonRpc, MAX_EXCHANGE_BYTES, _quantity
 from .companion_btc import BitcoinCompanion, TestnetEsplora
 
 STATIC = Path(__file__).parent / "companion_static"
 POST_LIMIT = MAX_EXCHANGE_BYTES + 65_536
+EVM_HASH = re.compile(r"0x[0-9a-fA-F]{64}\Z")
+BTC_HASH = re.compile(r"[0-9a-fA-F]{64}\Z")
+
+
+def lookup_public_transaction(session: CompanionSession, btc_session: BitcoinCompanion,
+                              asset: str, txid: str) -> dict:
+    """Read-only status check, not a recovery of authorization to broadcast."""
+    if type(asset) is not str or type(txid) is not str:
+        raise ValueError("Asset and transaction hash must be strings")
+    if asset == "sepolia":
+        if not EVM_HASH.fullmatch(txid):
+            raise ValueError("Invalid Sepolia transaction hash")
+        session.rpc.assert_sepolia()
+        receipt = session.rpc.call("eth_getTransactionReceipt", [txid])
+        if receipt is None:
+            tx = session.rpc.call("eth_getTransactionByHash", [txid])
+            if tx is not None and (not isinstance(tx, dict)
+                    or not isinstance(tx.get("hash"), str)
+                    or tx["hash"].lower() != txid.lower()):
+                raise ValueError("RPC supplied mismatched transaction hash")
+            result = "pending" if tx is not None else "not_found"
+        else:
+            if (not isinstance(receipt, dict)
+                    or not isinstance(receipt.get("transactionHash"), str)
+                    or receipt["transactionHash"].lower() != txid.lower()):
+                raise ValueError("RPC supplied mismatched receipt")
+            status = _quantity(receipt.get("status"), "receipt status")
+            if status not in (0, 1):
+                raise ValueError("Invalid receipt status")
+            # Match the existing session status policy. A bare receipt status
+            # without an inclusion height must not be presented as confirmed.
+            _quantity(receipt.get("blockNumber"), "block number")
+            block_hash = receipt.get("blockHash")
+            if block_hash is not None and (not isinstance(block_hash, str)
+                    or not EVM_HASH.fullmatch(block_hash)):
+                raise ValueError("Invalid receipt block hash")
+            result = "confirmed" if status == 1 else "reverted"
+        return {"asset": asset, "txid": txid, "result": result, "untrusted_rpc": True}
+    if asset == "bitcoin-testnet":
+        if not BTC_HASH.fullmatch(txid):
+            raise ValueError("Invalid Bitcoin testnet TXID")
+        info = btc_session.api.status(txid.lower())
+        if info is None:
+            result = "not_found"
+        elif not isinstance(info, dict) or type(info.get("confirmed")) is not bool:
+            raise ValueError("Invalid Bitcoin testnet transaction response")
+        else:
+            # Esplora normally returns only a status object. If an identifier
+            # is supplied, it must match the request; never trust a bare
+            # confirmed flag without a valid inclusion block hash.
+            supplied_txid = info.get("txid")
+            if supplied_txid is not None and (not isinstance(supplied_txid, str)
+                    or not BTC_HASH.fullmatch(supplied_txid)
+                    or supplied_txid.lower() != txid.lower()):
+                raise ValueError("Bitcoin explorer supplied mismatched transaction ID")
+            if info["confirmed"]:
+                block_hash = info.get("block_hash")
+                if not isinstance(block_hash, str) or not BTC_HASH.fullmatch(block_hash):
+                    raise ValueError("Confirmed BTC status missing block hash")
+            result = "confirmed" if info["confirmed"] else "pending"
+        return {"asset": asset, "txid": txid.lower(), "result": result, "untrusted_rpc": True}
+    raise ValueError("Unsupported network; mainnet is disabled")
 
 
 def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token: str):
@@ -170,6 +233,11 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                     if data:
                         raise ValueError("Cancel does not accept overrides")
                     result = session.cancel()
+                elif self.path == "/api/lookup":
+                    if set(data) != {"asset", "txid"}:
+                        raise ValueError("Only public asset and transaction hash allowed")
+                    result = lookup_public_transaction(session, btc_session,
+                                                       data["asset"], data["txid"])
                 elif self.path == "/api/btc/prepare":
                     if set(data) != {"recipient", "amount_btc", "max_fee_sats", "fee_rate_sat_vb"}:
                         raise ValueError("Invalid BTC transfer form")

@@ -4,6 +4,47 @@ const token = document.querySelector('meta[name="companion-token"]').content;
 const $ = (id) => document.getElementById(id);
 let pending = null;
 let walletLoaded = false;
+let importedEvmAddress="", importedBtcAddress="";
+let evmConfirmedKey=null, btcConfirmedKey=null;
+let latestEvmBalance=null, latestBtcBalance=null;
+function requestKey(p){return p?p.request_id+":"+p.digest:null;}
+function amountAtoms(value,scale,label){
+  if(typeof value!=="string" || !/^(?:0|[1-9][0-9]{0,20})(?:\.[0-9]+)?$/.test(value))throw new Error(label+"必須是一般十進位正數");
+  const [whole,fraction=""]=value.split(".");
+  if(fraction.length>scale)throw new Error(label+"最多 "+scale+" 位小數");
+  const n=BigInt(whole)*10n**BigInt(scale)+BigInt(fraction.padEnd(scale,"0")||"0");
+  if(n<=0n)throw new Error(label+"必須大於零");
+  return n;
+}
+function statusMeaning(stage,result){
+  if(result==="confirmed")return "已確認（可能發生鏈重組）";
+  if(result==="reverted")return "失敗（已上鏈，可能仍有網路費用）";
+  if(result==="reorg_suspected")return "疑似鏈重組";
+  if(result==="pending")return "等待鏈上確認";
+  if(result==="not_found")return "尚未找到（不代表未廣播）";
+  if(stage==="broadcast_unknown")return "廣播結果不明，禁止重送";
+  if(stage==="broadcasted")return "已送出，待確認";
+  if(stage==="verified")return "離線簽章已驗證，等待手動廣播";
+  if(stage==="prepared")return "等待離線人工確認";
+  return "尚無交易";
+}
+function switchAsset(asset){
+  const btc=asset==="btc";
+  $("evmFlow").hidden=btc;$("btcFlow").hidden=!btc;
+  for(const [id,on] of [["evmTab",!btc],["btcTab",btc]]){
+    $(id).classList.toggle("active",on);
+    $(id).setAttribute("aria-pressed",String(on));
+  }
+}
+$("evmTab").addEventListener("click",()=>switchAsset("evm"));
+$("btcTab").addEventListener("click",()=>switchAsset("btc"));
+async function copyPublicAddress(address){
+  if(!address||!navigator.clipboard?.writeText)throw new Error("剪貼簿不可用，請手動複製公開地址");
+  await navigator.clipboard.writeText(address);
+  message("已複製收款地址；收款前應與離線裝置核對。");
+}
+$("evmCopyBtn").addEventListener("click",()=>action(()=>copyPublicAddress(importedEvmAddress)));
+$("btcCopyBtn").addEventListener("click",()=>action(()=>copyPublicAddress(importedBtcAddress)));
 
 function message(text, failed=false) {
   const el = $("message");
@@ -26,8 +67,13 @@ async function action(fn) {
   try { await fn(); }
   catch (err) {
     message(err.message || "操作失敗",true);
-    // A timed-out broadcast has an ambiguous outcome; refresh the button states.
-    try { renderWallet(await api("/api/wallet")); } catch (_) { /* preserve original error */ }
+    // A broadcast timeout can mean the network already accepted a transaction.
+    // Reconcile BOTH sessions; if either refresh fails, keep its broadcast
+    // control disabled rather than exposing a stale "verified" button.
+    try { renderWallet(await api("/api/wallet")); }
+    catch (_) { $("broadcastBtn").disabled=true; }
+    try { await refreshBtc(); }
+    catch (_) { $("btcBroadcastBtn").disabled=true; }
   }
 }
 function eth(wei) {
@@ -69,7 +115,11 @@ function renderWallet(data) {
   walletLoaded=!!data.loaded;
   $("refreshBtn").disabled=!walletLoaded;
   $("prepareBtn").disabled=!walletLoaded || !!data.pending;
-  if(!walletLoaded) return;
+  if(!walletLoaded){importedEvmAddress="";importedBtcAddress="";$("evmCopyBtn").disabled=true;$("btcCopyBtn").disabled=true;renderPending(null);return;}
+  importedEvmAddress=data.evm_address;
+  importedBtcAddress=data.btc_addresses[0]||"";
+  $("evmCopyBtn").disabled=!importedEvmAddress;
+  $("btcCopyBtn").disabled=!importedBtcAddress;
   $("walletInfo").textContent="EVM（Sepolia）：\n"+data.evm_address+
     "\n\nRPC："+data.rpc+"\n\nBTC（Testnet）帳戶 tpub：\n"+data.btc_account_tpub+
     "\n\n※ Watch-only 匯入的 checksum 不證明資料來源，應與離線裝置核對地址。";
@@ -78,15 +128,19 @@ function renderWallet(data) {
     const div=document.createElement("div");div.className="address";
     div.textContent="Receive #"+index+": "+addr;list.append(div);
   });
-  if(data.pending) renderPending(data.pending);
+  renderPending(data.pending||null);
 }
 function renderPending(p) {
   pending=p;
   $("prepareBtn").disabled=!walletLoaded || !!p;
   $("cancelBtn").disabled=!p;
   const prepared=p && p.stage==="prepared";
-  $("downloadBtn").disabled=!prepared;
-  $("legacyBtn").disabled=!prepared;
+  const confirmed=prepared&&evmConfirmedKey===requestKey(p);
+  $("evmReview").hidden=!prepared||confirmed;
+  $("evmAcknowledge").checked=confirmed;
+  $("confirmRequestBtn").disabled=!prepared||confirmed;
+  $("downloadBtn").disabled=!confirmed;
+  $("legacyBtn").disabled=!confirmed;
   $("verifyBtn").disabled=!prepared;
   $("broadcastBtn").disabled=!(p && p.stage==="verified");
   $("statusBtn").disabled=!(p && p.tx_hash);
@@ -98,7 +152,8 @@ function renderPending(p) {
   }
   const tx=p.tx;
   const maxFee=BigInt(tx.gas)*BigInt(tx.maxFeePerGas);
-  $("pending").textContent="交易編號（本機 Session）："+p.request_id+
+  $("pending").textContent="目前狀態："+statusMeaning(p.stage,p.result)+
+    "\n交易編號（本機 Session）："+p.request_id+
     "\nNetwork：Sepolia (11155111)"+
     "\n收款地址："+tx.to+"\n金額："+eth(tx.value)+" ETH"+
     "\nNonce："+tx.nonce+"\nGas Limit："+tx.gas+
@@ -107,6 +162,9 @@ function renderPending(p) {
     "\n最高總支出："+eth(BigInt(tx.value)+maxFee)+" ETH"+
     "\nRequest SHA-256："+p.digest+
     "\n\n原始待簽欄位：\n"+JSON.stringify(tx,null,2);
+  $("evmRecovery").textContent=(p.stage==="broadcast_unknown"||p.result==="not_found"||p.reorg_warning)?
+    "回覆不明：只能查詢，禁止自動重送。程式重啟後 Session 會消失，請保留 Tx Hash 從可信來源確認。":
+    "廣播需手動確認；清除 Session 不會撤回已送出的交易。";
   $("verification").textContent=p.tx_hash?
     "簽章已與原始請求逐欄比對成功。\nTx Hash: "+p.tx_hash+
     "\n這不代表交易已上鏈，仍需使用者點擊廣播。":
@@ -120,12 +178,19 @@ function renderPending(p) {
 }
 $("importBtn").addEventListener("click",()=>action(async()=>{
   const data=await api("/api/import",{raw:await fileContents("watchFile")});
+  latestEvmBalance=null;latestBtcBalance=null;evmConfirmedKey=null;btcConfirmedKey=null;
+  $("overview").textContent="已匯入公開帳戶，請更新餘額。";
+  $("btcOverview").textContent="已匯入公開帳戶，請更新餘額。";
   renderWallet(data);
   await refreshBtc();
   message("公開帳戶已載入。請獨立核對所匯入的完整地址。");
 }));
 $("refreshBtn").addEventListener("click",()=>action(async()=>{
+  latestEvmBalance=null;
+  $("overview").textContent="正在查詢 Sepolia；先前的餘額已作廢。";
   const data=await api("/api/overview");
+  if(data.chain_id!==11155111||data.address!==importedEvmAddress)throw new Error("RPC 鏈別或帳戶與匯入資料不一致");
+  latestEvmBalance=BigInt(data.balance_wei);
   $("overview").textContent="地址："+data.address+
     "\nRPC："+data.rpc+"\n餘額："+eth(data.balance_wei)+" ETH"+
     "\n待處理 Nonce："+data.pending_nonce+
@@ -136,17 +201,22 @@ $("refreshBtn").addEventListener("click",()=>action(async()=>{
 $("sendForm").addEventListener("submit",(event)=>{
   event.preventDefault();
   action(async()=>{
+    const atoms=amountAtoms($("amount").value.trim(),18,"ETH 金額");
+    if(latestEvmBalance!==null&&atoms>latestEvmBalance)throw new Error("ETH 金額超過估計餘額（未計入網路費用）");
     const data=await api("/api/prepare",{
       recipient:$("recipient").value.trim(),
       amount_eth:$("amount").value.trim(),
       max_fee_gwei:$("maxFee").value.trim()
     });
+    evmConfirmedKey=null;
     renderPending(data.pending);
-    message("已建立未簽章交易；請確認摘要後下載交換檔。");
+    $("evmAcknowledge").checked=false;
+    $("confirmRequestBtn").disabled=true;
+    message("請檢查收款地址、金額及最高費用，確認後開放下載交換檔。");
   });
 });
 $("downloadBtn").addEventListener("click",()=>action(async()=>{
-  if(!pending || pending.stage!=="prepared")throw new Error("沒有待簽請求");
+  if(!pending||pending.stage!=="prepared"||evmConfirmedKey!==requestKey(pending))throw new Error("請先核對並確認待簽交易");
   saveRaw("sepolia-unsigned-"+pending.request_id+".json",await rawUnsigned("/api/request-raw"));
   message("已下載完整性檢查的交換封裝，適用 #5 離線 signer。");
 }));
@@ -176,6 +246,7 @@ $("cancelBtn").addEventListener("click",()=>action(async()=>{
   if(!window.confirm("清除本機待簽請求？已廣播或可能廣播的交易無法藉此撤回。"))return;
   await api("/api/cancel",{});
   pending=null;
+  evmConfirmedKey=null;
   renderPending(null);
   $("prepareBtn").disabled=!walletLoaded;
   message("已清除本機 Session。鏈上交易不會被撤回。");
@@ -197,8 +268,12 @@ function renderBtc(p) {
   const prepared=!!p && p.stage==="prepared";
   $("btcPrepareBtn").disabled=!btcReady || !!p;
   $("btcRefreshBtn").disabled=!walletLoaded;
-  $("btcDownloadBtn").disabled=!prepared;
-  $("btcLegacyBtn").disabled=!prepared;
+  const confirmed=prepared&&btcConfirmedKey===requestKey(p);
+  $("btcReview").hidden=!prepared||confirmed;
+  $("btcAcknowledge").checked=confirmed;
+  $("btcConfirmRequestBtn").disabled=!prepared||confirmed;
+  $("btcDownloadBtn").disabled=!confirmed;
+  $("btcLegacyBtn").disabled=!confirmed;
   $("btcVerifyBtn").disabled=!prepared;
   $("btcBroadcastBtn").disabled=!(p && p.stage==="verified");
   $("btcStatusBtn").disabled=!(p && p.txid);
@@ -208,7 +283,7 @@ function renderBtc(p) {
     $("btcStatus").textContent="尚未廣播";
     return;
   }
-  $("btcPending").textContent="Network：Bitcoin Testnet"+
+  $("btcPending").textContent="目前狀態："+statusMeaning(p.stage,p.result)+"\nNetwork：Bitcoin Testnet"+
     "\n收款人："+p.recipient+
     "\n金額："+btcSats(p.amount_sats)+
     "\n預估總手續費："+p.fee_sats+" sats"+
@@ -219,6 +294,9 @@ function renderBtc(p) {
     "\nPSBT SHA-256："+p.digest+
     "\n請在離線 signer 獨立核對完整地址、金額、費用及找零。"+
     (p.txid?"\n\n驗證後交易 ID："+p.txid:"");
+  $("btcRecovery").textContent=(p.stage==="broadcast_unknown"||p.result==="not_found"||p.reorg_warning)?
+    "BTC 結果不明：只能查詢，不得自動重送。程式重啟會失去 Session，請保留 TxID。":
+    "每次廣播都要手動確認，離線裝置須獨立核對 UTXO、收款人與找零。";
   $("btcStatus").textContent=(p.result?"RPC 回報狀態："+p.result:"狀態："+p.stage)+
     (p.txid?"\nTxID："+p.txid:"")+
     (p.reorg_warning?"\n⚠ 偵測到疑似重組，請重新確認區塊狀態":"");
@@ -235,7 +313,11 @@ async function refreshBtc(){
   renderBtc(wallet.pending);
 }
 $("btcRefreshBtn").addEventListener("click",()=>action(async()=>{
+  latestBtcBalance=null;
+  $("btcOverview").textContent="正在查詢 Bitcoin Testnet；先前餘額已作廢。";
   const data=await api("/api/btc/overview");
+  if(data.network!=="Bitcoin testnet")throw new Error("Bitcoin 網路與帳戶不一致");
+  latestBtcBalance=BigInt(data.confirmed_sats);
   $("btcOverview").textContent=
     "Network："+data.network+"\nEndpoint："+data.endpoint+
     "\n已確認餘額："+btcSats(data.confirmed_sats)+
@@ -253,6 +335,8 @@ $("btcSendForm").addEventListener("submit",(event)=>{
     const rateText=$("btcRate").value.trim();
     if(!/^[0-9]{1,6}$/.test(feeText) || (rateText!=="" && !/^[0-9]{1,3}$/.test(rateText)))
       throw new Error("BTC 費率與最大手續費必須是有限正整數");
+    const atoms=amountAtoms($("btcAmount").value.trim(),8,"BTC 金額");
+    if(latestBtcBalance!==null&&atoms>latestBtcBalance)throw new Error("BTC 金額超過估計餘額（未計入費用）");
     const data=await api("/api/btc/prepare",{
       recipient:$("btcRecipient").value.trim(),
       amount_btc:$("btcAmount").value.trim(),
@@ -260,12 +344,15 @@ $("btcSendForm").addEventListener("submit",(event)=>{
       fee_rate_sat_vb:rateText===""?null:Number(rateText)
     });
     btcExchange=data.envelope;
+    btcConfirmedKey=null;
     renderBtc(data.pending);
+    $("btcAcknowledge").checked=false;
+    $("btcConfirmRequestBtn").disabled=true;
     message("已建立 BTC Testnet PSBT，請下載後在離線 Signer 上逐項核對。");
   });
 });
 $("btcDownloadBtn").addEventListener("click",()=>action(async()=>{
-  if(!btcPending || btcPending.stage!=="prepared")throw new Error("目前沒有待簽 BTC PSBT");
+  if(!btcPending||btcPending.stage!=="prepared"||btcConfirmedKey!==requestKey(btcPending))throw new Error("請先核對並確認 BTC PSBT");
   if(!btcExchange)btcExchange=await api("/api/btc/request");
   saveJson("bitcoin-testnet-unsigned-"+btcPending.request_id+".json",btcExchange);
   message("已下載 BTC PSBT 交換封裝，請使用純資料 USB-B 傳輸。");
@@ -291,6 +378,9 @@ $("btcBroadcastBtn").addEventListener("click",()=>action(async()=>{
   if(!btcPending || btcPending.stage!=="verified")throw new Error("尚未完成離線簽章驗證");
   if(!window.confirm("確定廣播 Bitcoin Testnet 測試交易？\n收款人："+btcPending.recipient+
       "\n金額："+btcSats(btcPending.amount_sats)+"\n總手續費："+btcPending.fee_sats+" sats"))return;
+  // Lock synchronously, before the first await, so double clicks cannot
+  // submit twice while the first request is in flight.
+  renderBtc({...btcPending,stage:"broadcast_unknown"});
   renderBtc(await api("/api/btc/broadcast",{}));
   message("BTC 測試交易已送往 Esplora。請查詢 TxID 狀態，勿自動重送。");
 }));
@@ -302,6 +392,50 @@ $("btcCancelBtn").addEventListener("click",()=>action(async()=>{
   if(!window.confirm("清除本機 BTC 交易？這無法撤銷已廣播的交易。"))return;
   await api("/api/btc/cancel",{});
   btcExchange=null;
+  btcConfirmedKey=null;
   renderBtc(null);
   message("已清除本機 BTC 工作階段。");
 }));
+
+$("evmAcknowledge").addEventListener("change",()=>{
+  $("confirmRequestBtn").disabled=!pending||pending.stage!=="prepared"||!$("evmAcknowledge").checked;
+});
+$("confirmRequestBtn").addEventListener("click",()=>{
+  if(!pending||pending.stage!=="prepared"||!$("evmAcknowledge").checked)return;
+  evmConfirmedKey=requestKey(pending);
+  renderPending(pending);
+  message("已核對 Sepolia 交易。離線裝置仍必須獨立審核。");
+});
+$("btcAcknowledge").addEventListener("change",()=>{
+  $("btcConfirmRequestBtn").disabled=!btcPending||btcPending.stage!=="prepared"||!$("btcAcknowledge").checked;
+});
+$("btcConfirmRequestBtn").addEventListener("click",()=>{
+  if(!btcPending||btcPending.stage!=="prepared"||!$("btcAcknowledge").checked)return;
+  btcConfirmedKey=requestKey(btcPending);
+  renderBtc(btcPending);
+  message("已核對 BTC 交易。離線裝置仍必須獨立審核。");
+});
+
+$("lookupForm").addEventListener("submit",(event)=>{
+  event.preventDefault();
+  action(async()=>{
+    const asset=$("lookupAsset").value;
+    const txid=$("lookupHash").value.trim();
+    const valid=asset==="sepolia"?/^0x[0-9a-fA-F]{64}$/.test(txid):
+      asset==="bitcoin-testnet"&&/^[0-9a-fA-F]{64}$/.test(txid);
+    if(!valid)throw new Error("請輸入與測試網相符的完整 Tx Hash／TXID");
+    $("lookupResult").textContent="正在唯讀查詢；結果僅供交叉確認。";
+    try{
+      const result=await api("/api/lookup",{asset,txid});
+      if(result.asset!==asset||result.txid.toLowerCase()!==txid.toLowerCase()||result.untrusted_rpc!==true)
+        throw new Error("RPC 查詢結果未通過鏈別／交易識別驗證");
+      $("lookupResult").textContent="測試網："+result.asset+
+        "\n交易："+result.txid+"\n狀態："+statusMeaning(null,result.result)+
+        "\n來源：不可信 RPC／Explorer。此查詢不會允許重播、簽署或廣播。";
+      message("已完成唯讀狀態查詢，未送出任何交易。");
+    }catch(err){
+      $("lookupResult").textContent="查詢失敗或結果不明；不可推論交易未廣播。";
+      throw err;
+    }
+  });
+});

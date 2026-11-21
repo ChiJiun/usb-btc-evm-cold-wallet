@@ -1,5 +1,25 @@
 # Online Companion (Issue #17, Phase 1+2)
 
+## Issue #17 · BTC／Sepolia 圖形介面操作（測試網）
+
+Windows Portable Companion 由 PR #50 提供免安裝執行檔；以此文件與 [Windows Portable 指南](WINDOWS_PORTABLE_COMPANION.md) 共同操作。**線上端僅讀取公開 watch-only 匯出，不匯入 seed、私鑰、助記詞或解密 Vault**。
+
+1. 在首頁匯入離線錢包提供的 watch-only 公開檔案，分別選擇 Sepolia ETH 或 Bitcoin Testnet。畫面會列出完整收款地址，按「複製收款地址」後仍應和離線畫面核對。BTC 僅掃描已匯出的收款地址和固定 20 個找零地址。
+2. 按「更新餘額」查詢指定的 Sepolia RPC／Bitcoin testnet Esplora。RPC 是不可信來源，逾時或失敗不可沿用舊餘額作為已確認狀態；準備交易時後端會重新獨立查詢並套用現有政策。
+3. 輸入收款地址及十進位金額（ETH 最多 18 位小數、BTC 最多 8 位），選擇費率或使用估算。後端用整數 Wei／Satoshi 計算費用及預估總支出，畫面顯示完整收款地址、精確金額、費用、找零及請求雜湊。確認核對摘要才可下載標準 USB-B 交易交換檔。
+4. 將待簽檔移至可信離線裝置，在**離線 GUI** 獨立核對收款人、金額、費用、帳戶、鏈別、BTC UTXO 與找零，再逐筆人工確認並簽章。線上介面沒有簽章功能。離線簽署結果返回後，選擇結果檔，由現有後端密碼學驗證及逐欄核對；不符會拒絕。
+5. 只有簽章驗證完成後，「確認廣播」才會開放，還需額外操作確認。廣播後查詢 pending／confirmed／reverted（EVM）或 pending／confirmed／reorg_suspected（BTC）。RPC 逾時或回傳不明時，**不自動重送、不自動重簽**；保留 Tx Hash／TxID，查詢可信資料來源後再決定下一步。
+
+遇到 Companion 程式重啟或揮發性交易 Session 遺失時，可在頁面底部選擇測試網並輸入已知完整 Tx Hash／TxID 做唯讀查詢；此操作不能恢復原交易的簽署或廣播授權，也無法證明 RPC 回覆可信。
+
+唯讀查詢只有在 EVM receipt 的交易雜湊、合法 `status` 與 `blockNumber` 完整且一致時，才會顯示 confirmed／reverted；如有 `blockHash`，也必須符合 32-byte hex。BTC 已確認狀態必須包含合法的 `block_hash`；回傳不完整或交易識別不符會拒絕，避免把不可信的節點資料誤判為已確認。BTC 廣播按鈕在網路請求開始前就會鎖定；逾時後重新讀取 BTC Session，若連刷新也失敗，按鈕維持停用，不提供重送捷徑。
+
+瀏覽器 UI 不使用 localStorage、sessionStorage 或持久化秘密；核對勾選僅存於當前頁面記憶體。關閉 Online Companion 程式會清除揮發性交易 Session，已送出的鏈上交易不會因此撤銷。**跨 Windows／UEFI 開機自動尋找交易檔、USB 分割區、跨程式重啟的持久 Session，以及真實設備驗收仍屬 #37／#43；目前只能手動挑選交換檔。** 請勿將測試網 POC 當作可管理真實資產的正式發行版。
+
+自動化回歸測試：`node --check src/usb_cold_wallet/companion_static/companion.js`、`node --test tests/test_companion_ui.mjs`（本機 UI 流程／按鈕守衛），後端交易與攻擊向量沿用 `tests/test_companion.py`、`tests/test_companion_btc.py`，並受 GitHub Required CI 約束。模擬 RPC／DOM 測試不代表實體雙機或真實測試網已驗收。
+
+---
+
 > **Experimental Sepolia / Bitcoin testnet-only research prototype. No audit; do not use with real funds.**
 > This program is intentionally **ONLINE** and handles **public information only**. It does not import, create, recover or export a mnemonic, vault or private key.
 >

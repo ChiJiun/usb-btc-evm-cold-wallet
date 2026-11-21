@@ -20,7 +20,12 @@
     <div class="notice">⚠ 研究原型，請勿投入真實資產。線上端無法替你確認收款人真實身分；務必在獨立離線畫面核對完整地址與金額。</div>
     <div id="message" class="message" role="status" aria-live="polite"></div>
 
-    <section class="grid">
+    <nav class="asset-switch" aria-label="選擇測試網資產">
+      <button type="button" id="evmTab" class="asset-tab active" aria-controls="evmFlow" aria-pressed="true">Sepolia ETH</button>
+      <button type="button" id="btcTab" class="asset-tab" aria-controls="btcFlow" aria-pressed="false">Bitcoin Testnet</button>
+      <span class="muted">僅讀取公開帳戶 · 簽署必須在離線裝置人工核准</span>
+    </nav>
+    <section class="grid" aria-label="匯入公開帳戶">
       <article class="panel" id="importPanel">
         <div class="step"><span>01</span> 先匯入公開帳戶</div>
         <h2>離線匯出的 Watch-only 資料</h2>
@@ -29,8 +34,10 @@
         <input id="watchFile" type="file" accept=".json,application/json">
         <button id="importBtn" type="button">匯入公開帳戶</button>
         <div id="walletInfo" class="facts muted">尚未匯入帳戶</div>
+        <button type="button" id="evmCopyBtn" class="secondary" disabled>複製 Sepolia 收款地址</button>
       </article>
-
+    </section>
+    <section id="evmFlow" class="grid" aria-label="Sepolia 交易流程">
       <article class="panel">
         <div class="step"><span>02</span> 查詢 Sepolia 網路</div>
         <h2>餘額與費用</h2>
@@ -57,11 +64,18 @@
         <div class="step"><span>04</span> 搬到離線電腦簽署</div>
         <h2>待簽交易摘要</h2>
         <div class="facts" id="pending">尚無交易</div>
+        <div id="evmReview" class="review-gate" hidden>
+          <h3>最後核對</h3>
+          <p>請對照完整收款地址、精確金額與最高網路費用。即使線上畫面遭修改，離線裝置仍須獨立核對並核准。</p>
+          <label><input id="evmAcknowledge" type="checkbox"> 我已核對本次待簽交易摘要</label>
+          <button id="confirmRequestBtn" type="button" disabled>確認並開放下載待簽檔</button>
+        </div>
         <div class="actions">
           <button id="downloadBtn" type="button" disabled>下載 USB-B 交換檔</button>
-          <button id="legacyBtn" class="secondary" type="button" disabled>下載舊版 JSON</button>
+          <button id="legacyBtn" class="secondary advanced-control" type="button" disabled hidden>下載舊版 JSON（進階）</button>
         </div>
-        <p class="fine">將交換檔帶往離線電腦，使用 USB Cold Signer 核對後簽署。此版本的冷端仍使用 CLI；QR 與 GUI 屬 #18 / #19。</p>
+        <details class="advanced"><summary>進階相容格式</summary><p class="fine">舊格式僅供相容性測試。日常請下載標準 USB-B 交換檔並在離線 GUI 核對與簽署。</p></details>
+        <p class="fine">離線 GUI 必須再次核對完整收款人、金額、費用與請求雜湊；本網頁無法執行簽章。</p>
       </article>
 
       <article class="panel">
@@ -82,14 +96,17 @@
         <button id="statusBtn" class="secondary" type="button" disabled>查詢鏈上狀態</button>
         <button id="cancelBtn" class="danger" type="button" disabled>清除目前交易／重新開始</button>
         <div class="facts" id="status">尚無鏈上交易</div>
+        <p class="fine" id="evmRecovery">若 RPC 逾時或回覆不明，先查詢交易狀態；切勿重複廣播。</p>
       </article>
     </section>
 
+    <div id="btcFlow" hidden>
     <section class="panel btc">
       <div class="step"><span>BTC</span> Bitcoin Testnet · watch-only</div>
       <h2>Bitcoin Testnet 收款與轉出</h2>
       <p>只支援 BIP84／PSBT v0／已確認 UTXO。線上端產生 PSBT，離線端仍須用現有 signer 核對並逐筆簽署。若公開匯出缺少 master fingerprint，僅可查看地址，須重新匯出後才能建立 PSBT。</p>
       <div id="btcList" class="address-list">請先匯入 Watch-only 檔案。</div>
+      <button type="button" id="btcCopyBtn" class="secondary" disabled>複製第一個 BTC 收款地址</button>
       <div id="btcWalletStatus" class="facts">尚未匯入 BTC 帳戶</div>
     </section>
     <section class="grid btc">
@@ -119,11 +136,17 @@
         <div class="step"><span>BTC 03</span> 離線簽名</div>
         <h2>交易詳情與檔案交換</h2>
         <div class="facts" id="btcPending">尚無待簽 BTC 交易</div>
+        <div id="btcReview" class="review-gate" hidden>
+          <h3>核對 PSBT 摘要</h3>
+          <p>包含收款人、Satoshi 金額、費用上限與找零。離線裝置必須獨立審查 UTXO 與所有輸出。</p>
+          <label><input id="btcAcknowledge" type="checkbox"> 我已核對本次 BTC 待簽摘要</label>
+          <button id="btcConfirmRequestBtn" type="button" disabled>確認並開放下載 PSBT</button>
+        </div>
         <div class="actions">
           <button id="btcDownloadBtn" type="button" disabled>下載 BTC PSBT 交換檔</button>
-          <button id="btcLegacyBtn" class="secondary" type="button" disabled>下載舊版 PSBT</button>
+          <button id="btcLegacyBtn" class="secondary advanced-control" type="button" disabled hidden>下載舊版 PSBT（進階）</button>
         </div>
-        <p class="fine">BTC 交換檔相容 #5 的 btc-request；離線使用 sign-btc --request、--to、--sats、--max-fee-sats、--change-index。未合併 #5 時可下載舊版 PSBT 檔，交給 sign-btc --psbt。</p>
+        <p class="fine">正常操作請使用 USB-B 交換檔；離線 GUI 會顯示完整交易與政策核對。跨開機自動偵測由 Issue #37 驗收。</p>
         <label for="btcSignedFile">選擇離線輸出的簽章 JSON</label>
         <input id="btcSignedFile" type="file" accept=".json,application/json">
         <button id="btcVerifyBtn" type="button" disabled>驗證簽署 PSBT</button>
@@ -136,7 +159,22 @@
         <button id="btcStatusBtn" class="secondary" type="button" disabled>查詢 BTC 交易狀態</button>
         <button id="btcCancelBtn" class="danger" type="button" disabled>清除目前 BTC 交易</button>
         <div class="facts" id="btcStatus">尚未廣播</div>
+        <p class="fine" id="btcRecovery">RPC 狀態不明時只查詢，不自動重新提交 PSBT。</p>
       </article>
+    </section>
+    </div>
+    <section class="panel" aria-label="故障恢復與鏈上唯讀查詢">
+      <div class="step"><span>恢復</span> 查詢已知交易</div>
+      <h2>重新啟動後查詢 Tx Hash／TxID</h2>
+      <p>只查詢測試網狀態，不恢復已遺失的簽章授權，也不會重新廣播。查詢結果來自不可信的 RPC／Esplora。</p>
+      <form id="lookupForm">
+        <label for="lookupAsset">交易所在測試網</label>
+        <select id="lookupAsset"><option value="sepolia">Sepolia ETH</option><option value="bitcoin-testnet">Bitcoin Testnet</option></select>
+        <label for="lookupHash">已知完整 Tx Hash（Sepolia 0x 開頭；BTC 64 位十六進位）</label>
+        <input id="lookupHash" type="text" autocomplete="off" spellcheck="false" maxlength="66" required>
+        <button id="lookupBtn" type="submit">唯讀查詢交易狀態</button>
+      </form>
+      <div class="facts" id="lookupResult" role="status" aria-live="polite">尚未查詢。沒有交易紀錄時，不能從網路端安全重建原本的簽署請求。</div>
     </section>
     <footer>僅繫結 127.0.0.1 · 本機 session 不存入瀏覽器永久儲存 · 不會向遠端上傳錢包私鑰 · 任何 QR/USB 檔案都應視為不可信。</footer>
   </main>
