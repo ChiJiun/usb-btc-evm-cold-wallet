@@ -310,6 +310,12 @@ def _verify_btc_signed_binding(request: dict, payload: dict) -> None:
         if (pub not in after.bip32_derivations or
                 after.bip32_derivations[pub].fingerprint.hex() != request["account"]):
             raise ValueError("Signed Bitcoin account fingerprint mismatch")
+        # exchange._validate_payload already verifies ECDSA, P2WPKH ownership,
+        # fee and finalized witness. Strip only the allowed new signatures:
+        # no other PSBT origin, UTXO, script or unknown metadata may change.
+        after.partial_sigs = {}
+    if final.serialize() != initial.serialize():
+        raise ValueError("Signed Bitcoin PSBT changed unsigned metadata")
 
 
 def package_v2_response(
