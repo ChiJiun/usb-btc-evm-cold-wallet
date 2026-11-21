@@ -9,6 +9,7 @@ store back.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -17,13 +18,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .cross_boot import (
-    _canonical,
-    REQUEST_ID_RE,
-    HEX64_RE,
-    verify_v2_request,
-    verify_v2_response,
-)
+REQUEST_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _canonical(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, ensure_ascii=True,
+                      separators=(",", ":"), allow_nan=False).encode("ascii")
+
+
+def _official_verifier(name: str):
+    # Keep the Windows journal public-only. The canonical protocol module has
+    # cold-side signing/review imports, so load it only when a caller did not
+    # provide an already reviewed public verifier.
+    module = importlib.import_module("." + "cross_boot", __package__)
+    return getattr(module, name)
 
 FORMAT = "usb-cold-wallet-cross-boot-state"
 VERSION = 1
@@ -134,11 +143,10 @@ def _append_windows(root: Path, name: str, raw: bytes) -> None:
 
 
 def _append_posix(root: Path, name: str, raw: bytes) -> None:
-    from .vault import atomic_create_at
-
+    vault = importlib.import_module("." + "vault", __package__)
     parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
     try:
-        atomic_create_at(parent, name, raw)
+        vault.atomic_create_at(parent, name, raw)
     finally:
         os.close(parent)
 
@@ -371,10 +379,12 @@ class PendingRequestStore(_Journal):
         *,
         trusted_time: int | None = None,
         allow_no_trusted_clock: bool = False,
+        verifier=None,
     ) -> StateSnapshot:
         current = self.get(request["requestId"])
         expected_account = current.metadata.get("account") if current is not None else None
-        verify_v2_response(
+        verify = verifier or _official_verifier("verify_v2_response")
+        verify(
             request,
             response,
             expected_account=expected_account,
@@ -421,8 +431,10 @@ class ReplayLedger(_Journal):
         expected_account: str,
         trusted_time: int | None = None,
         allow_no_trusted_clock: bool = False,
+        verifier=None,
     ) -> StateSnapshot:
-        checked = verify_v2_request(
+        verify = verifier or _official_verifier("verify_v2_request")
+        checked = verify(
             request,
             expected_account=expected_account,
             trusted_time=trusted_time,
@@ -445,11 +457,13 @@ class ReplayLedger(_Journal):
         *,
         trusted_time: int | None = None,
         allow_no_trusted_clock: bool = False,
+        verifier=None,
     ) -> StateSnapshot:
         current = self.get(request["requestId"])
         if current is None or current.state != "COLD_REVIEWED":
             raise ValueError("Request must be cold-reviewed before signing")
-        verify_v2_response(
+        verify = verifier or _official_verifier("verify_v2_response")
+        verify(
             request,
             response,
             expected_account=current.metadata.get("account"),
