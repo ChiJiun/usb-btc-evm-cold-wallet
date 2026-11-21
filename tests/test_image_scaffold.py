@@ -26,6 +26,9 @@ def test_kernel_removes_network_and_internal_storage():
     assert "# CONFIG_NET is not set" in text
     assert "CONFIG_USB_STORAGE=y" in text
     assert "CONFIG_VFAT_FS=y" in text
+    # Initramfs cannot load missing FAT charset modules at boot.
+    assert "CONFIG_NLS_CODEPAGE_437=y" in text
+    assert "CONFIG_NLS_ISO8859_1=y" in text
     for forbidden in (
         "CONFIG_ATA=y",
         "CONFIG_BLK_DEV_NVME=y",
