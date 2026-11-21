@@ -26,7 +26,7 @@ usb-cold-wallet --vault /mnt/cold-vault/wallet.vault policy \
 
 The `verify-address` command prints the **full canonical address** and requires it to be re-entered from an independently trusted source on the offline machine. Names, token symbols, ABI, labels, chain RPC metadata and decimals received from an online companion are untrusted and cannot populate the verified address book. A verified label reduces recognition effort but never hides the address nor permits automatic signing.
 
-Signing commands automatically load `<vault>.policy`. An arbitrary `--policy` path is refused. A missing profile is a signing error, even if the default parameters would have allowed the transaction. The original `--to`, `--wei`, `--max-fee-sats`, and change-index confirmations and review rules remain active.
+Signing commands first size-bound and parse the unsigned USB request before unlocking the vault, then automatically load `<vault>.policy`. An arbitrary `--policy` path is refused. A missing profile or missing independent `--expected-policy-sha256` anchor is a signing error, even if the default parameters would have allowed the transaction. The original `--to`, `--wei`, `--max-fee-sats`, and change-index confirmations and review rules remain active.
 
 ## Trust boundaries and caps
 
@@ -40,7 +40,7 @@ Versioned `TransactionIntent` is built from **already validated** Bitcoin/EVM un
 
 The profile is encrypted with AES-256-GCM, its own random salt/nonce and scrypt KDF, and fixed domain-separating AAD. It is bound to the public wallet identity, rejecting accidental restore into another wallet. Reading now uses a single size-bounded, no-symlink regular-file descriptor with strict JSON duplicate-key and NaN rejection. Only canonical BIP84 testnet recipients and display-safe normalized address labels are accepted. Never put this file or its passphrase on USB-B. Back up the encrypted policy alongside the encrypted wallet file on trusted offline storage. Losing the policy locks the CLI signer until the user deliberately initializes a new profile; **a new profile does not restore old trusted labels or caps**. The wallet's BIP39 recovery is separate and does not automatically recover this address book. The policy format is version 1; unknown versions fail closed.
 
-### Optional offline rollback anchor (manual)
+### Required offline rollback anchor (manual)
 
 An encrypted profile can be replaced with an older, still-valid ciphertext. To
 **detect replacement relative to a separately retained known-good copy**, after
@@ -52,14 +52,14 @@ paper/metal or other independently protected medium:
 sha256sum /mnt/cold-vault/wallet.vault.policy
 ```
 
-At the next signing, pass the independently obtained hash using
+For every signing, pass the independently obtained hash using
 `--expected-policy-sha256 64_HEX_CHARACTERS` to `sign-evm` or `sign-btc`.
 The signer compares the bytes read **once** from the policy file against the
 expected digest **before decrypting** or approving/signing. An old copy, an
 unauthorized policy change, or a typo fails closed. Refresh the independently
 stored digest **after each authorized policy update**.
 
-This check is **optional**, requires independent trusted storage of the newest
+This check is **mandatory for CLI signing**, requires independent trusted storage of the newest
 digest, and **does not provide automatic anti-rollback**. Reading the expected
 hash from the same potentially replaced USB drive defeats the protection.
 A compromised offline host, co-replaced paper record or a forged operator
