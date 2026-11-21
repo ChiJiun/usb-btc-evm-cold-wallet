@@ -178,6 +178,8 @@ $("importBtn").addEventListener("click",()=>action(async()=>{
   message("公開帳戶已載入。請獨立核對所匯入的完整地址。");
 }));
 $("refreshBtn").addEventListener("click",()=>action(async()=>{
+  latestEvmBalance=null;
+  $("overview").textContent="正在查詢 Sepolia；先前的餘額已作廢。";
   const data=await api("/api/overview");
   if(data.chain_id!==11155111||data.address!==importedEvmAddress)throw new Error("RPC 鏈別或帳戶與匯入資料不一致");
   latestEvmBalance=BigInt(data.balance_wei);
