@@ -176,7 +176,7 @@ pytest
 usb-cold-wallet --help
 ```
 
-[USB setup and operation](docs/USB_SETUP.md) · [Paper recovery and USB exchange](docs/RECOVERY_AND_USB_EXCHANGE.md) · [Security policy](SECURITY.md) · [Threat model](docs/THREAT_MODEL.md) · [CI and supply chain](docs/CI_SECURITY.md) · [Open-source references](docs/OPEN_SOURCE_REFERENCES.md)
+[USB setup and operation](docs/USB_SETUP.md) · [Windows portable Companion](docs/WINDOWS_PORTABLE_COMPANION.md) · [Paper recovery and USB exchange](docs/RECOVERY_AND_USB_EXCHANGE.md) · [Security policy](SECURITY.md) · [Threat model](docs/THREAT_MODEL.md) · [CI and supply chain](docs/CI_SECURITY.md) · [Open-source references](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## License
 

@@ -84,13 +84,13 @@ def _public_fields(value, depth=0):
 
 def pack_envelope(kind: str, payload) -> dict:
     """Use the same strict transport schema as the physically offline signer."""
-    from .exchange import package
+    from .companion_envelope import package
     return package(kind, payload)
 
 
 def unpack_envelope(data: dict, kind: str):
     """Reject any envelope that the offline exchange validator would reject."""
-    from .exchange import verify
+    from .companion_envelope import verify
     return verify(data, kind)
 
 
