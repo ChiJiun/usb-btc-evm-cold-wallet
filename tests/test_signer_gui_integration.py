@@ -1,4 +1,5 @@
 """GUI-to-signer integration without Tk/physical wallet or any secret fixture."""
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -41,6 +42,7 @@ def ui_fixture():
     app.wallet_root = object()
     app._active_usb_file = None
     app._active_usb_identity = None
+    app._active_usb_digest = None
     app.session = None
     app.selected_kind = None
     app.page_index = 0
@@ -179,3 +181,50 @@ def test_qr_reader_never_blocks_with_unlocked_wallet_root():
     assert snapshots == [(None, State.LOCKED)]
     assert app.wallet_root is None
     assert app.security.state == State.LOCKED
+
+
+def test_in_place_usb_mutation_blocks_signing_with_same_inode(tmp_path):
+    app, _ = ui_fixture()
+    transfer = tmp_path / "unsigned-request.json"
+    original = b"original snapshot bytes"
+    transfer.write_bytes(original)
+    info = transfer.lstat()
+    app._active_usb_file = transfer
+    app._active_usb_identity = (info.st_dev, info.st_ino)
+    app._active_usb_digest = hashlib.sha256(original).digest()
+    review = StubReview("f" * 64)
+    app.session = review
+    app.security.start_review(review.plan.review_digest)
+    assert app._transport_available()
+    transfer.write_bytes(b"rewritten snapshot data")
+    assert (transfer.lstat().st_dev, transfer.lstat().st_ino) == app._active_usb_identity
+    assert not app._transport_available()
+    app._sign()
+    assert review.sign_calls == 0
+    assert app.security.state == State.LOCKED
+
+
+def test_choose_kind_defers_unlock_until_after_usb_or_camera_capture():
+    app, _ = ui_fixture()
+    app._lock_wallet()
+    app._unlock = lambda: (_ for _ in ()).throw(AssertionError("Do not unlock at menu selection"))
+    app._render_import = lambda: app.rendered.append("import")
+    app._choose_kind("evm-request")
+    assert app.selected_kind == "evm-request"
+    assert app.wallet_root is None
+    assert app.security.state == State.LOCKED
+    assert app.rendered == ["import"]
+
+
+def test_bad_usb_is_rejected_without_unlocking_wallet(tmp_path):
+    app, _ = ui_fixture()
+    app._lock_wallet()
+    app.selected_kind = "evm-request"
+    malicious = tmp_path / "request.json"
+    malicious.write_bytes(b"not a valid exchange")
+    app.filedialog = SimpleNamespace(askopenfilename=lambda **kwargs: str(malicious))
+    app._unlock = lambda: (_ for _ in ()).throw(AssertionError("Reject bad USB before unlock"))
+    app._import_usb()
+    assert app.security.state == State.LOCKED
+    assert app.wallet_root is None
+    assert app.messagebox.errors
