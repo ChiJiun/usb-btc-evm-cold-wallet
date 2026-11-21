@@ -30,9 +30,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker pull bitcoin/bitcoin:30.4
-          docker image inspect bitcoin/bitcoin:30.4 --format '{{json .RepoDigests}}' | tee bitcoin-core-image-digests.json
-          docker run -d --rm --name btc-issue2-core bitcoin/bitcoin:30.4 -regtest -server -txindex=1 -fallbackfee=0.00001
+          docker pull bitcoin/bitcoin@sha256:ca69e5a5e316cdde3334b277caff687dd07b8c322f208063aa29a976132fca34
+          docker image inspect bitcoin/bitcoin@sha256:ca69e5a5e316cdde3334b277caff687dd07b8c322f208063aa29a976132fca34 --format '{{json .RepoDigests}}' | tee bitcoin-core-image-digests.json
+          docker run -d --rm --name btc-issue2-core bitcoin/bitcoin@sha256:ca69e5a5e316cdde3334b277caff687dd07b8c322f208063aa29a976132fca34 -regtest -server -txindex=1 -fallbackfee=0.00001
           for i in $(seq 1 60); do
             if docker exec --user bitcoin btc-issue2-core bitcoin-cli -regtest -datadir=/home/bitcoin/.bitcoin getblockchaininfo >/dev/null 2>&1; then
               exit 0
