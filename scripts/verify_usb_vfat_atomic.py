@@ -132,6 +132,24 @@ def validate(mount: Path) -> None:
     print("FAT32 atomic export, case collision, ENOSPC, fsync and vault checks PASSED", flush=True)
 
 
+def validate_insecure_mount(mount: Path) -> None:
+    """A VFAT mount with relaxed masks must fail BEFORE staging anything."""
+    assert_vfat(mount)
+    if not (mount.stat().st_mode & 0o077):
+        raise AssertionError("Expected a VFAT mount exposed to other users")
+    path = mount / "reject-insecure-mount.json"
+    assert not path.exists()
+    try:
+        export(mount, path.name)
+    except PermissionError as exc:
+        assert "signer-private directory" in str(exc), exc
+    else:
+        raise AssertionError("Unsafe VFAT mount allowed a signed export")
+    assert not path.exists()
+    assert_no_partial(mount)
+    print("VFAT insecure umask=0022 correctly rejected before staging", flush=True)
+
+
 def validate_remount(mount: Path) -> None:
     assert_vfat(mount)
     fingerprints = json.loads((mount / ".verification-sha256.json").read_text())
@@ -153,8 +171,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("mount", type=Path)
     parser.add_argument("--after-remount", action="store_true")
+    parser.add_argument("--reject-insecure-mount", action="store_true")
     args = parser.parse_args()
-    (validate_remount if args.after_remount else validate)(args.mount)
+    if args.after_remount and args.reject_insecure_mount:
+        parser.error("Only one mounted-VFAT scenario may be selected")
+    if args.reject_insecure_mount:
+        validate_insecure_mount(args.mount)
+    elif args.after_remount:
+        validate_remount(args.mount)
+    else:
+        validate(args.mount)
 
 
 if __name__ == "__main__":

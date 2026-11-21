@@ -312,6 +312,14 @@ jobs:
             echo "No tracked Node manifests yet; nothing to audit."
           fi
 
+  # The Windows EXE is part of the wallet's core user experience and must
+  # never be optional for code changes. Call a pinned local reusable workflow
+  # so the result is available to the SAME CI / Required graph.
+  windows_portable:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    uses: ./.github/workflows/windows-companion.yml
+
   secret_scan:
     name: Secret scan
     runs-on: ubuntu-latest
@@ -430,6 +438,7 @@ jobs:
       - tests
       - metamask_native_qr
       - metamask_snap
+      - windows_portable
       - dependency_audit
       - node_audit
       - qr_transport
@@ -456,6 +465,7 @@ jobs:
           NATIVE_QR: ${{ needs.metamask_native_qr.result }}
           SNAP: ${{ needs.changes.outputs.snap }}
           SNAP_VERIFY: ${{ needs.metamask_snap.result }}
+          WINDOWS_PORTABLE: ${{ needs.windows_portable.result }}
           METADATA: ${{ needs.changes.outputs.metadata }}
           EVENT_NAME: ${{ github.event_name }}
           TESTS: ${{ needs.tests.result }}

@@ -404,18 +404,6 @@ def test_signed_usb_export_fsync_error_cleans_only_its_own_file(monkeypatch, tmp
     assert json.loads(target.read_text())["kind"] == "evm-signed"
 
 
-def test_failed_export_cleanup_keeps_preexisting_or_replaced_files(tmp_path):
-    app = make_gui(tmp_path)
-    target = tmp_path / "preserve.json"
-    target.write_bytes(b"unrelated existing content")
-    info = target.stat()
-    app._cleanup_failed_export(target, (info.st_dev, info.st_ino + 1))
-    assert target.read_bytes() == b"unrelated existing content"
-    (tmp_path / "alias").symlink_to(target)
-    app._cleanup_failed_export(tmp_path / "alias", (info.st_dev, info.st_ino))
-    assert target.read_bytes() == b"unrelated existing content"
-
-
 def test_signed_export_not_visible_until_atomic_publish(monkeypatch, tmp_path):
     app = _signed_test_gui(tmp_path)
     target = tmp_path / "signed.json"

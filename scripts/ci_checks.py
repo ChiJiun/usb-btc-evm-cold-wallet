@@ -199,9 +199,11 @@ def gate_errors(env: dict[str, str]) -> list[str]:
     # Native MetaMask QR browser, Keyring, and Python-signer interop are mandatory
     # whenever executable code is changed, never a silently skippable CI job.
     require("NATIVE_QR", "success" if code == "true" else "skipped")
-    # An optional Snap may only be merged if its real SES, browser, and
-    # cross-language tests pass; a separate workflow cannot satisfy Required.
+    # An optional Snap must pass real SES, browser and Python interop tests.
+    # A separate workflow cannot satisfy the required aggregate gate.
     require("SNAP_VERIFY", "success" if snap == "true" else "skipped")
+    # Real Windows EXE smoke is required for cross-platform code changes.
+    require("WINDOWS_PORTABLE", "success" if code == "true" else "skipped")
 
     require(
         "WHEEL_SMOKE",

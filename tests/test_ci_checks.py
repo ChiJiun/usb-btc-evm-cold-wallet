@@ -132,6 +132,7 @@ def required_env(**overrides):
         "NODE_AUDIT": "skipped",
         "QR_TRANSPORT": "skipped",
         "NATIVE_QR": "skipped",
+        "WINDOWS_PORTABLE": "skipped",
         "EVENT_NAME": "pull_request",
         "TESTS": "skipped",
         "REPRODUCIBLE_BUILD": "skipped",
@@ -144,6 +145,8 @@ def required_env(**overrides):
         env["SNAP_VERIFY"] = "success" if env.get("SNAP") == "true" else "skipped"
     if "NATIVE_QR" not in overrides:
         env["NATIVE_QR"] = "success" if env.get("CODE") == "true" else "skipped"
+    if "WINDOWS_PORTABLE" not in overrides:
+        env["WINDOWS_PORTABLE"] = "success" if env.get("CODE") == "true" else "skipped"
     return env
 
 
@@ -202,6 +205,12 @@ def test_required_gate_accepts_expected_results(env):
           "QR_TRANSPORT": "success", "NATIVE_QR": "skipped"}, "NATIVE_QR"),
         ({"CODE": "true", "TESTS": "success", "REPRODUCIBLE_BUILD": "success",
           "QR_TRANSPORT": "success", "NATIVE_QR": "failure"}, "NATIVE_QR"),
+        ({"CODE": "true", "TESTS": "success", "REPRODUCIBLE_BUILD": "success",
+          "QR_TRANSPORT": "success", "WINDOWS_PORTABLE": "skipped"}, "WINDOWS_PORTABLE"),
+        ({"CODE": "true", "TESTS": "success", "REPRODUCIBLE_BUILD": "success",
+          "QR_TRANSPORT": "success", "WINDOWS_PORTABLE": "failure"}, "WINDOWS_PORTABLE"),
+        ({"CODE": "true", "TESTS": "success", "REPRODUCIBLE_BUILD": "success",
+          "QR_TRANSPORT": "success", "WINDOWS_PORTABLE": "cancelled"}, "WINDOWS_PORTABLE"),
         ({"DEPS": "true"}, "AUDIT"),
         ({"AUDIT": "success"}, "AUDIT"),
         ({"METADATA": "true"}, "WHEEL_SMOKE"),
@@ -444,3 +453,23 @@ def test_required_workflow_wires_real_qr_gate_and_unconditional_dependency_revie
     assert "uses: actions/dependency-review-action@" in content
     assert "dependency-graph/sbom" not in content
     assert "if: steps.dependency-graph.outputs.available" not in content
+
+
+def test_windows_portable_reusable_job_is_in_required_gate():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    windows = (root / ".github/workflows/windows-companion.yml").read_text(encoding="utf-8")
+    assert "  windows_portable:" in ci
+    assert "uses: ./.github/workflows/windows-companion.yml" in ci
+    assert "      - windows_portable" in ci.split("\n  required:", 1)[1]
+    assert "WINDOWS_PORTABLE: ${{ needs.windows_portable.result }}" in ci
+    assert "workflow_call:" in windows
+    assert "pull_request:" not in windows
+    for status in ("failure", "skipped", "cancelled"):
+        env = required_env(
+            CODE="true", TESTS="success",
+            QR_TRANSPORT="success", REPRODUCIBLE_BUILD="success",
+            WINDOWS_PORTABLE=status
+        )
+        assert any("WINDOWS_PORTABLE" in error for error in ci_checks.gate_errors(env))
