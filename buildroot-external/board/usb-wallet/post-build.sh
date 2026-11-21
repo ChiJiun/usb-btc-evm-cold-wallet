@@ -12,12 +12,25 @@ install -m 0755 "$BOARD_DIR/identify_media.py" \
 mkdir -p "$BINARIES_DIR/efi-part/EFI/BOOT"
 cp "$BOARD_DIR/grub.cfg" "$BINARIES_DIR/efi-part/EFI/BOOT/grub.cfg"
 
-# Replace Buildroot's login/getty with a single-purpose console. BusyBox sh
-# remains for init scripts but is not presented as the normal user interface.
+# Replace Buildroot's login/getty with the single-purpose offline GUI session.
+# Its launcher falls back to the existing appliance on LOCKDOWN/GUI failure;
+# BusyBox sh is never the normal operator interface.
 if [ -f "$TARGET_DIR/etc/inittab" ]; then
 	sed -i '/tty[1-9].*getty/d' "$TARGET_DIR/etc/inittab"
-	printf '\ntty1::respawn:/usr/bin/usb-wallet-console\n' >> "$TARGET_DIR/etc/inittab"
+	printf '\ntty1::respawn:/usr/bin/usb-wallet-gui-session\n' >> "$TARGET_DIR/etc/inittab"
 fi
+
+# Build must actually contain the runtime required by the already-reviewed
+# tkinter GUI; merely selecting Tk in defconfig is not sufficient evidence.
+test -x "$TARGET_DIR/usr/bin/xinit"
+test -x "$TARGET_DIR/usr/bin/Xfbdev"
+test -x "$TARGET_DIR/usr/bin/usb-cold-wallet-gui"
+test -d "$TARGET_DIR/usr/lib/python3.14/tkinter"
+set -- "$TARGET_DIR"/usr/lib/python3.14/lib-dynload/_tkinter*.so
+[ "$#" -eq 1 ] && [ -s "$1" ] || {
+	echo "ERROR: Python tkinter extension missing from target" >&2
+	exit 1
+}
 
 # Build-time guardrail: no common networking clients may survive in the image.
 for tool in ip ifconfig route ping ping6 wget nc netcat udhcpc udhcpd telnet ftpget ftpput; do
