@@ -24,6 +24,8 @@ usb-cold-wallet --vault /mnt/cold-vault/wallet.vault policy \
   --label "My test address"
 ```
 
+Every `policy init`, `set-limit`, and `verify-address` action prints a **new encrypted policy SHA-256**. After every change, record that exact value on **separate trusted paper/metal storage**; the previously recorded digest becomes obsolete. Never fetch the expected hash from USB-A/USB-B while signing. The command refuses to sign if the current independently supplied digest differs.
+
 The `verify-address` command prints the **full canonical address** and requires it to be re-entered from an independently trusted source on the offline machine. Names, token symbols, ABI, labels, chain RPC metadata and decimals received from an online companion are untrusted and cannot populate the verified address book. A verified label reduces recognition effort but never hides the address nor permits automatic signing.
 
 Signing commands first size-bound and parse the unsigned USB request before unlocking the vault, then automatically load `<vault>.policy`. An arbitrary `--policy` path is refused. A missing profile or missing independent `--expected-policy-sha256` anchor is a signing error, even if the default parameters would have allowed the transaction. The original `--to`, `--wei`, `--max-fee-sats`, and change-index confirmations and review rules remain active.
@@ -54,6 +56,16 @@ sha256sum /mnt/cold-vault/wallet.vault.policy
 
 For every signing, pass the independently obtained hash using
 `--expected-policy-sha256 64_HEX_CHARACTERS` to `sign-evm` or `sign-btc`.
+Example (use the newly recorded value, never the example placeholder):
+
+```sh
+usb-cold-wallet --vault /mnt/cold-vault/wallet.vault sign-evm \
+  --tx /mnt/transfer/unsigned.json \
+  --to 0x000000000000000000000000000000000000dEaD \
+  --wei 1000000000000 \
+  --expected-policy-sha256 64_HEX_CHARACTERS \
+  --out /mnt/transfer/signed.json
+```
 The signer compares the bytes read **once** from the policy file against the
 expected digest **before decrypting** or approving/signing. An old copy, an
 unauthorized policy change, or a typo fails closed. Refresh the independently
