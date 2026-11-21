@@ -1,12 +1,15 @@
 """Issue #5 regression tests use only the PUBLIC, compromised BIP39 vector."""
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
+from embit import psbt, script, transaction
 
 from usb_cold_wallet import cli
 from usb_cold_wallet.exchange import package, read, read_bounded, read_envelope, verify, write
 from usb_cold_wallet.keys import root_from_mnemonic, watch_only
+from usb_cold_wallet.policy import default_profile, save_profile
 from usb_cold_wallet.recovery import PUBLIC_TEST_MNEMONIC, rehearsal, restore_paper_wallet
 from usb_cold_wallet.vault import load_vault
 
@@ -14,6 +17,13 @@ PASSWORD = "fictional-test-encryption-password"
 PUBLIC = watch_only(root_from_mnemonic(PUBLIC_TEST_MNEMONIC), 1)
 BTC = PUBLIC["bitcoin"]["receive_addresses"][0]
 EVM = PUBLIC["evm"]["address"]
+
+
+def _test_policy_anchor(vault):
+    root = root_from_mnemonic(PUBLIC_TEST_MNEMONIC)
+    policy = vault.with_name(vault.name + ".policy")
+    save_profile(policy, default_profile(root), root, PASSWORD)
+    return hashlib.sha256(policy.read_bytes()).hexdigest()
 
 
 def test_rehearsal_deletes_and_restores_only_temporary_test_vault():
@@ -58,9 +68,24 @@ def test_invalid_mnemonic_rejected_without_write(tmp_path):
     ("evm-request", {"type": 2, "chainId": 11155111, "nonce": 0,
                      "to": "0x000000000000000000000000000000000000dEaD", "value": 1000,
                      "gas": 21000, "maxFeePerGas": 2000000000, "maxPriorityFeePerGas": 1000000000}),
-    ("btc-request", "cHNidP8BAA=="),
+    ("btc-request", None),
 ])
 def test_exchange_roundtrip(tmp_path, kind, payload):
+    if kind == "btc-request":
+        root = root_from_mnemonic(PUBLIC_TEST_MNEMONIC)
+        prev = transaction.Transaction(
+            vin=[transaction.TransactionInput(b"\x21" * 32, 0)],
+            vout=[transaction.TransactionOutput(100_000,
+                        script.p2wpkh(root.derive("m/84h/1h/0h/0/0").key))],
+        )
+        unsigned = transaction.Transaction(
+            version=2, vin=[transaction.TransactionInput(prev.txid(), 0)],
+            vout=[transaction.TransactionOutput(99_000, script.address_to_scriptpubkey(BTC))],
+        )
+        data = psbt.PSBT(unsigned)
+        data.inputs[0].witness_utxo = prev.vout[0]
+        data.inputs[0].non_witness_utxo = prev
+        payload = data.to_base64()
     filepath = tmp_path / "public.json"
     write(filepath, kind, payload)
     assert read(filepath, kind) == payload
@@ -157,6 +182,7 @@ def test_cli_approved_sepolia_envelope_signing_roundtrip(tmp_path, monkeypatch):
 
     vault = tmp_path / "test-only.vault"
     save_vault(vault, encrypt_mnemonic(PUBLIC_TEST_MNEMONIC, PASSWORD))
+    anchor = _test_policy_anchor(vault)
     tx = {
         "type": 2, "chainId": 11155111, "nonce": 0,
         "to": "0x000000000000000000000000000000000000dEaD",
@@ -174,11 +200,12 @@ def test_cli_approved_sepolia_envelope_signing_roundtrip(tmp_path, monkeypatch):
         return challenge
     monkeypatch.setattr("builtins.input", approve)
     args = ["--vault", str(vault), "sign-evm", "--request", str(inbound),
-            "--to", tx["to"], "--wei", str(tx["value"]), "--out", str(outbound)]
+            "--to", tx["to"], "--wei", str(tx["value"]), "--out", str(outbound),
+            "--expected-policy-sha256", anchor]
     assert cli.main(args) == 0
     signed = load_exchange(outbound, "evm-signed")
     assert Account.recover_transaction(signed["signed_raw_transaction"]) == EVM
-    assert challenges == ["SEPOLIA 0000dEaD 1000000000000"]
+    assert challenges == ["UNVERIFIED RECIPIENT", "SEPOLIA 0000dEaD 1000000000000"]
 
     inbound_data = json.loads(inbound.read_text())
     inbound_data["payload"]["value"] = 2000000000000
@@ -225,6 +252,7 @@ def test_cli_approved_btc_envelope_signing_roundtrip(tmp_path, monkeypatch):
     )
     vault = tmp_path / "public-test-only.vault"
     save_vault(vault, encrypt_mnemonic(PUBLIC_TEST_MNEMONIC, PASSWORD))
+    anchor = _test_policy_anchor(vault)
     inbound = tmp_path / "unsigned-btc.json"
     outbound = tmp_path / "signed-btc.json"
     # Decode the fixture before putting it in the USB envelope.
@@ -236,7 +264,8 @@ def test_cli_approved_btc_envelope_signing_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr("builtins.input", approve)
     args = ["--vault", str(vault), "sign-btc", "--request", str(inbound),
             "--to", dest, "--sats", "60000", "--max-fee-sats", "1500",
-            "--change-index", "0", "--out", str(outbound)]
+            "--change-index", "0", "--out", str(outbound),
+            "--expected-policy-sha256", anchor]
     assert cli.main(args) == 0
     signed = load_exchange(outbound, "btc-signed")
     assert signed["signature_count"] == 1

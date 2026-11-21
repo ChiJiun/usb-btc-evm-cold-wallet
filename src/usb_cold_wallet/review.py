@@ -17,8 +17,9 @@ from embit import networks, script
 
 from .btc import _read_psbt, review_btc_psbt, sign_btc_psbt
 from .evm import review_evm_transaction, sign_evm
-from .exchange import decode_envelope, package, read_envelope, verify
+from .exchange import package, read_envelope, verify, _unique_object, MAX_BYTES
 from .keys import btc_key, evm_account, watch_only
+from .policy import enforce_review_policy
 from .vault import save_vault
 
 _MAX_CHANGE_SCAN = 1000
@@ -370,8 +371,19 @@ def load_review_file(path: Path, root, expected_kind: str | None = None) -> Revi
 
 
 def load_review_qr(text: str, root, expected_kind: str | None = None) -> ReviewPlan:
-    """Review text returned by a QR decoder through the exact same verifier."""
-    return build_review_plan(decode_envelope(text, expected_kind), root, expected_kind)
+    """Apply the same canonical #11 validation to bounded QR-decoded JSON."""
+    if type(text) is not str:
+        raise ValueError("QR exchange must be text")
+    try:
+        if len(text.encode("utf-8")) > MAX_BYTES + 8192:
+            raise ValueError("QR exchange too large")
+        envelope = json.loads(
+            text, object_pairs_hook=_unique_object,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError("Invalid QR numeric constant: " + value)))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid QR JSON") from exc
+    return build_review_plan(envelope, root, expected_kind)
 
 
 def _fresh_plan(plan: ReviewPlan, root) -> ReviewPlan:
@@ -381,29 +393,32 @@ def _fresh_plan(plan: ReviewPlan, root) -> ReviewPlan:
     return _btc_plan(plan.payload_snapshot, plan.request_digest, root)
 
 
-def sign_review_plan(plan: ReviewPlan, root) -> dict:
-    """Re-review the exact in-memory payload immediately before signing."""
+def review_policy_decision(plan: ReviewPlan, root, profile):
+    """Check the exact reviewed intent against the independently loaded offline policy."""
     fresh = _fresh_plan(plan, root)
     if fresh.review_digest != plan.review_digest or fresh.account != plan.account:
         raise ValueError("Reviewed transaction or wallet account changed; confirmation reset required")
-
+    if profile is None:
+        raise ValueError("Encrypted offline policy is mandatory before signing")
     if plan.kind == "evm":
         payload = json.loads(plan.payload_snapshot)
-        result = sign_evm(root, payload, plan.recipient, plan.amount_atomic)
+        review = review_evm_transaction(payload, plan.recipient, plan.amount_atomic)
     else:
-        result = sign_btc_psbt(
-            root,
-            plan.payload_snapshot,
-            plan.recipient,
-            plan.amount_atomic,
-            plan.fee_atomic,
-            plan.change_index,
-        )
-    return {
-        **result,
-        "request_sha256": plan.request_digest,
-        "review_sha256": plan.review_digest,
-    }
+        review = review_btc_psbt(
+            root, plan.payload_snapshot, plan.recipient,
+            plan.amount_atomic, plan.fee_atomic, plan.change_index)
+    return enforce_review_policy(profile, root, review, kind=plan.kind)[1]
+
+
+def sign_review_plan(plan: ReviewPlan, root, profile) -> dict:
+    """Re-review, enforce the wallet-bound policy, and preserve signed-v1 schema."""
+    review_policy_decision(plan, root, profile)
+    if plan.kind == "evm":
+        payload = json.loads(plan.payload_snapshot)
+        return sign_evm(root, payload, plan.recipient, plan.amount_atomic)
+    return sign_btc_psbt(
+        root, plan.payload_snapshot, plan.recipient,
+        plan.amount_atomic, plan.fee_atomic, plan.change_index)
 
 
 class ReviewSession:
@@ -470,10 +485,13 @@ class ReviewSession:
         self._acknowledged.clear()
         self._confirmation = ""
 
-    def sign(self, root) -> dict:
+    def sign(self, root, profile, *, extra_confirmation: str | None = None) -> dict:
         if not self.can_sign:
             raise ValueError("Every review page and the final challenge must be explicitly confirmed")
-        payload = sign_review_plan(self.plan, root)
+        decision = review_policy_decision(self.plan, root, profile)
+        if decision.status == "REQUIRE_EXTRA_CONFIRMATION" and extra_confirmation != "UNVERIFIED RECIPIENT":
+            raise ValueError("Unknown recipient requires an additional typed confirmation")
+        payload = sign_review_plan(self.plan, root, profile)
         envelope = package(self.plan.signed_kind, payload)
         verify(envelope, self.plan.signed_kind)
         self._signed_envelope = envelope
