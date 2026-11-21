@@ -79,7 +79,7 @@ def main() -> int:
             "BR2_TOOLCHAIN_BUILDROOT_GLIBC",
             "BR2_KERNEL_HEADERS_AS_KERNEL",
             "BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_12",
-            "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV",
+            "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS",
             "BR2_TARGET_ROOTFS_INITRAMFS",
             "BR2_PACKAGE_PYTHON3",
             "BR2_PACKAGE_USB_WALLET_APP",
@@ -92,6 +92,16 @@ def main() -> int:
             print(f"{name}={value}")
             if value != "y":
                 failed.append(name)
+        # Buildroot linux.mk enables CONFIG_NET whenever mdev is selected.
+        # This air-gapped image must use plain devtmpfs, which handles block
+        # device nodes without a userspace hotplug daemon or network stack.
+        for name in ("BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV",
+                     "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV"):
+            symbol = kconf.syms.get(name)
+            value = "<missing>" if symbol is None else symbol.str_value
+            print(f"{name}={value}")
+            if value != "n":
+                failed.append(f"{name} (must be n)")
         if failed:
             raise SystemExit("Kconfig selections did not resolve: " + ", ".join(failed))
 
