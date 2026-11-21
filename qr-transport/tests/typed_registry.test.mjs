@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
 import {spawnSync} from "node:child_process";
+import {readFileSync} from "node:fs";
 import {UR} from "@blockchaincommons/uniform-resources";
 import {encodeCbor,cbor} from "@blockchaincommons/dcbor";
 import {makeTypedUR,parseTypedUR,encodeTypedFrames,TypedURScanner,bindTypedToPending} from "../src/typed_registry.mjs";
@@ -108,4 +109,19 @@ test("independent Python CBOR oracle validates exact standardized typed wire lay
  assert.deepEqual(Object.keys(sig),["1","2"]);
  assert.deepEqual(sig["1"],{tag:37,value:{hex:rid}});
  assert.equal(sig["2"].hex.length,130);
+});
+
+test("Bitcoin Core/Sparrow shared external BIP174 PSBT fixture is preserved byte-for-byte",()=>{
+ const fixture=JSON.parse(readFileSync(new URL("../../tests/fixtures/external_psbt_vectors.json",import.meta.url),"utf8"));
+ assert.equal(fixture.provenance.bitcoin_core.repository,"bitcoin/bitcoin");
+ assert.equal(fixture.provenance.sparrow.repository,"sparrowwallet/drongo");
+ const raw=Buffer.from(fixture.vectors.shared_bip174_valid_v0.base64,"base64");
+ const psbtHex=raw.toString("hex");
+ const frames=encodeTypedFrames("crypto-psbt",{psbtHex},{fragmentBytes:110});
+ const typed=scan(frames).payload;
+ assert.equal(typed.psbtHex,psbtHex);
+ assert.deepEqual(Buffer.from(typed.psbtHex,"hex"),raw);
+ // This known P2PKH PSBT is intentionally rejected by the separate P2WPKH
+ // wallet-policy verifier. Transport alone does NOT confer signing authority.
+ assert.equal(fixture.vectors.shared_bip174_valid_v0.expect_wallet_policy,false);
 });
