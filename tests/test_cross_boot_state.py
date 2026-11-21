@@ -189,11 +189,58 @@ def test_online_state_survives_restarts_and_prevents_double_broadcast(tmp_path):
     store = PendingRequestStore(root)
     assert store.import_verified(request, response, trusted_time=100).state == "IMPORTED_VERIFIED"
     store = PendingRequestStore(root)
+    with pytest.raises(ValueError, match="durable pre-broadcast"):
+        store.broadcasted(request, signed["transaction_hash"])
+    assert store.broadcast_requested(request, signed["transaction_hash"]).state == "BROADCAST_REQUESTED"
+    store = PendingRequestStore(root)
+    assert store.get(request["requestId"]).state == "BROADCAST_REQUESTED"
+    with pytest.raises(ValueError, match="transition"):
+        store.broadcast_requested(request, signed["transaction_hash"])
+    with pytest.raises(ValueError, match="durable pre-broadcast"):
+        store.broadcasted(request, "0x" + "aa" * 32)
     assert store.broadcasted(request, signed["transaction_hash"]).state == "BROADCASTED"
     store = PendingRequestStore(root)
     assert store.get(request["requestId"]).state == "BROADCASTED"
     with pytest.raises(ValueError, match="transition"):
         store.broadcasted(request, signed["transaction_hash"])
+
+
+def test_btc_valid_signature_with_modified_derivation_origin_is_rejected():
+    request = btc_request()
+    signed = sign_btc_psbt(ROOT, request["payload"], BTC_RECIPIENT, 60_000, 1500, 0)
+    changed = copy.deepcopy(signed)
+    parsed = psbt.PSBT.parse(base64.b64decode(changed["signed_psbt_base64"]))
+    pub = next(iter(parsed.inputs[0].bip32_derivations))
+    parsed.inputs[0].bip32_derivations[pub] = psbt.DerivationPath(
+        ROOT.my_fingerprint, bip32.parse_path("m/84h/1h/0h/0/99")
+    )
+    changed["signed_psbt_base64"] = base64.b64encode(parsed.serialize()).decode()
+    with pytest.raises(ValueError, match="unsigned metadata"):
+        package_v2_response(request, changed, trusted_time=100)
+
+
+def test_stale_online_instances_cannot_recreate_or_rebroadcast(tmp_path):
+    root = tmp_path / "state"
+    request = evm_request()
+    first = PendingRequestStore(root)
+    stale = PendingRequestStore(root)
+    first.create(request)
+    with pytest.raises(ValueError, match="transition"):
+        stale.create(request)
+
+
+def test_partial_journal_write_blocks_new_broadcast_attempt(tmp_path):
+    request = evm_request()
+    signed = sign_evm(ROOT, request["payload"], EVM_RECIPIENT, request["intent"]["amount"])
+    response = package_v2_response(request, signed, trusted_time=100)
+    root = tmp_path / "state"
+    store = PendingRequestStore(root)
+    store.create(request)
+    store.exported(request)
+    store.import_verified(request, response, trusted_time=100)
+    (root / ".crashed-write.partial").write_bytes(b"truncated")
+    with pytest.raises(StateCorruptionError, match="Unresolved journal"):
+        PendingRequestStore(root).broadcast_requested(request, signed["transaction_hash"])
 
 
 def test_cold_replay_ledger_survives_restart_and_blocks_id_and_transaction_replay(tmp_path):
@@ -209,8 +256,12 @@ def test_cold_replay_ledger_survives_restart_and_blocks_id_and_transaction_repla
     same_tx_new_id = copy.deepcopy(request)
     same_tx_new_id["requestId"] = "42" * 16
     rehash(same_tx_new_id)
+    # A second process with an earlier snapshot must reload under the lock.
+    stale_ledger = ReplayLedger(root)
     with pytest.raises(ValueError, match="Transaction digest already reviewed"):
         ledger.review_once(same_tx_new_id, expected_account=same_tx_new_id["account"], trusted_time=100)
+    with pytest.raises(ValueError, match="Transaction digest already reviewed"):
+        stale_ledger.review_once(same_tx_new_id, expected_account=same_tx_new_id["account"], trusted_time=100)
 
 
 def test_cold_signed_state_and_response_digest_survive_restart(tmp_path):
