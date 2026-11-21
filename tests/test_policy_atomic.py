@@ -194,7 +194,7 @@ def test_untrusted_writable_policy_directory_rejected(tmp_path):
     folder.mkdir(mode=0o700)
     folder.chmod(0o777)
     try:
-        with pytest.raises(ValueError, match="owner-controlled"):
+        with pytest.raises(ValueError, match="signer-private"):
             policy.save_profile(folder / "wallet.policy", policy.default_profile(ROOT),
                                 ROOT, PASSWORD)
         assert not list(folder.iterdir())
