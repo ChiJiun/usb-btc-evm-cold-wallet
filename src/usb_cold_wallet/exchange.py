@@ -148,6 +148,9 @@ def _validate_watch_only(payload):
         account = bip32.HDKey.from_base58(tpub)
         if account.is_private:
             raise ValueError("Private BIP32 keys must never be exported")
+        if (account.depth != 3 or account.child_number != 0x80000000 or
+                account.version != _BTC_NETWORK["xpub"]):
+            raise ValueError("Expected Bitcoin testnet BIP84 account m/84h/1h/0h")
     except Exception as exc:
         raise ValueError("Malformed public tpub") from exc
     if "master_fingerprint" in btc and (
@@ -275,6 +278,10 @@ def _validate_payload(kind, payload):
     _no_secrets(payload)
     if kind == "btc-request":
         _psbt_base64(payload, "BTC request")
+        # Integrity alone is not enough: reject malformed/PSBTv2 framing
+        # before `inspect-transfer` reports a valid exchange envelope.
+        from .btc import _read_psbt
+        _read_psbt(payload)
     elif kind == "evm-request":
         _validate_unsigned_evm(payload)
     elif kind == "watch-only":
