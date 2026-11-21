@@ -17,11 +17,15 @@ media = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(media)
 
 
-def _fat(label: str) -> bytes:
+def _fat(label: str, *, fat32: bool = False) -> bytes:
     sector = bytearray(512)
     struct.pack_into("<H", sector, 11, 512)
-    sector[43:54] = label.encode("ascii").ljust(11, b" ")
-    sector[54:62] = b"FAT16   "
+    offset = 71 if fat32 else 43
+    sector[offset:offset + 11] = label.encode("ascii").ljust(11, b" ")
+    if fat32:
+        sector[82:90] = b"FAT32   "
+    else:
+        sector[54:62] = b"FAT16   "
     sector[510:512] = b"\x55\xaa"
     return bytes(sector)
 
@@ -125,7 +129,7 @@ def _create(
     (dev / f"{name}1").write_bytes(_fat(boot_label))
     (dev / f"{name}2").write_bytes(_fat(vault_label))
     if include_transfer:
-        (dev / f"{name}3").write_bytes(_fat(transfer_label))
+        (dev / f"{name}3").write_bytes(_fat(transfer_label, fat32=True))
 
 
 def test_single_verified_three_partition_usb(tmp_path):
@@ -168,6 +172,7 @@ def test_duplicated_cloned_usb_is_denied(tmp_path):
         "wrong_disk_guid",
         "wrong_boot_label",
         "wrong_transfer_label",
+        "transfer_fat16",
         "missing_partition",
         "wrong_sector_size",
         "extra_partition",
@@ -202,6 +207,8 @@ def test_corruption_and_unexpected_media_fail_closed(tmp_path, mutation):
         data = bytearray((dev / "sda").read_bytes())
         data[1024 + 32] ^= 1
         (dev / "sda").write_bytes(data)
+    elif mutation == "transfer_fat16":
+        (dev / "sda3").write_bytes(_fat("TX_TRANSFER"))
     elif mutation == "missing_partition":
         (sys_block / "sda3").unlink()
     elif mutation == "hybrid_mbr":
