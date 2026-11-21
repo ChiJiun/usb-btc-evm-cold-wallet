@@ -208,11 +208,12 @@ def save_profile(path: Path, profile: dict, root, password: str, *, replace: boo
     guard_fd = None
     try:
         parent = os.fstat(parent_fd)
-        # Parent writable by others allows a stage-name swap after inode
-        # validation. Other processes with the *same* UID remain trusted.
+        # The Vault/Policy mount contains sensitive wallet metadata. Require
+        # owner-exclusive access (0700), matching the atomic Vault writer and
+        # VFAT dmask=0077. Same-UID/root malicious writers remain out of scope.
         if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.geteuid() or
-                (stat.S_IMODE(parent.st_mode) & 0o022)):
-            raise ValueError("Policy directory must be owner-controlled and not group/world writable")
+                (stat.S_IMODE(parent.st_mode) & 0o077)):
+            raise ValueError("Policy directory must be signer-private (mode 0700)")
         # Advisory lock serializes all cooperating Policy publishers; the
         # expected SHA provides compare-and-swap against stale edits.
         fcntl.flock(parent_fd, fcntl.LOCK_EX)
