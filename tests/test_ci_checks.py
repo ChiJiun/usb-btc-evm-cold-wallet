@@ -474,19 +474,23 @@ def test_windows_portable_reusable_job_is_in_required_gate():
         )
         assert any("WINDOWS_PORTABLE" in error for error in ci_checks.gate_errors(env))
 
-def test_required_job_skips_superseded_runs_without_masking_real_failures():
-    """Cancelling an entire run must not emit an extra red Required check."""
+def test_only_pull_request_runs_are_superseded_and_required_stays_fail_closed():
+    """Main pushes must not cancel each other or weaken the Required gate."""
     from pathlib import Path
 
     workflow = (
         Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
     ).read_text(encoding="utf-8")
     required = workflow.split("\n  required:", 1)[1]
-    assert "cancel-in-progress: true" in workflow
-    assert "if: ${{ always() && !cancelled() }}" in required
-    assert "if: always()" not in required
-    # The GitHub job-level cancellation guard must not weaken the gate
-    # when a live workflow has a failed or unexpectedly cancelled job.
+    concurrency = workflow.split("\nconcurrency:\n", 1)[1].split("\nenv:\n", 1)[0]
+
+    assert "github.event.pull_request.number || github.run_id" in concurrency
+    assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in concurrency
+    assert "github.ref" not in concurrency
+    assert "if: always()" in required
+    assert "!cancelled()" not in required
+
+    # Unexpected/manual cancellation on an active run must still fail closed.
     env = required_env(
         EVENT_NAME="push", CODE="true", TESTS="success",
         REPRODUCIBLE_BUILD="success", QR_TRANSPORT="success",
