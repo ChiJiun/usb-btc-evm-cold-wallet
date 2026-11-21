@@ -12,6 +12,8 @@ Windows Portable Companion 由 PR #50 提供免安裝執行檔；以此文件與
 
 遇到 Companion 程式重啟或揮發性交易 Session 遺失時，可在頁面底部選擇測試網並輸入已知完整 Tx Hash／TxID 做唯讀查詢；此操作不能恢復原交易的簽署或廣播授權，也無法證明 RPC 回覆可信。
 
+唯讀查詢只有在 EVM receipt 的交易雜湊、合法 `status` 與 `blockNumber` 完整且一致時，才會顯示 confirmed／reverted；如有 `blockHash`，也必須符合 32-byte hex。BTC 已確認狀態必須包含合法的 `block_hash`；回傳不完整或交易識別不符會拒絕，避免把不可信的節點資料誤判為已確認。BTC 廣播按鈕在網路請求開始前就會鎖定；逾時後重新讀取 BTC Session，若連刷新也失敗，按鈕維持停用，不提供重送捷徑。
+
 瀏覽器 UI 不使用 localStorage、sessionStorage 或持久化秘密；核對勾選僅存於當前頁面記憶體。關閉 Online Companion 程式會清除揮發性交易 Session，已送出的鏈上交易不會因此撤銷。**跨 Windows／UEFI 開機自動尋找交易檔、USB 分割區、跨程式重啟的持久 Session，以及真實設備驗收仍屬 #37／#43；目前只能手動挑選交換檔。** 請勿將測試網 POC 當作可管理真實資產的正式發行版。
 
 自動化回歸測試：`node --check src/usb_cold_wallet/companion_static/companion.js`、`node --test tests/test_companion_ui.mjs`（本機 UI 流程／按鈕守衛），後端交易與攻擊向量沿用 `tests/test_companion.py`、`tests/test_companion_btc.py`，並受 GitHub Required CI 約束。模擬 RPC／DOM 測試不代表實體雙機或真實測試網已驗收。
