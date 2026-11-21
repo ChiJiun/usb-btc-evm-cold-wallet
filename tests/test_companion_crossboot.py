@@ -315,8 +315,15 @@ def test_crossboot_http_api_persists_and_exports_without_broadcast(tmp_path):
         code, exported = request("POST", "/api/crossboot/export", {})
         assert code == 200 and exported["request_id"] == request_id
         assert manager.state_path.is_file()
-        assert manager.exchange.joinpath(f"request-{request_id}.json").is_file()
+        request_file = manager.exchange.joinpath(f"request-{request_id}.json")
+        assert request_file.is_file()
         assert app.rpc.sent == []
+
+        code, cancelled = request("POST", "/api/cancel", {})
+        assert code == 200 and cancelled["cancelled"]
+        assert not request_file.exists()
+        persisted = json.loads(manager.state_path.read_text())
+        assert persisted["evm"] is None
     finally:
         server.shutdown()
         server.server_close()
