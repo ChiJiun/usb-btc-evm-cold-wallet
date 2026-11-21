@@ -1,0 +1,27 @@
+CONFIG_MDEV=y
+CONFIG_FEATURE_MDEV_CONF=y
+CONFIG_BLKID=y
+CONFIG_FEATURE_BLKID_TYPE=y
+CONFIG_MOUNT=y
+CONFIG_FEATURE_MOUNT_LABEL=y
+CONFIG_UMOUNT=y
+CONFIG_SWAPOFF=y
+CONFIG_POWEROFF=y
+CONFIG_REBOOT=y
+
+# Networking applets are excluded even though CONFIG_NET=n already removes
+# their useful kernel surface. post-build.sh independently checks this list.
+# CONFIG_PING is not set
+# CONFIG_PING6 is not set
+# CONFIG_WGET is not set
+# CONFIG_NC is not set
+# CONFIG_NETCAT is not set
+# CONFIG_IP is not set
+# CONFIG_IFCONFIG is not set
+# CONFIG_ROUTE is not set
+# CONFIG_UDHCPC is not set
+# CONFIG_UDHCPD is not set
+# CONFIG_TELNET is not set
+# CONFIG_TELNETD is not set
+# CONFIG_FTPGET is not set
+# CONFIG_FTPPUT is not set

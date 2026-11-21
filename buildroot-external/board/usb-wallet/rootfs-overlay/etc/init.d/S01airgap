@@ -1,0 +1,171 @@
+#!/bin/sh
+set -eu
+
+CHECKS=/run/usb-wallet/boot-checks.txt
+LOCKDOWN=/run/usb-wallet/lockdown
+BOOT_DEVICE_FILE=/run/usb-wallet/boot-device
+BOOT_PARENT_FILE=/run/usb-wallet/boot-parent
+VAULT_DEVICE_FILE=/run/usb-wallet/vault-device
+FAILED=0
+
+mkdir -p /run/usb-wallet /mnt/cold-vault /mnt/transfer
+chmod 0700 /run/usb-wallet /mnt/cold-vault /mnt/transfer
+: > "$CHECKS"
+rm -f "$LOCKDOWN" "$BOOT_DEVICE_FILE" "$BOOT_PARENT_FILE" "$VAULT_DEVICE_FILE"
+
+pass() {
+	printf 'PASS: %s\n' "$1" >> "$CHECKS"
+}
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >> "$CHECKS"
+	FAILED=1
+}
+
+block_parent_name() {
+	node="${1##*/}"
+	resolved="$(readlink -f "/sys/class/block/$node" 2>/dev/null || true)"
+	[ -n "$resolved" ] || return 1
+	parent="$(basename "$(dirname "$resolved")")"
+	[ -e "/sys/class/block/$parent" ] || return 1
+	printf '%s\n' "$parent"
+}
+
+mount_source() {
+	awk -v target="$1" '$2 == target { print $1; exit }' /proc/mounts 2>/dev/null || true
+}
+
+# This image intentionally has no swap. Be defensive if firmware or a future
+# image accidentally exposes one.
+swapoff -a 2>/dev/null || true
+
+BOOT_DEVICE=""
+VAULT_DEVICE=""
+BOOT_PARENT=""
+VAULT_PARENT=""
+
+# BusyBox blkid only lists labels/UUIDs and rejects util-linux -t/-o/-s.
+# The independent Python helper verifies primary GPT CRC, both partition
+# GUIDs, FAT labels and uniqueness across USB disks before returning paths.
+MEDIA_PARENT=""
+if MEDIA_IDENTITY="$(/usr/bin/python3 /usr/libexec/usb-wallet-identify-media 2>/dev/null)"; then
+    # Intentional word splitting: the helper only emits fixed-format /dev/sdXn
+    # names and a kernel block basename, never shell snippets or user strings.
+    set -- $MEDIA_IDENTITY
+    if [ "$#" -eq 3 ]; then
+        BOOT_DEVICE="$1"
+        VAULT_DEVICE="$2"
+        MEDIA_PARENT="$3"
+        pass "unique boot and vault partitions verified by GPT CRC, GUID and FAT label"
+    else
+        fail "boot media identifier returned malformed output"
+    fi
+else
+    fail "boot/vault media is missing, duplicated or failed GPT/FAT verification"
+fi
+
+if [ -n "$BOOT_DEVICE" ] && [ -n "$VAULT_DEVICE" ]; then
+	BOOT_PARENT="$(block_parent_name "$BOOT_DEVICE" 2>/dev/null || true)"
+	VAULT_PARENT="$(block_parent_name "$VAULT_DEVICE" 2>/dev/null || true)"
+	if [ -n "$BOOT_PARENT" ] && [ "$BOOT_PARENT" = "$VAULT_PARENT" ] && [ "$BOOT_PARENT" = "$MEDIA_PARENT" ]; then
+		pass "boot and vault partitions share verified block parent ($BOOT_PARENT)"
+		printf '%s\n' "$BOOT_DEVICE" > "$BOOT_DEVICE_FILE"
+		printf '%s\n' "$BOOT_PARENT" > "$BOOT_PARENT_FILE"
+		printf '%s\n' "$VAULT_DEVICE" > "$VAULT_DEVICE_FILE"
+	else
+		fail "boot and vault partitions are not on the same verified block device"
+	fi
+fi
+
+# Mount only the exact, unique vault partition identified above. A duplicated
+# PARTUUID (for example, two cloned boot USBs attached at once) fails closed.
+if [ "$FAILED" -eq 0 ] && [ -n "$VAULT_DEVICE" ]; then
+	current="$(mount_source /mnt/cold-vault)"
+	if [ -z "$current" ]; then
+		mount -t vfat -o rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077 \
+			"$VAULT_DEVICE" /mnt/cold-vault 2>/dev/null || true
+		current="$(mount_source /mnt/cold-vault)"
+	fi
+	if [ "$current" = "$VAULT_DEVICE" ]; then
+		pass "COLD_VAULT mount source matches verified PARTUUID device"
+	else
+		fail "COLD_VAULT mount source does not match verified PARTUUID device"
+	fi
+fi
+
+if [ -d /proc/net ]; then
+	fail "/proc/net exists; kernel networking is present"
+else
+	pass "/proc/net absent (CONFIG_NET expected disabled)"
+fi
+
+if [ -s /proc/swaps ] && [ "$(wc -l < /proc/swaps)" -gt 1 ]; then
+	fail "active swap detected"
+else
+	pass "no active swap"
+fi
+
+ROOT_TYPE="$(awk '$2 == "/" { print $3; exit }' /proc/mounts 2>/dev/null || true)"
+case "$ROOT_TYPE" in
+	rootfs|tmpfs)
+		pass "root filesystem is RAM-backed ($ROOT_TYPE)"
+		;;
+	*)
+		fail "root filesystem is not recognized as RAM-backed (type=${ROOT_TYPE:-missing})"
+		;;
+esac
+
+VAULT_SOURCE="$(mount_source /mnt/cold-vault)"
+VAULT_TYPE="$(awk '$2 == "/mnt/cold-vault" { print $3; exit }' /proc/mounts 2>/dev/null || true)"
+VAULT_OPTS="$(awk '$2 == "/mnt/cold-vault" { print $4; exit }' /proc/mounts 2>/dev/null || true)"
+if [ "$VAULT_TYPE" = "vfat" ] && [ -n "$VAULT_DEVICE" ] && [ "$VAULT_SOURCE" = "$VAULT_DEVICE" ]; then
+	pass "COLD_VAULT mounted from verified PARTUUID device as vfat"
+	for option in rw noexec nodev nosuid sync; do
+		case ",$VAULT_OPTS," in
+			*",$option,"*) ;;
+			*) fail "COLD_VAULT missing mount option: $option" ;;
+		esac
+	done
+else
+	fail "COLD_VAULT source/type does not match verified PARTUUID device"
+fi
+
+UNEXPECTED_RW="$(
+	awk '
+	function hasopt(options, needle, n, parts, i) {
+		n = split(options, parts, ",")
+		for (i = 1; i <= n; i++) if (parts[i] == needle) return 1
+		return 0
+	}
+	hasopt($4, "rw") &&
+	$2 != "/mnt/cold-vault" &&
+	$3 !~ /^(rootfs|tmpfs|proc|sysfs|devtmpfs|devpts|cgroup2|pstore|tracefs)$/ {
+		print $2 " (" $1 ", " $3 ")"
+	}' /proc/mounts 2>/dev/null || true
+)"
+if [ -n "$UNEXPECTED_RW" ]; then
+	fail "unexpected writable non-memory mount(s): $UNEXPECTED_RW"
+else
+	pass "no unexpected writable persistent filesystem mounted"
+fi
+
+if [ "$FAILED" -ne 0 ]; then
+	rm -f "$BOOT_DEVICE_FILE" "$BOOT_PARENT_FILE" "$VAULT_DEVICE_FILE"
+	: > "$LOCKDOWN"
+	printf 'LOCKDOWN: one or more boot security checks failed\n' >> "$CHECKS"
+else
+	pass "offline startup audit complete"
+fi
+
+# Report only the final audit result on the emulated UART. No wallet secrets or
+# addresses are written to this diagnostic channel.
+if [ -c /dev/ttyS0 ]; then
+	if [ "$FAILED" -eq 0 ]; then
+		printf 'USB_WALLET_UEFI_AUDIT_OK\n' > /dev/ttyS0
+	else
+		# Failure reasons contain only public mount/configuration facts.
+		# Include them in the emulated serial log to diagnose a locked boot.
+		grep '^FAIL:' "$CHECKS" > /dev/ttyS0 || true
+		printf 'USB_WALLET_UEFI_AUDIT_LOCKDOWN\n' > /dev/ttyS0
+	fi
+fi

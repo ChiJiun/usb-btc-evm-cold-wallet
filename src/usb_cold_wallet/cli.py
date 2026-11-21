@@ -6,6 +6,7 @@ import argparse
 import getpass
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from dataclasses import asdict
@@ -32,7 +33,21 @@ def _password(confirm=False):
     return first
 
 
+def _live_appliance_guard() -> None:
+    """Required only for the bootable USB console, not developer-host CLI use."""
+    if os.environ.get("USB_WALLET_APPLIANCE") != "1":
+        return
+    from .gui import runtime_audit
+    try:
+        safe, _findings = runtime_audit()
+    except Exception as exc:
+        raise ValueError("Live USB runtime audit unavailable; refusing operation") from exc
+    if not safe:
+        raise ValueError("Live USB runtime isolation changed; refusing operation")
+
+
 def _wallet_root(args):
+    _live_appliance_guard()
     mnemonic = load_vault(args.vault, _password())
     return root_from_mnemonic(mnemonic, getpass.getpass("Optional BIP39 passphrase (Enter if none): "))
 
@@ -99,8 +114,7 @@ def _manage_policy(args) -> int:
         _approve("CREATE OFFLINE POLICY")
         save_profile(args.file, profile, root, password)
     else:
-        # Read once before editing and enforce compare-and-swap when saving.
-        # Prevent another trusted editor from silently overwriting this edit.
+        # Enforce encrypted Policy compare-and-swap under the directory lock.
         prior_sha256 = hashlib.sha256(_bounded_policy_read(args.file)).hexdigest()
         profile = load_profile(args.file, root, password, expected_sha256=prior_sha256)
         if args.action == "set-limit":
@@ -208,6 +222,7 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
     try:
+        _live_appliance_guard()
         if args.command == "init":
             _assert_offline_flags(args)
             if args.vault.exists():
@@ -218,7 +233,9 @@ def main(argv=None):
             print("\nNever store the mnemonic on your transport USB or online computer.")
             if input("Enter LAST mnemonic word to confirm paper backup: ").strip() != mnemonic.split()[-1]:
                 raise ValueError("Mnemonic not confirmed; no vault written")
-            save_vault(args.vault, encrypt_mnemonic(mnemonic, _password(confirm=True)))
+            encrypted = encrypt_mnemonic(mnemonic, _password(confirm=True))
+            _live_appliance_guard()
+            save_vault(args.vault, encrypted)
             print(f"Encrypted vault created: {args.vault}")
             return 0
 
@@ -296,7 +313,9 @@ def main(argv=None):
             print("NETWORK: ETHEREUM SEPOLIA (chainId 11155111) — NOT MAINNET")
             _display_policy_and_confirm(root, reviewed, profile, kind="evm")
             _approve(f"SEPOLIA {reviewed['recipient'][-8:]} {reviewed['value_wei']}")
+            _live_appliance_guard()
             result = sign_evm(root, raw, args.to, args.wei)
+            _live_appliance_guard()
             if args.request:
                 write_exchange(args.out, "evm-signed", result)
             else:
@@ -314,7 +333,9 @@ def main(argv=None):
             print("NETWORK: BITCOIN TESTNET — NOT MAINNET")
             _display_policy_and_confirm(root, reviewed, profile, kind="btc")
             _approve(f"BTC TESTNET {reviewed['recipient'][-8:]} {reviewed['amount_sats']} {reviewed['fee_sats']}")
+            _live_appliance_guard()
             result = sign_btc_psbt(root, encoded, args.to, args.sats, args.max_fee_sats, args.change_index)
+            _live_appliance_guard()
             if args.request:
                 write_exchange(args.out, "btc-signed", result)
             else:
