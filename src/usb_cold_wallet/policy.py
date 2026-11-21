@@ -205,6 +205,7 @@ def save_profile(path: Path, profile: dict, root, password: str, *, replace: boo
     stage = ".policy-" + os.urandom(16).hex() + ".partial"
     stage_identity = None
     fd = None
+    guard_fd = None
     try:
         parent = os.fstat(parent_fd)
         # Parent writable by others allows a stage-name swap after inode
@@ -221,6 +222,9 @@ def save_profile(path: Path, profile: dict, root, password: str, *, replace: boo
         if not stat.S_ISREG(info.st_mode):
             raise ValueError("Policy staging file is not regular")
         stage_identity = (info.st_dev, info.st_ino)
+        # Pin original staging inode across the name-based rename. A same-UID
+        # writer is outside the trust model, but must never be silently trusted.
+        guard_fd = os.dup(fd)
         with os.fdopen(fd, "wb") as stream:
             fd = None
             stream.write(content)
@@ -264,11 +268,22 @@ def save_profile(path: Path, profile: dict, root, password: str, *, replace: boo
             if expected_sha256 is not None:
                 raise ValueError("Expected SHA-256 is only valid for replacement")
             _atomic_rename_noreplace(parent_fd, stage, path.name)
+        # Name-based rename is susceptible to a compromised same-UID writer.
+        # Verify the published entry STILL refers to the inode we encrypted
+        # and fsynced; reject a substituted final entry before reporting success.
+        published = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        original = os.fstat(guard_fd)
+        if (not stat.S_ISREG(published.st_mode)
+                or (published.st_dev, published.st_ino) != (original.st_dev, original.st_ino)
+                or published.st_size != len(content)):
+            raise OSError("Policy published file differs from staged ciphertext")
         # File fsync alone does not make the directory rename durable.
         os.fsync(parent_fd)
     finally:
         if fd is not None:
             os.close(fd)
+        if guard_fd is not None:
+            os.close(guard_fd)
         if stage_identity is not None:
             try:
                 staged = os.stat(stage, dir_fd=parent_fd, follow_symlinks=False)
