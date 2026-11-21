@@ -229,3 +229,70 @@ def test_bad_usb_is_rejected_without_unlocking_wallet(tmp_path):
     assert app.security.state == State.LOCKED
     assert app.wallet_root is None
     assert app.messagebox.errors
+
+
+def test_usb_import_reviews_exact_bytes_and_unlocks_only_after_validation(tmp_path):
+    import json
+    from usb_cold_wallet.exchange import package
+    from usb_cold_wallet.keys import root_from_mnemonic
+
+    app, _ = ui_fixture()
+    app._lock_wallet()
+    app.selected_kind = "evm-request"
+    app.transfer_dir = tmp_path
+    real_root = root_from_mnemonic("abandon " * 11 + "about")
+    tx = {
+        "type": 2, "chainId": 11155111, "nonce": 1,
+        "to": "0x000000000000000000000000000000000000dEaD",
+        "value": 123456789123456789, "gas": 21000,
+        "maxFeePerGas": 2000000000, "maxPriorityFeePerGas": 1000000000,
+    }
+    request = tmp_path / "unsigned.json"
+    raw = json.dumps(package("evm-request", tx)).encode("ascii")
+    request.write_bytes(raw)
+    app.filedialog = SimpleNamespace(askopenfilename=lambda **kwargs: str(request))
+    unlocked = []
+    def unlock():
+        unlocked.append("after input parsed")
+        app.wallet_root = real_root
+        return True
+    app._unlock = unlock
+    captured = []
+    app._start_review = lambda plan: captured.append(plan)
+    app._import_usb()
+    assert unlocked == ["after input parsed"]
+    assert len(captured) == 1
+    assert captured[0].request_digest == package("evm-request", tx)["sha256"]
+    assert app._active_usb_digest == hashlib.sha256(raw).digest()
+    assert app._transport_available()
+
+
+def test_usb_mutation_while_unlocking_fails_before_review(tmp_path):
+    import json
+    from usb_cold_wallet.exchange import package
+    from usb_cold_wallet.keys import root_from_mnemonic
+
+    app, _ = ui_fixture()
+    app._lock_wallet()
+    app.selected_kind = "evm-request"
+    app.transfer_dir = tmp_path
+    tx = {
+        "type": 2, "chainId": 11155111, "nonce": 1,
+        "to": "0x000000000000000000000000000000000000dEaD",
+        "value": 1000000000000, "gas": 21000,
+        "maxFeePerGas": 2000000000, "maxPriorityFeePerGas": 1000000000,
+    }
+    request = tmp_path / "unsigned.json"
+    request.write_bytes(json.dumps(package("evm-request", tx)).encode("ascii"))
+    app.filedialog = SimpleNamespace(askopenfilename=lambda **kwargs: str(request))
+    def unlock():
+        # Same inode: content changes while the modal passphrase is entered.
+        request.write_bytes(b"tampered after pre-unlock validation")
+        app.wallet_root = root_from_mnemonic("abandon " * 11 + "about")
+        return True
+    app._unlock = unlock
+    app._start_review = lambda _: (_ for _ in ()).throw(AssertionError("Must not review changed USB"))
+    app._import_usb()
+    assert app.wallet_root is None
+    assert app.security.state == State.LOCKED
+    assert app.messagebox.errors
