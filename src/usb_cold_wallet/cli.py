@@ -99,14 +99,18 @@ def _manage_policy(args) -> int:
         _approve("CREATE OFFLINE POLICY")
         save_profile(args.file, profile, root, password)
     else:
-        profile = load_profile(args.file, root, password)
+        # Read once before editing and enforce compare-and-swap when saving.
+        # Prevent another trusted editor from silently overwriting this edit.
+        prior_sha256 = hashlib.sha256(_bounded_policy_read(args.file)).hexdigest()
+        profile = load_profile(args.file, root, password, expected_sha256=prior_sha256)
         if args.action == "set-limit":
             if args.field is None or args.value is None:
                 raise ValueError("--field and --value are required")
             profile = set_limit(profile, root, args.field, args.value)
             print(f"New limit {args.field}: {args.value}")
             _approve("CHANGE OFFLINE POLICY")
-            save_profile(args.file, profile, root, password, replace=True)
+            save_profile(args.file, profile, root, password, replace=True,
+                         expected_sha256=prior_sha256)
         elif args.action == "verify-address":
             if not (args.network and args.address and args.label):
                 raise ValueError("--network, --address and --label are required")
@@ -116,7 +120,8 @@ def _manage_policy(args) -> int:
             if input("Re-enter full verified address: ").strip() != canonical:
                 raise ValueError("Full address did not match")
             profile = register_verified_address(profile, root, args.network, canonical, args.label)
-            save_profile(args.file, profile, root, password, replace=True)
+            save_profile(args.file, profile, root, password, replace=True,
+                         expected_sha256=prior_sha256)
     print(json.dumps(profile, indent=2, ensure_ascii=False))
     _print_anchor_for_independent_record(args.file)
     return 0

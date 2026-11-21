@@ -6,6 +6,7 @@ existing BTC/EVM review routines and separate human SIGN prompt remain mandatory
 from __future__ import annotations
 
 import base64
+import fcntl
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -178,7 +179,8 @@ def _key(password: str, salt: bytes) -> bytes:
     return Scrypt(salt=salt, length=32, n=1 << 17, r=8, p=1).derive(password.encode("utf-8"))
 
 
-def save_profile(path: Path, profile: dict, root, password: str, *, replace: bool = False) -> None:
+def save_profile(path: Path, profile: dict, root, password: str, *, replace: bool = False,
+                 expected_sha256: str | None = None) -> None:
     validate_profile(profile, root)
     path = Path(path)
     if path.is_symlink() or (path.exists() and not replace):
@@ -192,18 +194,110 @@ def save_profile(path: Path, profile: dict, root, password: str, *, replace: boo
     content = (json.dumps(obj, separators=(",", ":")) + "\n").encode()
     if len(content) > MAX_FILE_BYTES:
         raise ValueError("Policy file too large")
-    # Same-directory atomic replacement, never write a plaintext policy file.
-    tmp = path.with_name(path.name + ".new-" + os.urandom(8).hex())
+    # Pin the parent directory: a symlink swap of its path must not redirect
+    # the write to another directory. Never stage policy plaintext.
+    from .vault import _atomic_rename_noreplace
+
+    if not path.name or path.name in (".", ".."):
+        raise ValueError("Invalid policy filename")
+    parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY |
+                        getattr(os, "O_NOFOLLOW", 0))
+    stage = ".policy-" + os.urandom(16).hex() + ".partial"
+    stage_identity = None
+    fd = None
+    guard_fd = None
     try:
-        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
+        parent = os.fstat(parent_fd)
+        # The Vault/Policy mount contains sensitive wallet metadata. Require
+        # owner-exclusive access (0700), matching the atomic Vault writer and
+        # VFAT dmask=0077. Same-UID/root malicious writers remain out of scope.
+        if (not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.geteuid() or
+                (stat.S_IMODE(parent.st_mode) & 0o077)):
+            raise ValueError("Policy directory must be signer-private (mode 0700)")
+        # Advisory lock serializes all cooperating Policy publishers; the
+        # expected SHA provides compare-and-swap against stale edits.
+        fcntl.flock(parent_fd, fcntl.LOCK_EX)
+        fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                     getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=parent_fd)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("Policy staging file is not regular")
+        stage_identity = (info.st_dev, info.st_ino)
+        # Pin original staging inode across the name-based rename. A same-UID
+        # writer is outside the trust model, but must never be silently trusted.
+        guard_fd = os.dup(fd)
+        with os.fdopen(fd, "wb") as stream:
+            fd = None
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        if path.is_symlink() or (path.exists() and not replace):
-            raise ValueError("Policy path changed during write")
-        os.replace(tmp, path)
+        staged = os.stat(stage, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISREG(staged.st_mode) or (staged.st_dev, staged.st_ino) != stage_identity:
+            raise ValueError("Policy staging file changed")
+        try:
+            target = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            target = None
+        if target is not None and not stat.S_ISREG(target.st_mode):
+            raise ValueError("Policy destination is not a regular file")
+        if replace:
+            if type(expected_sha256) is not str or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+                raise ValueError("A known current policy SHA-256 is required for replacement")
+            if target is None:
+                raise ValueError("Cannot replace missing policy")
+            # Compare the current target via a single fd, under the directory
+            # lock. A stale editor must never overwrite another policy update.
+            target_fd = os.open(path.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) |
+                                getattr(os, "O_NONBLOCK", 0), dir_fd=parent_fd)
+            try:
+                current = os.fstat(target_fd)
+                if not stat.S_ISREG(current.st_mode) or (
+                        current.st_dev, current.st_ino) != (target.st_dev, target.st_ino):
+                    raise ValueError("Policy destination changed during update")
+                old_bytes = os.read(target_fd, MAX_FILE_BYTES + 1)
+                if len(old_bytes) > MAX_FILE_BYTES:
+                    raise ValueError("Current policy is unexpectedly large")
+                if not hmac.compare_digest(hashlib.sha256(old_bytes).hexdigest(), expected_sha256):
+                    raise ValueError("Stale policy SHA-256; reload and reconfirm offline")
+            finally:
+                os.close(target_fd)
+            # The operator must independently record the new trusted hash
+            # after this successful durable publication. This is NOT a
+            # hardware-backed monotonic rollback counter.
+            os.replace(stage, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        else:
+            if expected_sha256 is not None:
+                raise ValueError("Expected SHA-256 is only valid for replacement")
+            _atomic_rename_noreplace(parent_fd, stage, path.name)
+        # Name-based rename is susceptible to a compromised same-UID writer.
+        # Verify the published entry STILL refers to the inode we encrypted
+        # and fsynced; reject a substituted final entry before reporting success.
+        published = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        original = os.fstat(guard_fd)
+        if (not stat.S_ISREG(published.st_mode)
+                or (published.st_dev, published.st_ino) != (original.st_dev, original.st_ino)
+                or published.st_size != len(content)):
+            raise OSError("Policy published file differs from staged ciphertext")
+        # File fsync alone does not make the directory rename durable.
+        os.fsync(parent_fd)
     finally:
-        tmp.unlink(missing_ok=True)
+        if fd is not None:
+            os.close(fd)
+        if guard_fd is not None:
+            os.close(guard_fd)
+        if stage_identity is not None:
+            try:
+                staged = os.stat(stage, dir_fd=parent_fd, follow_symlinks=False)
+                if stat.S_ISREG(staged.st_mode) and (
+                        staged.st_dev, staged.st_ino) == stage_identity:
+                    os.unlink(stage, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                # Removed media can prevent cleanup; partial names are never
+                # treated as approved policy files.
+                pass
+        os.close(parent_fd)
 
 
 def _strict_json(raw: bytes):
