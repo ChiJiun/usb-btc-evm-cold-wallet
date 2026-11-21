@@ -528,7 +528,7 @@ def decide_erc20(profile: dict, root, payload: dict) -> tuple[dict | None, Polic
             payload, expected_contract=rule["contract"],
             expected_counterparty=rule["counterparty"], expected_amount=quantity,
             expected_method=rule["method"], expected_nonce=rule["expected_nonce"],
-            trusted_contracts=[r["contract"] for r in profile["contract_rules"]],
+            trusted_contracts=sorted({r["contract"] for r in profile["contract_rules"]}),
             max_fee_wei=profile["limits"]["evm_max_fee_wei"])
         return review, PolicyDecision(
             "REQUIRE_EXTRA_CONFIRMATION",
@@ -569,7 +569,7 @@ def decide_eip712(profile: dict, root, typed_data: dict, *, now_timestamp: int) 
             expected_owner=evm_account(root).address, expected_primary_type=rule["schema"],
             expected_counterparty=rule["counterparty"], expected_amount=quantity,
             expected_nonce=rule["expected_nonce"], expected_deadline=rule["deadline"],
-            trusted_contracts=[r["contract"] for r in profile["typed_rules"]],
+            trusted_contracts=sorted({r["contract"] for r in profile["typed_rules"]}),
             now_timestamp=now_timestamp)
         return reviewed, PolicyDecision(
             "REQUIRE_EXTRA_CONFIRMATION",
