@@ -176,11 +176,16 @@ transaction inclusion. No RPC or network backend is implemented.
   *different* wallet. Incorrect mnemonic checksum or mismatched independent
   references aborts recovery before writing. Keep separately verified paper
   and metal backups where appropriate.
-- **Crashes, full disk and filesystem failures:** Create-only writes avoid
-  silent overwrite, but a crash during writing can leave an incomplete file.
-  A corrupted partial destination must be manually inspected and **moved
-  aside**, not reused. The prototype does not implement fsync/atomic
-  durability guarantees or secure deletion.
+- **Crashes, full disk and filesystem failures:** The offline GUI stages
+  signed JSON under a non-`.json` hidden `.partial` filename, fsyncs the
+  complete file, then publishes the final `.json` via Linux
+  `renameat2(RENAME_NOREPLACE)`. Existing files cannot be overwritten,
+  and a partial final filename is never made visible. If the filesystem
+  lacks this atomic operation, export fails closed. Abrupt USB removal can
+  leave a staging file to inspect/remove; a directory fsync error after
+  publish means persistence is uncertain, despite the file being complete.
+  Legacy CLI writes are still create-only and are not covered by this GUI
+  atomic-publish guarantee. Secure deletion is not promised.
 - **Network confusion:** Every signing screen labels **BITCOIN TESTNET**
   or **ETHEREUM SEPOLIA (11155111)**. Mainnet signing is deliberately
   disabled. Do not assume the USB data originates from the chain claimed.
