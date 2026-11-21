@@ -1,9 +1,11 @@
 # QR air-gap transport prototype — Issue #18
 
-**Research only: Bitcoin testnet and Ethereum Sepolia. No real wallet funds.
-Not an externally interoperable ERC-4527/crypto-psbt implementation yet.**
-This builds the complete generic UR **transport** and a chain-aware signature
-binding layer, but registry-specific UR types are a separate remaining task.
+**Research only: Bitcoin testnet and Ethereum Sepolia. No real wallet funds.**
+The browser's existing `ur:bytes` path remains the internal v1 JSON envelope
+transport. An **independent experimental typed UR codec** now supports
+ERC-4527 `eth-sign-request` / `eth-signature` and BCR-2020-006
+`crypto-psbt` CBOR layouts, but **has not been wired into the signing GUI or
+verified against physical third-party wallet devices**.
 **QR transport never grants signing authorization.**
 
 ## Implementation
@@ -31,6 +33,57 @@ binding layer, but registry-specific UR types are a separate remaining task.
   unknown-version and oversize input. Repeated individual frames are ignored;
   a second finished response requires resetting scanner state. File imports
   are bounded, reject symlinks and nonregular files.
+
+## Typed registry codec (experimental; not connected to GUI/signing)
+
+The separate `qr-transport/src/typed_registry.mjs` module implements:
+
+- `ur:eth-sign-request`: integer-key CBOR map with request UUID as tag 37,
+  raw unsigned **type-2 EIP-2718** transaction bytes (key 2), sign-data-type
+  4 (key 3), Sepolia `chainId=11155111` (key 4), derivation path with hardened
+  flags and source fingerprint under tag 304 (key 5), and mandatory 20-byte
+  signer address (key 6). This EIP remains **stagnant** upstream.
+- `ur:eth-signature`: integer-key map containing the same tagged request UUID
+  and exactly 65 **r,s,v** bytes. This standard message **does not carry a
+  signed raw transaction**, the original JSON request digest, or a broadcast
+  instruction. An online wallet must independently check recovered signer
+  and every transaction field before use.
+- `ur:crypto-psbt`: **bare CBOR byte string** holding the original PSBT,
+  starting `70736274ff`. It is not our JSON envelope, nor a CBOR map. Both
+  unsigned and partially signed PSBTs use the same UR type.
+
+`makeTypedUR`, `parseTypedUR`, `encodeTypedFrames`,
+`TypedURScanner`, and `bindTypedToPending` are distinct from
+`encodeFrames` / `BoundedURScanner`; the latter intentionally accepts
+**only** `ur:bytes` and continues to require the internal v1 envelope.
+The typed scanner bounds frame size, aggregate scan text, fragment counts and time, and rejects mixed fragment counts; the parsed CBOR tree also has explicit nesting/container limits. The upstream UR/dCBOR decoder still performs initial CBOR materialization, so its internal allocation limit must be verified before accepting arbitrary camera input in production;
+the explicit pending-binding function checks request ID, EVM derivation path and fingerprint, trusted BTC testnet account ID/fingerprint, chain, payload digest and expiry. For signed responses it synchronously consumes the mutable pending session after successful independent verification; callers must pass their real authoritative session object, not a copied snapshot. The bare crypto-psbt UR has no chain or account identifier, so account context and PSBT policy must come from the trusted session, not the UR. For an `eth-signature`
+response, `bindTypedToPending` additionally **requires**
+`verifySignature(parsed,pending) === true`; for signed `crypto-psbt` it
+requires `verifySignedPsbt(parsed,pending) === true`. A missing, false,
+or asynchronous callback is rejected. The callback must independently
+compare the original unsigned transaction/PSBT, signer, chain, outputs,
+fee and actual signature before returning true; **this repository has
+not yet connected those callbacks to the real GUI/signing workflow.**
+**No calling code should sign or broadcast solely because a typed frame
+parsed or was bound.** The final signing request must pass the offline
+transaction parser, user review, Policy Engine and independent signed
+transaction / PSBT verification.
+The UR type itself does not authenticate its sender.
+
+Run `cd qr-transport && npm ci --ignore-scripts && npm test && npm run build`.
+Node regression tests check the CBOR layout through an independent Python
+stdlib oracle and rejection cases. The existing generic Python↔Node
+`ur:bytes` flow is preserved and tested separately. Real Keystone /
+Blockchain Commons device interoperability and the actual camera GUI wiring
+remain pending #18/#56/#24 acceptance; the typed codec is not an
+end-to-end wallet integration.
+
+References: [ERC-4527](https://eips.ethereum.org/EIPS/eip-4527)
+(CC0, stagnant), [Blockchain Commons PSBT UR guide](https://developer.blockchaincommons.com/ur/psbts/),
+[Blockchain Commons dCBOR](https://github.com/BlockchainCommons/bc-dcbor-ts)
+and [UR encoder](https://github.com/BlockchainCommons/bc-ur-ts);
+both pinned packages are currently beta under BSD-2-Clause-Patent.
 
 ## Build the local-only QR display and scanner
 
@@ -164,9 +217,11 @@ script validation; prefer Bitcoin Core validation before broadcast.
 
 ## Known remaining acceptance gaps
 
-1. Replace private `ur:bytes` JSON body with interoperable **ERC-4527
-   `eth-sign-request`/`eth-signature` CBOR** and Blockchain Commons
-   **`crypto-psbt`** types; test against independently implemented wallets.
+1. Wire the experimental **ERC-4527 / crypto-psbt CBOR typed codec** into the
+   online/offline application adapters with the same immutable request/session
+   binding and trusted offline signer policy, then test against independent
+   wallets (Keystone/other registry implementation). The internal `ur:bytes`
+   envelope remains supported; do not silently reinterpret it as a typed UR.
 2. Integrate GUI state with the Issue #13 Online Companion / Issue #15
    Offline GUI, and add actual QR rendering/scan controls for those apps.
 3. Validate both physical computers and cameras, conduct malicious QR
@@ -176,3 +231,6 @@ script validation; prefer Bitcoin Core validation before broadcast.
    PRs merge, then run combined CI, QEMU/UEFI and hardware tests.
 5. No automatic broadcast, approval or network use is implemented. Never
    enable mainnet until independent security review and operational testing.
+
+
+Typed QR security note: the scanner now validates bytewords, inner fountain-part header and raw CBOR depth/length before upstream FountainDecoder and dCBOR recursive materialization. No camera/GUI integration is enabled.
