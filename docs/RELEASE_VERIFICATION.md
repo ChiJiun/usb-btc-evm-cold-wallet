@@ -4,7 +4,7 @@
 
 ## Release workflow 信任邊界
 
-Release workflow 只能由 `workflow_dispatch` 從 `main` 啟動，輸入既有的 signed annotated version tag 與完整 lowercase 40-hex source commit。第一個 job 使用現有 `scripts/verify_release_assets.py --source-only` 驗證 tag 的 GitHub signature、tag 名稱及其精確 commit 綁定；PR 事件不會執行此 workflow。
+Release workflow 只能由 `workflow_dispatch` **直接選擇要發布的 signed annotated version tag ref** 啟動，並輸入同一 tag 與完整 lowercase 40-hex source commit。第一個 job 要求 `GITHUB_REF == refs/tags/<tag>`、`GITHUB_SHA == source_sha`，再使用現有 `scripts/verify_release_assets.py --source-only` 驗證 tag 的 GitHub signature、tag 名稱及其精確 commit 綁定；PR 事件不會執行此 workflow。這也讓 GitHub OIDC provenance 的 source ref / source digest 與獨立 verifier 要求的 tag / commit 完全一致。
 
 權限分離如下：
 
@@ -24,7 +24,7 @@ Release workflow 只能由 `workflow_dispatch` 從 `main` 啟動，輸入既有�
 3. 對第二次 raw image 再確認 digest，使用該 Buildroot 版本所固定的 host `xz`，以 `-6 --threads=1 --check=crc64 --no-sparse` 壓縮兩次並 byte-for-byte 比對。
 4. 由最後 root filesystem 產生 SPDX JSON SBOM；建立 `release-metadata.json` 與 `SHA256SUMS`。manifest 只涵蓋最後預定發布的 image、SBOM、metadata。
 5. 將這批 candidate bytes 上傳成同一次 workflow 的 immutable Actions artifact；attest job 下載原 bytes 後建立 SLSA Build Provenance，另建立 SBOM attestation。
-6. verify job 重新下載同一 candidate artifact，沿用 `verify_release_assets.py --local-dir` 驗證 repository、tag、source SHA、release workflow identity、subject digest、manifest 與 metadata。
+6. verify job 重新下載同一 candidate artifact，沿用 `verify_release_assets.py --local-dir` 驗證 repository、tag source ref、source SHA、release workflow identity、signer digest、subject digest、manifest 與 metadata。
 7. required gate 把 build / attest / verify 的 `skipped`、`cancelled`、`failure` 全部視為失敗。
 8. publish job 只下載已通過驗證的 artifact，再做 checksum；**沒有 build、重新壓縮或修改 bytes 的步驟**，接著才建立 GitHub Release。
 
