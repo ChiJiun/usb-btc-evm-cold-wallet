@@ -3,10 +3,11 @@ import argparse
 import getpass
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 
-from .btc import review_btc_psbt, sign_btc_psbt
+from .btc import _read_psbt, review_btc_psbt, sign_btc_psbt
 from .evm import review_evm_transaction, sign_evm
 from .keys import root_from_mnemonic, watch_only
 from .policy import (default_profile, load_profile, save_profile, set_limit,
@@ -25,6 +26,36 @@ def _password(confirm: bool = False) -> str:
 def _wallet_root(args):
     mnemonic = load_vault(args.vault, _password())
     return root_from_mnemonic(mnemonic, getpass.getpass("Optional BIP39 passphrase (Enter if none): "))
+
+
+MAX_TRANSFER_BYTES = 200_000
+
+
+def _read_unsigned_before_unlock(path: Path) -> bytes:
+    """Read untrusted USB request once, without following links or blocking on FIFOs."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("Unsigned request must be a regular file")
+        raw = os.read(fd, MAX_TRANSFER_BYTES + 1)
+        if len(raw) > MAX_TRANSFER_BYTES:
+            raise ValueError("Unsigned request exceeds size limit")
+        return raw
+    finally:
+        os.close(fd)
+
+
+def _strict_unsigned_json(raw: bytes):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate unsigned JSON key")
+            result[key] = value
+        return result
+    return json.loads(raw.decode("utf-8"), object_pairs_hook=unique,
+                      parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Invalid JSON constant")))
 
 
 def _approve(phrase: str) -> None:
@@ -55,7 +86,7 @@ def main(argv=None) -> int:
     evm.add_argument("--wei", required=True, type=int, help="Independently verified value in wei")
     evm.add_argument("--out", type=Path, required=True)
     evm.add_argument("--policy", type=Path, help="Must equal <vault>.policy; signing always requires encrypted policy")
-    evm.add_argument("--expected-policy-sha256", help="Optional independent paper-verified SHA-256 of encrypted policy file")
+    evm.add_argument("--expected-policy-sha256", help="Required: independent paper-verified SHA-256 of encrypted policy file")
     btc = sub.add_parser("sign-btc", help="Review and sign Bitcoin testnet BIP84 PSBT")
     btc.add_argument("--psbt", type=Path, required=True, help="Unsigned PSBT base64 file")
     btc.add_argument("--to", required=True, help="Independently verified recipient testnet address")
@@ -93,9 +124,22 @@ def main(argv=None) -> int:
             return 0
 
         print("WARNING: this is a testnet research prototype, not audited for real funds.", file=sys.stderr)
+        # Reject malformed or blocking USB input before mnemonic or wallet_root enters RAM.
+        unsigned_tx = None
+        unsigned_psbt = None
+        if args.command == "sign-evm":
+            unsigned_tx = _strict_unsigned_json(_read_unsigned_before_unlock(args.tx))
+            review_evm_transaction(unsigned_tx, args.to, args.wei)
+        elif args.command == "sign-btc":
+            unsigned_psbt = _read_unsigned_before_unlock(args.psbt).decode("ascii")
+            _read_psbt(unsigned_psbt)
         root = _wallet_root(args)
         policy_path = getattr(args, "policy", None)
         if args.command in ("sign-evm", "sign-btc"):
+            if (type(args.expected_policy_sha256) is not str
+                    or len(args.expected_policy_sha256) != 64
+                    or any(ch not in "0123456789abcdef" for ch in args.expected_policy_sha256)):
+                raise ValueError("An independently verified policy SHA-256 anchor is mandatory for signing")
             mandatory_policy = args.vault.with_name(args.vault.name + ".policy")
             if policy_path is not None and policy_path.resolve() != mandatory_policy.resolve():
                 raise ValueError("Policy override path forbidden; policy is always bound beside the vault")
@@ -136,7 +180,7 @@ def main(argv=None) -> int:
         elif args.command == "addresses":
             print(json.dumps(watch_only(root, count=args.count), ensure_ascii=False, indent=2))
         elif args.command == "sign-evm":
-            raw = json.loads(args.tx.read_text(encoding="utf-8"))
+            raw = unsigned_tx
             review = review_evm_transaction(raw, args.to, args.wei)
             profile = load_profile(policy_path, root, _policy_password, expected_sha256=args.expected_policy_sha256)
             intent = evm_intent(root, review)
@@ -150,7 +194,7 @@ def main(argv=None) -> int:
             result = sign_evm(root, raw, args.to, args.wei)
             _write_signed(args.out, result)
         elif args.command == "sign-btc":
-            encoded = args.psbt.read_text(encoding="utf-8")
+            encoded = unsigned_psbt
             review = review_btc_psbt(root, encoded, args.to, args.sats, args.max_fee_sats, args.change_index)
             profile = load_profile(policy_path, root, _policy_password, expected_sha256=args.expected_policy_sha256)
             intent = btc_intent(root, review)
