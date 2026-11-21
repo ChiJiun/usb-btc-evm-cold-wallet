@@ -35,6 +35,8 @@ LOCKDOWN = Path("/run/usb-wallet/lockdown")
 MOUNTINFO = Path("/proc/self/mountinfo")
 VAULT_DEVICE = Path("/run/usb-wallet/vault-device")
 TRANSFER_DEVICE = Path("/run/usb-wallet/transfer-device")
+BOOT_SYSFS_PATH = Path("/run/usb-wallet/boot-sysfs-path")
+BOOT_DISKSEQ = Path("/run/usb-wallet/boot-diskseq")
 SYS_DEV_BLOCK = Path("/sys/dev/block")
 IDLE_SECONDS = DEFAULT_IDLE_SECONDS
 PUBLIC_TEST_EVM = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
@@ -235,6 +237,8 @@ def _current_mount_evidence(
     mountinfo: Path,
     vault_device: Path,
     transfer_device: Path = TRANSFER_DEVICE,
+    boot_sysfs_path: Path = BOOT_SYSFS_PATH,
+    boot_diskseq: Path = BOOT_DISKSEQ,
     sys_dev_block: Path = SYS_DEV_BLOCK,
 ) -> list[str]:
     """Revalidate current kernel mount identities; boot PASS lines are historical."""
@@ -272,6 +276,29 @@ def _current_mount_evidence(
         findings.append("PASS: live RAM-backed root")
     required = {"rw", "nodev", "nosuid", "noexec", "sync"}
     vault_disk = _mounted_disk(vault[0], sys_dev_block) if len(vault) == 1 else None
+
+    # Pin the kernel block-device instance that passed boot-time GPT/FAT checks.
+    # A later unplug/replug may reuse /dev/sdX and public GUIDs, so the live
+    # audit also requires the boot sysfs ancestry and Linux disk sequence.
+    try:
+        expected_sysfs = boot_sysfs_path.read_text(encoding="utf-8").strip()
+        expected_diskseq = boot_diskseq.read_text(encoding="ascii").strip()
+        live_sysfs = str(vault_disk.resolve(strict=True)) if vault_disk is not None else ""
+        live_diskseq = (
+            (vault_disk / "diskseq").read_text(encoding="ascii").strip()
+            if vault_disk is not None else ""
+        )
+        if (
+            not expected_sysfs.startswith("/sys/")
+            or not expected_diskseq.isdigit()
+            or live_sysfs != expected_sysfs
+            or live_diskseq != expected_diskseq
+        ):
+            findings.append("FAIL: boot USB device instance changed since startup audit")
+        else:
+            findings.append("PASS: boot USB sysfs ancestry and disk sequence unchanged")
+    except (OSError, RuntimeError, ValueError):
+        findings.append("FAIL: boot USB runtime identity evidence unavailable")
     if (len(vault) != 1 or vault[0]["type"] != "vfat"
             or vault[0]["source"] != source_expected or vault_disk is None
             or not required <= (vault[0]["options"] | vault[0]["super"])):
@@ -334,6 +361,8 @@ def runtime_audit(
     proc_mountinfo: Path = MOUNTINFO,
     vault_device: Path = VAULT_DEVICE,
     transfer_device: Path = TRANSFER_DEVICE,
+    boot_sysfs_path: Path = BOOT_SYSFS_PATH,
+    boot_diskseq: Path = BOOT_DISKSEQ,
     sys_dev_block: Path = SYS_DEV_BLOCK,
 ) -> tuple[bool, tuple[str, ...]]:
     """Check historical boot evidence AND live kernel state before every unlock/sign."""
@@ -373,7 +402,12 @@ def runtime_audit(
     except OSError:
         findings.append("FAIL: unable to inspect swap")
     findings.extend(_current_mount_evidence(
-        proc_mountinfo, vault_device, transfer_device, sys_dev_block
+        proc_mountinfo,
+        vault_device,
+        transfer_device,
+        boot_sysfs_path,
+        boot_diskseq,
+        sys_dev_block,
     ))
     ok = bool(findings) and not any(line.startswith("FAIL:") for line in findings)
     return ok, tuple(findings)
