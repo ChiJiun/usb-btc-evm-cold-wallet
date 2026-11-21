@@ -147,9 +147,11 @@ $('reply').addEventListener('click',()=>guarded(async()=>{
   if(!active || used) throw Error('請先掃描新的 MetaMask request');
   const pendingRequest = active;
   const signed=JSON.parse(await boundedText($('signed-file').files?.[0]));
+  console.warn('QR diagnostics: signed JSON parsed');
   // Cancel or account change during File.text() must invalidate the response.
   if (active !== pendingRequest || used) return;
   const response=makeSignedResponseUr(pendingRequest,signed);
+  console.warn('QR diagnostics: signed UR constructed');
   used=true;
   $('reply').disabled=true;$('download').disabled=true;
   if (await displayUr(response)) {
