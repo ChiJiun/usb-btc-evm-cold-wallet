@@ -1,6 +1,7 @@
 """Offline-only interactive CLI. No RPC and no broadcast code."""
 import argparse
 import getpass
+import hashlib
 import json
 import os
 import stat
@@ -11,7 +12,8 @@ from .btc import _read_psbt, review_btc_psbt, sign_btc_psbt
 from .evm import review_evm_transaction, sign_evm
 from .keys import root_from_mnemonic, watch_only
 from .policy import (default_profile, load_profile, save_profile, set_limit,
-                     register_verified_address, evm_intent, btc_intent, decide)
+                     register_verified_address, evm_intent, btc_intent, decide,
+                     _bounded_policy_read)
 from dataclasses import asdict
 from .vault import encrypt_mnemonic, load_vault, new_mnemonic, save_vault
 
@@ -58,6 +60,11 @@ def _strict_unsigned_json(raw: bytes):
                       parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Invalid JSON constant")))
 
 
+def _print_anchor_for_independent_record(path: Path) -> None:
+    digest = hashlib.sha256(_bounded_policy_read(path)).hexdigest()
+    print(f"POLICY SHA256 (record independently; old copies must never be trusted): {digest}")
+
+
 def _approve(phrase: str) -> None:
     if input(f"Type '{phrase}' on the OFFLINE COMPUTER to proceed: ").strip() != phrase:
         raise ValueError("Signing canceled")
@@ -95,7 +102,7 @@ def main(argv=None) -> int:
     btc.add_argument("--change-index", type=int, default=None, help="Expected BIP84 internal change index, if any")
     btc.add_argument("--out", type=Path, required=True)
     btc.add_argument("--policy", type=Path, help="Must equal <vault>.policy; signing always requires encrypted policy")
-    btc.add_argument("--expected-policy-sha256", help="Optional independent paper-verified SHA-256 of encrypted policy file")
+    btc.add_argument("--expected-policy-sha256", help="Required: independent paper-verified SHA-256 of encrypted policy file")
     policy = sub.add_parser("policy", help="Create/edit encrypted offline policy or verified address book")
     policy.add_argument("--file", type=Path, required=True, help="Local offline policy file, NEVER transfer USB")
     policy.add_argument("--action", choices=["init", "show", "set-limit", "verify-address"], required=True)
@@ -133,7 +140,8 @@ def main(argv=None) -> int:
         elif args.command == "sign-btc":
             unsigned_psbt = _read_unsigned_before_unlock(args.psbt).decode("ascii")
             _read_psbt(unsigned_psbt)
-        root = _wallet_root(args)
+        # Check the independent anchor and policy path before holding wallet keys
+        # in memory. The bounded authenticated policy read happens after unlock.
         policy_path = getattr(args, "policy", None)
         if args.command in ("sign-evm", "sign-btc"):
             if (type(args.expected_policy_sha256) is not str
@@ -144,6 +152,7 @@ def main(argv=None) -> int:
             if policy_path is not None and policy_path.resolve() != mandatory_policy.resolve():
                 raise ValueError("Policy override path forbidden; policy is always bound beside the vault")
             policy_path = mandatory_policy
+        root = _wallet_root(args)
         _policy_password = _password() if args.command == "policy" or (policy_path is not None and policy_path.exists()) else None
         if args.command == "policy":
             # A policy is local wallet state; never accept labels from a transfer payload.
@@ -177,6 +186,9 @@ def main(argv=None) -> int:
                     profile = register_verified_address(profile, root, args.network, canonical, args.label)
                     save_profile(args.file, profile, root, _policy_password, replace=True)
                 print(json.dumps(profile, indent=2, ensure_ascii=False))
+            # Every policy mutation creates new randomized ciphertext. The
+            # independent anchor MUST be refreshed or subsequent signing fails.
+            _print_anchor_for_independent_record(args.file)
         elif args.command == "addresses":
             print(json.dumps(watch_only(root, count=args.count), ensure_ascii=False, indent=2))
         elif args.command == "sign-evm":
