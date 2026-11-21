@@ -30,8 +30,20 @@ def test_export_keystone_public_has_correct_bip32_path_and_no_secrets():
 
 def test_cli_can_export_public_only_to_new_file(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_wallet_root", lambda _args: ROOT)
+    monkeypatch.setattr(cli, "_approve", lambda challenge: None)
     target = tmp_path / "public-evm.json"
     assert cli.main(["export-keystone-public", "--out", str(target)]) == 0
     data = json.loads(target.read_text())
     assert data["address"] == evm_account(ROOT).address
     assert cli.main(["export-keystone-public", "--out", str(target)]) == 1
+
+
+def test_public_export_requires_explicit_confirmation_and_never_writes_on_cancel(
+        monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_wallet_root", lambda _args: ROOT)
+    monkeypatch.setattr(
+        cli, "_approve", lambda challenge: (_ for _ in ()).throw(ValueError("Canceled"))
+    )
+    target = tmp_path / "not-created.json"
+    assert cli.main(["export-keystone-public", "--out", str(target)]) == 1
+    assert not target.exists()
