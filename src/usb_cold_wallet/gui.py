@@ -26,7 +26,7 @@ from .review import (ReviewPlan, ReviewSession, build_review_plan,
 from .gui_qr_bridge import parse_qr_input, bind_qr_to_review, signed_qr_text
 from .signer_session import SignerSession, State, DEFAULT_IDLE_SECONDS
 from .policy import read_policy_snapshot, load_policy_snapshot
-from .vault import load_vault
+from .vault import load_vault, atomic_create_at
 
 DEFAULT_VAULT = Path("/mnt/cold-vault/wallet.vault")
 DEFAULT_TRANSFER = Path("/mnt/transfer")
@@ -781,6 +781,8 @@ class OfflineReviewApp:
                 os.close(parent)
 
     def _read_transfer_snapshot(self, path: Path) -> tuple[bytes, tuple[int, int]]:
+        if path.suffix.lower() != ".json" or path.name.startswith("."):
+            raise ValueError("Only completed .json USB exchange files may be imported")
         fd = self._open_transfer_fd(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
         try:
             info = os.fstat(fd)
@@ -795,32 +797,26 @@ class OfflineReviewApp:
             os.close(fd)
 
     def _write_transfer_signed(self, path: Path) -> None:
+        """Publish complete signed JSON via the pinned TX_TRANSFER directory."""
+        if path.suffix.lower() != ".json" or path.name.startswith("."):
+            raise ValueError("Signed USB export requires a visible .json filename")
         if self.session is None or not self.session.signed:
             raise ValueError("No signed response to export")
         text = self.session.signed_envelope_text()
         verify(json.loads(text), self.session.plan.signed_kind)
         data = text.encode("ascii")
-        fd = self._open_transfer_fd(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
-        identity = None
+        if self.development_mode:
+            if not self._path_allowed(path):
+                raise ValueError("Path must be beneath TX_TRANSFER")
+            parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY |
+                             getattr(os, "O_NOFOLLOW", 0))
+            name = path.name
+        else:
+            parent, name = self._transfer_parent_fd(path)
         try:
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode):
-                raise ValueError("Signed export is not a regular file")
-            identity = (info.st_dev, info.st_ino)
-            with os.fdopen(fd, "wb", closefd=False) as output:
-                if output.write(data) != len(data):
-                    raise OSError("Short write to signed transaction output")
-                output.flush()
-            os.fsync(fd)
-            os.close(fd)
-        except BaseException:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            if identity is not None:
-                self._cleanup_failed_export(path, identity)
-            raise
+            atomic_create_at(parent, name, data)
+        finally:
+            os.close(parent)
 
     def _import_usb(self):
         kind = self.selected_kind

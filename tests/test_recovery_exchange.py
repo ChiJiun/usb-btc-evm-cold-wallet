@@ -1,5 +1,6 @@
 """Issue #5 regression tests use only the PUBLIC, compromised BIP39 vector."""
 import hashlib
+import os
 import json
 from pathlib import Path
 
@@ -11,7 +12,8 @@ from usb_cold_wallet.exchange import package, read, read_bounded, read_envelope,
 from usb_cold_wallet.keys import root_from_mnemonic, watch_only
 from usb_cold_wallet.policy import default_profile, save_profile
 from usb_cold_wallet.recovery import PUBLIC_TEST_MNEMONIC, rehearsal, restore_paper_wallet
-from usb_cold_wallet.vault import load_vault
+from usb_cold_wallet.vault import load_vault, save_vault
+from usb_cold_wallet import vault
 
 PASSWORD = "fictional-test-encryption-password"
 PUBLIC = watch_only(root_from_mnemonic(PUBLIC_TEST_MNEMONIC), 1)
@@ -332,3 +334,99 @@ def test_cli_recover_no_overwrite(tmp_path, monkeypatch):
                      "--i-have-paper-backup", "--expected-btc", BTC,
                      "--expected-evm", EVM]) == 1
     assert existing.read_text() == "original"
+
+
+def test_vault_creation_publishes_only_after_fsync(monkeypatch, tmp_path):
+    target = tmp_path / "wallet.vault"
+    original = vault.os.fsync
+    visits = []
+
+    def inspect(fd):
+        visits.append(fd)
+        if len(visits) == 1:
+            assert not target.exists(), "An incomplete wallet must stay invisible"
+            stages = list(tmp_path.glob(".*.partial"))
+            assert len(stages) == 1
+            assert stages[0].name.startswith(".usbwallet-")
+            assert json.loads(stages[0].read_text()) == {"ciphertext": "test-public"}
+        return original(fd)
+
+    with monkeypatch.context() as m:
+        m.setattr(vault.os, "fsync", inspect)
+        save_vault(target, {"ciphertext": "test-public"})
+    assert len(visits) == 2
+    assert json.loads(target.read_text()) == {"ciphertext": "test-public"}
+    assert not list(tmp_path.glob(".*.partial"))
+    with pytest.raises(FileExistsError):
+        save_vault(target, {"ciphertext": "another"})
+    assert json.loads(target.read_text()) == {"ciphertext": "test-public"}
+
+
+def test_vault_fsync_failure_is_retryable_without_partial_final(monkeypatch, tmp_path):
+    target = tmp_path / "recoverable.vault"
+
+    def failure(_fd):
+        raise OSError(5, "injected failed vault writeback")
+
+    with monkeypatch.context() as m:
+        m.setattr(vault.os, "fsync", failure)
+        with pytest.raises(OSError, match="failed vault writeback"):
+            save_vault(target, {"ciphertext": "x"})
+    assert not target.exists()
+    assert not list(tmp_path.glob(".*.partial"))
+    save_vault(target, {"ciphertext": "x"})
+    assert json.loads(target.read_text()) == {"ciphertext": "x"}
+
+
+def test_vault_write_enospc_failure_is_retryable(monkeypatch, tmp_path):
+    target = tmp_path / "recoverable.vault"
+    actual = vault.os.write
+    attempts = []
+
+    def fail(fd, content):
+        attempts.append(len(content))
+        if len(attempts) == 1:
+            actual(fd, content[:3])
+        raise OSError(28, "injected vault ENOSPC")
+
+    with monkeypatch.context() as m:
+        m.setattr(vault.os, "write", fail)
+        with pytest.raises(OSError, match="ENOSPC"):
+            save_vault(target, {"ciphertext": "x"})
+    assert not target.exists()
+    assert not list(tmp_path.glob(".*.partial"))
+    save_vault(target, {"ciphertext": "x"})
+    assert json.loads(target.read_text()) == {"ciphertext": "x"}
+
+
+def test_vault_postpublish_directory_fsync_failure_is_not_silent(monkeypatch, tmp_path):
+    target = tmp_path / "complete-but-unsynced.vault"
+    actual = vault.os.fsync
+    calls = []
+
+    def failure_on_directory(fd):
+        calls.append(fd)
+        if len(calls) == 2:
+            raise OSError(5, "injected directory sync failure")
+        return actual(fd)
+
+    with monkeypatch.context() as m:
+        m.setattr(vault.os, "fsync", failure_on_directory)
+        with pytest.raises(OSError, match="directory sync"):
+            save_vault(target, {"ciphertext": "x"})
+    assert len(calls) == 2
+    assert json.loads(target.read_text()) == {"ciphertext": "x"}
+    assert not list(tmp_path.glob(".*.partial"))
+    with pytest.raises(FileExistsError):
+        save_vault(target, {"ciphertext": "not-an-overwrite"})
+
+
+def test_vault_target_symlink_cannot_be_overwritten(tmp_path):
+    original = tmp_path / "original.vault"
+    original.write_bytes(b"existing wallet")
+    fake = tmp_path / "alias.vault"
+    fake.symlink_to(original)
+    with pytest.raises((FileExistsError, ValueError, OSError)):
+        save_vault(fake, {"ciphertext": "attacker"})
+    assert original.read_bytes() == b"existing wallet"
+    assert not list(tmp_path.glob(".*.partial"))
