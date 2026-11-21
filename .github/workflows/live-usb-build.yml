@@ -70,6 +70,37 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      # This step is reached only after BOTH clean builds matched and the
+      # resulting image passed the real OVMF/QEMU startup security audit.
+      # Recheck the exact bytes that are about to be distributed.
+      - name: Stage verified testnet image and SHA-256 (NOT A RELEASE)
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          src=build/output/images
+          stage=build/verified-testnet-image
+          test -s "$src/usb-cold-wallet.img"
+          test -s "$src/usb-cold-wallet.img.sha256"
+          (cd "$src" && sha256sum --check --status usb-cold-wallet.img.sha256)
+          mkdir -p "$stage"
+          cp "$src/usb-cold-wallet.img" "$stage/usb-cold-wallet.img"
+          cp "$src/usb-cold-wallet.img.sha256" "$stage/usb-cold-wallet.img.sha256"
+          (cd "$stage" && sha256sum --check --status usb-cold-wallet.img.sha256)
+          printf '%s\\n' 'TESTNET ONLY / NOT A RELEASE' \\
+            'Requires independently verified full workflow success and physical USB acceptance (#43/#66).' \\
+            'Never use mainnet assets or real secrets.' > "$stage/TESTNET-ONLY-NOT-A-RELEASE.txt"
+
+      - name: Upload verified testnet-only flashable image (NOT A RELEASE)
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: TESTNET-ONLY-NOT-A-RELEASE-usb-cold-wallet-image
+          path: build/verified-testnet-image/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
       - name: Upload SHA-256 evidence (no wallet secrets or images)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
