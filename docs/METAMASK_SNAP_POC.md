@@ -134,7 +134,7 @@ transaction and should never accept an old response after account/state reset.
   type-2 fail-closed validation, v1 #18 QR envelope, signed raw transaction
   binding and recovery, replay/cancel/timeout guards, zh-TW Companion UI.
 - **Snap and browser bundles build:** MetaMask Snaps CLI SES eval succeeds;
-  20 automated adversarial/recovery tests and TypeScript typecheck pass locally; dedicated CI results must be checked on the latest commit. Production Companion Chromium tests are additionally required in Snap CI.
+  21 automated adversarial/recovery/Keyring SDK contract tests and TypeScript typecheck pass locally; dedicated CI results must be checked on the latest commit. Production Companion Chromium tests are additionally required in Snap CI.
 - **Not yet verified:** installation into a compatible real MetaMask client,
   full MetaMask native account selection and transaction/broadcast lifecycle,
   physical dual-machine camera/QR workflow, RPC failure/reorg handling at
@@ -152,6 +152,13 @@ transaction and should never accept an old response after account/state reset.
   (in the upstream MetaMask toolchain). Pinned Vite is 7.3.8 and the
   transitive vulnerable uuid@9 is overridden to uuid@11.1.1, with typecheck,
   SES build, and tests required; do not waive remaining findings for release.
+
+The Keyring RPC client requires UUIDv4-shaped account/request identifiers. Earlier
+experimental versions derived a version-5-shaped account ID; new imports use a
+version-4-shaped ID from the same cryptographic address hash. Existing **test-only**
+Snap state created with the prior ID format must be explicitly reconciled and
+re-imported through a compatible MetaMask developer build. Never silently
+migrate an unresolved pending signing request or imported production account.
 
 This POC deliberately does not claim that the Issue #22 acceptance criteria
 have all been completed. Keep its PR in Draft pending an actual developer

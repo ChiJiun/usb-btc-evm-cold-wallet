@@ -29,7 +29,9 @@ type Emit = (event: KeyringEvent, data: Record<string, unknown>) => Promise<void
 
 function stableAccountId(address: string): string {
   const h = sha256(toUtf8Bytes('cold-snap-account:' + address.toLowerCase())).slice(2);
-  return [h.slice(0,8), h.slice(8,12), '5' + h.slice(13,16), '8' + h.slice(17,20), h.slice(20,32)].join('-');
+  // Keyring API validates account IDs as UUIDv4. Preserve the deterministic
+  // 128-bit address hash but set RFC 4122 version/variant bits accordingly.
+  return [h.slice(0,8), h.slice(8,12), '4' + h.slice(13,16), '8' + h.slice(17,20), h.slice(20,32)].join('-');
 }
 export class ColdKeyring implements Keyring {
   constructor(private readonly state: State, private readonly save: Save, private readonly emit: Emit, private readonly now: () => number = Date.now) {}
