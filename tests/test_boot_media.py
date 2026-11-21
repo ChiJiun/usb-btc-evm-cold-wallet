@@ -35,6 +35,7 @@ def _disk(
     boot_uuid=media.BOOT_UUID,
     vault_uuid=media.VAULT_UUID,
     transfer_uuid=media.TRANSFER_UUID,
+    transfer_attrs=0,
     include_transfer=True,
     extra_partition=False,
 ) -> bytes:
@@ -48,7 +49,7 @@ def _disk(
         ),
     ]
     if include_transfer:
-        specs.append((media.DATA_TYPE, transfer_uuid, 0, media.TRANSFER_SECTORS))
+        specs.append((media.DATA_TYPE, transfer_uuid, transfer_attrs, media.TRANSFER_SECTORS))
     if extra_partition:
         specs.append((media.DATA_TYPE, uuid.uuid4(), 0, 128))
     for number, (kind, uid, attrs, sectors) in enumerate(specs):
@@ -82,6 +83,7 @@ def _create(
     disk_uuid=media.DISK_UUID,
     boot_uuid=media.BOOT_UUID,
     transfer_uuid=media.TRANSFER_UUID,
+    transfer_attrs=0,
     boot_label="USBCOLD_EFI",
     vault_label="COLD_VAULT",
     transfer_label="TX_TRANSFER",
@@ -122,6 +124,7 @@ def _create(
             disk_uuid=disk_uuid,
             boot_uuid=boot_uuid,
             transfer_uuid=transfer_uuid,
+            transfer_attrs=transfer_attrs,
             include_transfer=include_transfer,
             extra_partition=extra_partition,
         )
@@ -173,6 +176,8 @@ def test_duplicated_cloned_usb_is_denied(tmp_path):
         "wrong_boot_label",
         "wrong_transfer_label",
         "transfer_fat16",
+        "transfer_hidden",
+        "transfer_no_drive_letter",
         "missing_partition",
         "wrong_sector_size",
         "extra_partition",
@@ -191,6 +196,10 @@ def test_corruption_and_unexpected_media_fail_closed(tmp_path, mutation):
         kwargs["transfer_uuid"] = uuid.uuid4()
     elif mutation == "wrong_disk_guid":
         kwargs["disk_uuid"] = uuid.uuid4()
+    elif mutation == "transfer_hidden":
+        kwargs["transfer_attrs"] = 1 << 62
+    elif mutation == "transfer_no_drive_letter":
+        kwargs["transfer_attrs"] = 1 << 63
     elif mutation == "wrong_boot_label":
         kwargs["boot_label"] = "IMPOSTOR"
     elif mutation == "wrong_transfer_label":
