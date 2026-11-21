@@ -33,3 +33,5 @@ footer{text-align:center;color:#8fa3bd;font-size:12px;padding-top:24px}
 .advanced summary{cursor:pointer}
 button:focus-visible,summary:focus-visible{outline:3px solid #f4d58d;outline-offset:2px}
 @media(max-width:650px){.asset-switch .muted{width:100%;margin-left:0}}
+
+select{width:100%;padding:12px 13px;margin:5px 0 15px;background:#0c1627;color:#fff;border:1px solid #536a89;border-radius:9px}
