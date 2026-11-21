@@ -41,10 +41,10 @@ jobs:
           set -euo pipefail
           test "$GITHUB_REF" = "refs/heads/main"
 
-      - name: Check out trusted release verifier from main
+      - name: Check out trusted verifier from workflow commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Require exact signed tag to source SHA binding
@@ -58,6 +58,7 @@ jobs:
             *[!0-9a-f]*|'') echo "::error::source_sha must be lowercase hex"; exit 1 ;;
           esac
           test "${#SOURCE_SHA}" -eq 40
+          test "$GITHUB_SHA" = "$SOURCE_SHA"
           python3 scripts/verify_release_assets.py             --tag "$TAG" --commit "$SOURCE_SHA" --source-only
 
   build:
@@ -264,7 +265,7 @@ jobs:
       - name: Check out trusted verifier from main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Download the already-attested candidate bytes
@@ -292,10 +293,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Check out trusted gate logic from main
+      - name: Check out trusted gate logic from workflow commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Fail closed on failed, cancelled, or skipped required jobs
