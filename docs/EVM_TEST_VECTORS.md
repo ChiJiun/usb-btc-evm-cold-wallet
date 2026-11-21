@@ -74,6 +74,17 @@ This external transaction intentionally has a gas limit of 196,608. The low-leve
 
 All test keys and mnemonics in this repository are public, compromised test vectors. Never use them for real funds.
 
-## Future scope
+## Independent ERC-20 and EIP-712 review-only modules (Issue #3)
 
-ERC-20 and EIP-712 support is intentionally not added by this change. Before either is enabled, the offline review must explicitly decode and display contract address, method/calldata, spender or recipient, amount, gas, chain ID, and any typed-data domain/message fields. Unknown calldata must remain rejected; no blind-signing mode should be introduced.
+`review_only/evm_erc20.py` and `review_only/evm_eip712.py` add strict, **review-only**
+Sepolia token calldata and two explicit custom EIP-712 intent schema decoders.
+Cross-library negative and positive test vectors are in
+`tests/test_evm_erc20_review.py` and `tests/test_evm_eip712_review.py`;
+see [ERC20_EIP712_SECURITY.md](ERC20_EIP712_SECURITY.md) for security
+assumptions, trusted inputs, unsigned/signed review boundaries, replay limits
+and intentionally unsupported Permit/Permit2 operations.
+
+The existing native ETH signer remains unchanged and **still rejects ERC-20
+calldata and all typed-data**; GUI/Live USB integration, signing and mainnet
+are deliberately out of scope. No current token-contract allowlist is
+provisioned, and no custom EIP-712 verifier contract is asserted deployed.
