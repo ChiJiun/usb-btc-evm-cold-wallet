@@ -129,7 +129,7 @@ def _safe_transfer_mount(expected_source: str) -> bool:
     return (
         source == expected_source
         and filesystem == "vfat"
-        and {"rw", "noexec", "nodev", "nosuid", "sync"} <= options
+        and {"rw", "noexec", "nodev", "nosuid", "sync", "fmask=0177", "dmask=0077"} <= options
     )
 
 
