@@ -112,3 +112,20 @@ test("reject unknown version, network and malformed account", () => {
   assert.throws(() => encodeFrames({ ...fake(), network: "ethereum-mainnet" }), /binding/);
   assert.throws(() => encodeFrames({ ...fake(), account: "x" }), /binding/);
 });
+
+test("reject offline-incompatible container sizes, Unicode keys, and account identifiers", () => {
+  const tooManyKeys = Object.fromEntries(
+    Array.from({ length: 257 }, (_, index) => [`key${index}`, index])
+  );
+  const attacks = [
+    [{ ...fake(), account: "account with spaces" }, /binding/],
+    [{ ...fake(), account: "錯誤帳戶識別碼1234" }, /binding/],
+    [{ ...fake(), payload: tooManyKeys }, /object too large/],
+    [{ ...fake(), payload: Array(1025).fill(1) }, /array too large/],
+    [{ ...fake(), payload: { "違規鍵": 1 } }, /object key/],
+    [{ ...fake(), payload: { tx: "non-ascii-文字" } }, /ASCII/],
+  ];
+  for (const [envelope, reason] of attacks) {
+    assert.throws(() => encodeFrames(envelope), reason);
+  }
+});
