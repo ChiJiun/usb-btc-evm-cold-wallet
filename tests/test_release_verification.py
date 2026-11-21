@@ -387,3 +387,4 @@ def test_release_workflow_has_pinned_actions_and_separated_permissions():
     assert 'RAW_IMAGE_SHA256' in build
     assert 'build-host-packages.txt' in build
     assert 'release/build-host-packages.txt' in publish
+    assert 'gh issue view 48' in publish
