@@ -180,3 +180,5 @@ def verify_btc_response(request, response, *, session=None):
             return False
 
     return session.check_response(response, verify_signature=verify)
+
+# Temporary CI QR bridge regression probe; do not merge.
