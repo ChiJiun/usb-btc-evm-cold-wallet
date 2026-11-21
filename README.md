@@ -184,7 +184,7 @@ pytest
 usb-cold-wallet --help
 ```
 
-[USB 製作與操作](docs/USB_SETUP.md) · [紙本復原與 USB 交換安全](docs/RECOVERY_AND_USB_EXCHANGE.md) · [MetaMask 原生 QR 測試網 POC](docs/METAMASK_NATIVE_QR.md) · [安全政策](SECURITY.md) · [威脅模型](docs/THREAT_MODEL.md) · [CI 與供應鏈](docs/CI_SECURITY.md) · [開源技術參考](docs/OPEN_SOURCE_REFERENCES.md)
+[USB 製作與操作](docs/USB_SETUP.md) · [紙本復原與 USB 交換安全](docs/RECOVERY_AND_USB_EXCHANGE.md) · [MetaMask 原生 QR 測試網 POC](docs/METAMASK_NATIVE_QR.md) · [MetaMask Snap POC](docs/METAMASK_SNAP_POC.md) · [安全政策](SECURITY.md) · [威脅模型](docs/THREAT_MODEL.md) · [CI 與供應鏈](docs/CI_SECURITY.md) · [開源技術參考](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## 授權
 

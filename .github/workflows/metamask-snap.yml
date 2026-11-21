@@ -1,0 +1,65 @@
+name: MetaMask Snap POC
+
+on:
+  pull_request:
+    paths:
+      - "metamask-snap/**"
+      - ".github/workflows/metamask-snap.yml"
+  push:
+    branches: [main]
+    paths:
+      - "metamask-snap/**"
+      - ".github/workflows/metamask-snap.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: snap-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  snap_verify:
+    name: MetaMask Snap / Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: metamask-snap
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: metamask-snap/package-lock.json
+
+      - name: Install exact dependencies without install scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Type check, keyring and adversarial tests
+        run: npm run check
+
+      - name: Build Snap SES bundle
+        run: npm run build
+
+      - name: Reject stale committed Snap manifest bundle digest
+        run: git diff --exit-code -- snap.manifest.json
+
+      - name: Build browser Companion
+        run: npm run build:companion
+
+      - name: Install Chromium for production Companion browser tests
+        run: npx playwright install --with-deps --only-shell chromium
+
+      - name: Test downloaded QR integrity and fail-closed browser UX
+        run: npm run test:browser
+
+      - name: Reject high/critical runtime dependency advisories
+        run: npm audit --omit=dev --audit-level=high
