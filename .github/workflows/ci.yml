@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Scheduled workflows run from the default branch even when no files change.
+  schedule:
+    - cron: "20 2 * * *"
 
 permissions:
   contents: read
@@ -26,6 +29,7 @@ jobs:
     outputs:
       code: ${{ steps.scope.outputs.code }}
       deps: ${{ steps.scope.outputs.deps }}
+      metadata: ${{ steps.scope.outputs.metadata }}
     steps:
       - name: Check out source and history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -35,64 +39,11 @@ jobs:
 
       - name: Select required checks
         id: scope
-        shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-          code=false
-          deps=false
-
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            # Manual dispatch is intentionally a full validation.
-            code=true
-            deps=true
-          else
-            if [[ "$EVENT_NAME" == "pull_request" ]]; then
-              base="$PR_BASE_SHA"
-            else
-              base="$PUSH_BEFORE_SHA"
-            fi
-
-            if [[ -z "$base" ]] || [[ "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-              echo "::warning::Missing comparison commit; running full validation"
-              code=true
-              deps=true
-            else
-              git diff --name-only -z "$base" HEAD > "$RUNNER_TEMP/ci-changed-files"
-
-              if [[ ! -s "$RUNNER_TEMP/ci-changed-files" ]]; then
-                echo "::warning::Empty changed-file list; running full validation"
-                code=true
-                deps=true
-              else
-                while IFS= read -r -d '' file; do
-                  echo "Changed: $file"
-                  case "$file" in
-                    README|README.*|docs/*|LICENSE|LICENSE.*|NOTICE|NOTICE.*|CHANGELOG*|CONTRIBUTING*|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE*)
-                      ;;
-                    *)
-                      code=true
-                      ;;
-                  esac
-
-                  case "$file" in
-                    requirements/*|pyproject.toml|setup.py|setup.cfg|Pipfile*|poetry.lock|uv.lock|infra/wheelhouse*|.github/workflows/ci.yml)
-                      deps=true
-                      ;;
-                  esac
-                done < "$RUNNER_TEMP/ci-changed-files"
-              fi
-            fi
-          fi
-
-          {
-            echo "code=$code"
-            echo "deps=$deps"
-          } >> "$GITHUB_OUTPUT"
-          echo "Code / wheel checks: $code; dependency checks: $deps; secret scanning: always"
+        run: python3 scripts/ci_checks.py scope
 
   tests:
     needs: changes
@@ -213,6 +164,45 @@ jobs:
         with:
           fail-on-severity: moderate
 
+  wheel_smoke:
+    name: README wheel metadata smoke
+    needs: changes
+    if: needs.changes.outputs.metadata == 'true' && needs.changes.outputs.code == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install hash-locked build tools
+        run: python -m pip install --require-hashes -r requirements/ci.lock
+
+      - name: Build wheel once and verify included README metadata
+        run: |
+          set -euo pipefail
+          python -m build --no-isolation --wheel --outdir /tmp/ci-readme-wheel .
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheels = list(Path("/tmp/ci-readme-wheel").glob("*.whl"))
+          assert len(wheels) == 1, wheels
+          with ZipFile(wheels[0]) as wheel:
+              metadata_files = [p for p in wheel.namelist() if p.endswith(".dist-info/METADATA")]
+              assert len(metadata_files) == 1, metadata_files
+              metadata = wheel.read(metadata_files[0]).decode("utf-8")
+          readme = Path("README.md").read_text(encoding="utf-8")
+          assert readme.strip() in metadata, "Wheel METADATA is missing README.md content"
+          print("README.md is embedded in the built wheel metadata")
+          PY
+
   reproducible_build:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -258,44 +248,27 @@ jobs:
       - dependency_audit
       - secret_scan
       - dependency_review
+      - wheel_smoke
       - reproducible_build
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Require every scheduled test and security check
         env:
           SCOPE: ${{ needs.changes.result }}
           CODE: ${{ needs.changes.outputs.code }}
           DEPS: ${{ needs.changes.outputs.deps }}
+          METADATA: ${{ needs.changes.outputs.metadata }}
           EVENT_NAME: ${{ github.event_name }}
           TESTS: ${{ needs.tests.result }}
           AUDIT: ${{ needs.dependency_audit.result }}
           SECRET_SCAN: ${{ needs.secret_scan.result }}
           DEPENDENCY_REVIEW: ${{ needs.dependency_review.result }}
+          WHEEL_SMOKE: ${{ needs.wheel_smoke.result }}
           REPRODUCIBLE_BUILD: ${{ needs.reproducible_build.result }}
-        run: |
-          set -euo pipefail
-          test "$SCOPE" = "success"
-          test "$SECRET_SCAN" = "success"
-
-          if [[ "$CODE" == "true" ]]; then
-            test "$TESTS" = "success"
-            test "$REPRODUCIBLE_BUILD" = "success"
-          else
-            test "$CODE" = "false"
-            test "$TESTS" = "skipped"
-            test "$REPRODUCIBLE_BUILD" = "skipped"
-          fi
-
-          if [[ "$DEPS" == "true" ]]; then
-            test "$AUDIT" = "success"
-          else
-            test "$DEPS" = "false"
-            test "$AUDIT" = "skipped"
-          fi
-
-          if [[ "$EVENT_NAME" == "pull_request" && "$DEPS" == "true" ]]; then
-            test "$DEPENDENCY_REVIEW" = "success"
-          else
-            test "$DEPENDENCY_REVIEW" = "skipped"
-          fi
+        run: python3 scripts/ci_checks.py required
