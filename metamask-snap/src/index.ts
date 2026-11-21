@@ -41,10 +41,18 @@ export const onKeyringRequest: OnKeyringRequestHandler = ({origin, request}) => 
   return (await handleKeyringRequest(await createKeyring(), request)) ?? null;
 });
 export const onRpcRequest: OnRpcRequestHandler = ({origin, request}) => serialized(async () => {
-  if (!COMPANION.has(origin) || request.method !== 'usb_getQrRequest') {
+  if (!COMPANION.has(origin)) throw new Error('Unauthorized Snap RPC origin');
+  const keyring = await createKeyring();
+  if (request.method === 'usb_listTerminalEvents') return keyring.listTerminalEvents();
+  if (!['usb_getQrRequest', 'usb_recoverTerminalEvent'].includes(request.method)) {
     throw new Error('Unauthorized Snap RPC method');
   }
-  const id = (request.params as {id?: unknown} | undefined)?.id;
-  if (typeof id !== 'string') throw new Error('Expected public request ID');
-  return (await createKeyring()).exportQrRequest(id);
+  const params = request.params as {id?: unknown; action?: unknown} | undefined;
+  if (typeof params?.id !== 'string') throw new Error('Expected public request ID');
+  if (request.method === 'usb_getQrRequest') return keyring.exportQrRequest(params.id);
+  if (params.action !== 'retry' && params.action !== 'abandon') {
+    throw new Error('Explicit terminal recovery action required');
+  }
+  await keyring.recoverTerminal(params.id, params.action);
+  return {recovered:true};
 });
