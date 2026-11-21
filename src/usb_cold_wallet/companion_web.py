@@ -232,13 +232,13 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                 elif self.path == "/api/broadcast":
                     if data:
                         raise ValueError("Broadcast does not accept transaction overrides")
-                    try:
-                        result = session.broadcast()
-                    except ValueError:
-                        if (crossboot is not None and crossboot.available and session.pending is not None
-                                and session.pending.get("stage") == "broadcast_unknown"):
-                            crossboot.mark_failed(session, btc_session, "broadcast outcome unknown")
-                        raise
+                    if crossboot is not None and crossboot.available:
+                        if session.pending is None or session.pending.get("stage") != "verified":
+                            raise ValueError("Broadcast requires a verified pending transaction")
+                        crossboot.mark_broadcast_requested(
+                            session, btc_session, session.pending["tx_hash"]
+                        )
+                    result = session.broadcast()
                     if crossboot is not None and crossboot.available and result.get("stage") == "broadcasted":
                         crossboot.mark_broadcasted(session, btc_session, result["tx_hash"])
                 elif self.path == "/api/status":
@@ -282,13 +282,13 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                         if crossboot is not None and crossboot.available and request_id:
                             crossboot.cancel(session, btc_session, request_id)
                     elif self.path == "/api/btc/broadcast":
-                        try:
-                            result = btc_session.broadcast()
-                        except ValueError:
-                            if (crossboot is not None and crossboot.available and btc_session.pending is not None
-                                    and btc_session.pending.get("stage") == "broadcast_unknown"):
-                                crossboot.mark_failed(session, btc_session, "BTC broadcast outcome unknown")
-                            raise
+                        if crossboot is not None and crossboot.available:
+                            if btc_session.pending is None or btc_session.pending.get("stage") != "verified":
+                                raise ValueError("BTC broadcast requires a verified pending transaction")
+                            crossboot.mark_broadcast_requested(
+                                session, btc_session, btc_session.pending["txid"]
+                            )
+                        result = btc_session.broadcast()
                         if crossboot is not None and crossboot.available and result.get("stage") == "broadcasted":
                             crossboot.mark_broadcasted(session, btc_session, result["txid"])
                     else:
