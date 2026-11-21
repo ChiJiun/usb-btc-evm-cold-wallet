@@ -54,9 +54,11 @@ function noSecrets(value, depth = 0) {
       }
       noSecrets(item, depth + 1);
     }
-  } else if (typeof value === "string" &&
-             (value.length > MAX_PAYLOAD || [...value].some(ch => ch.codePointAt(0) > 127))) {
-    throw new Error("QR protocol payload only accepts bounded ASCII text");
+  } else if (typeof value === "string") {
+    if (value.length > MAX_PAYLOAD) throw new Error("QR string too large");
+    if ([...value].some(ch => ch.codePointAt(0) > 127)) {
+      throw new Error("QR protocol payload only accepts ASCII text");
+    }
   }
 }
 
