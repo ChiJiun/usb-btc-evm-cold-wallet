@@ -192,18 +192,63 @@ def save_profile(path: Path, profile: dict, root, password: str, *, replace: boo
     content = (json.dumps(obj, separators=(",", ":")) + "\n").encode()
     if len(content) > MAX_FILE_BYTES:
         raise ValueError("Policy file too large")
-    # Same-directory atomic replacement, never write a plaintext policy file.
-    tmp = path.with_name(path.name + ".new-" + os.urandom(8).hex())
+    # Pin the parent directory: a symlink swap of its path must not redirect
+    # the write to another directory. Never stage policy plaintext.
+    from .vault import _atomic_rename_noreplace
+
+    if not path.name or path.name in (".", ".."):
+        raise ValueError("Invalid policy filename")
+    parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY |
+                        getattr(os, "O_NOFOLLOW", 0))
+    stage = ".policy-" + os.urandom(16).hex() + ".partial"
+    stage_identity = None
+    fd = None
     try:
-        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
+        fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                     getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=parent_fd)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("Policy staging file is not regular")
+        stage_identity = (info.st_dev, info.st_ino)
+        with os.fdopen(fd, "wb") as stream:
+            fd = None
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        if path.is_symlink() or (path.exists() and not replace):
-            raise ValueError("Policy path changed during write")
-        os.replace(tmp, path)
+        staged = os.stat(stage, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISREG(staged.st_mode) or (staged.st_dev, staged.st_ino) != stage_identity:
+            raise ValueError("Policy staging file changed")
+        try:
+            target = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            target = None
+        if target is not None and not stat.S_ISREG(target.st_mode):
+            raise ValueError("Policy destination is not a regular file")
+        if replace:
+            # The operator must independently record the new trusted hash
+            # after this successful durable publication. This is NOT a
+            # hardware-backed monotonic rollback counter.
+            os.replace(stage, path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        else:
+            _atomic_rename_noreplace(parent_fd, stage, path.name)
+        # File fsync alone does not make the directory rename durable.
+        os.fsync(parent_fd)
     finally:
-        tmp.unlink(missing_ok=True)
+        if fd is not None:
+            os.close(fd)
+        if stage_identity is not None:
+            try:
+                staged = os.stat(stage, dir_fd=parent_fd, follow_symlinks=False)
+                if stat.S_ISREG(staged.st_mode) and (
+                        staged.st_dev, staged.st_ino) == stage_identity:
+                    os.unlink(stage, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                # Removed media can prevent cleanup; partial names are never
+                # treated as approved policy files.
+                pass
+        os.close(parent_fd)
 
 
 def _strict_json(raw: bytes):
