@@ -64,4 +64,40 @@ test('SDK keyring RPC: durable account notifications, selection and concurrent c
   // No additional events are silently emitted during restart/read operations.
   assert.deepEqual(await rpc('usb_listTerminalEvents'),[]);
   assert.equal(notifications.length,1);
+
+  // A MetaMask-originated request must survive separate handler invocations,
+  // remain bound to the selected public account, and be explicitly closed.
+  const tx = {
+    type:'0x2', chainId:'0xaa36a7', nonce:'0x1', from:address,
+    to:'0x000000000000000000000000000000000000dEaD',
+    value:'0x'+(123456789012345678n).toString(16),gasLimit:'0x5208',
+    maxFeePerGas:'0x12a05f200',maxPriorityFeePerGas:'0x3b9aca00',
+    data:'0x',accessList:[],
+  };
+  const signing = {id:'12345678-1234-4123-8123-123456789016',
+    account:accounts[0].id,scope:'eip155:11155111',
+    request:{method:'eth_signTransaction',params:[tx]}};
+  const submitted = await keyring('metamask','keyring_submitRequest',{request:signing}) as {pending:boolean};
+  assert.equal(submitted.pending,true);
+  const exported = await rpc('usb_getQrRequest',{id:signing.id}) as string;
+  assert.match(exported,/123456789012345678/);
+  const pending = await keyring(origin,'keyring_listRequests') as Array<{id:string}>;
+  assert.deepEqual(pending.map(item=>item.id),[signing.id]);
+
+  // A failed host notification preserves exactly the terminal state. Normal
+  // request APIs must not silently resend ambiguous events across restarts.
+  failNotify = true;
+  await assert.rejects(() => keyring('metamask','keyring_rejectRequest',{id:signing.id}),
+    /host event unavailable/);
+  const terminal = await rpc('usb_listTerminalEvents') as Array<{id:string;kind:string;attempted:boolean}>;
+  assert.deepEqual(terminal.map(item=>[item.id,item.kind,item.attempted]),
+    [[signing.id,'rejected',true]]);
+  await assert.rejects(() => keyring('metamask','keyring_rejectRequest',{id:signing.id}),
+    /uncertain/);
+  await rpc('usb_recoverTerminalEvent',{id:signing.id,action:'retry'});
+  assert.deepEqual(await rpc('usb_listTerminalEvents'),[]);
+  assert.deepEqual(await keyring(origin,'keyring_listRequests'),[]);
+  await assert.rejects(() => keyring('metamask','keyring_submitRequest',{request:signing}),
+    /Duplicate|replayed/);
+  assert.equal(notifications.length,2);
 });
