@@ -360,3 +360,57 @@ def test_actual_btc_gui_qr_import_review_policy_and_online_verification(tmp_path
     assert verify_btc_response(original, result)["signature_count"] == 1
     app._done()
     assert app.wallet_root is None
+
+
+@pytest.mark.parametrize("invalid_index", [False, True, -1, 2**31, "0"])
+def test_btc_qr_change_index_rejects_non_integer_and_out_of_range(invalid_index):
+    original = btc_qr_request()
+    payload = copy.deepcopy(original["payload"])
+    payload["change_index"] = invalid_index
+    forged = make_request("bitcoin-testnet", ROOT.my_fingerprint.hex(), payload)
+    envelope, parsed = parse_qr_input(json.dumps(forged), "btc-request")
+    plan = build_review_plan(envelope, ROOT)
+    with pytest.raises(ValueError, match="change index"):
+        bind_qr_to_review(parsed, plan, ROOT)
+
+
+def _signed_test_gui(tmp_path):
+    app = make_gui(tmp_path)
+    request = prepare_evm_qr(evm_transaction(), evm_account(ROOT).address, RECIPIENT, WEI)
+    app.qr_reader = lambda: json.dumps(request)
+    app._import_qr()
+    for index in range(len(app.session.plan.pages)):
+        app.session.acknowledge(index, app.session.plan.review_digest)
+    app.session.set_confirmation(app.session.plan.challenge, app.session.plan.review_digest)
+    app._sign()
+    assert app.security.state == State.SIGNED
+    return app
+
+
+def test_signed_usb_export_fsync_error_cleans_only_its_own_file(monkeypatch, tmp_path):
+    app = _signed_test_gui(tmp_path)
+    target = tmp_path / "recoverable-signed.json"
+    real_fsync = gui.os.fsync
+
+    def failed_fsync(_fd):
+        raise OSError(5, "simulated USB writeback failure")
+
+    monkeypatch.setattr(gui.os, "fsync", failed_fsync)
+    with pytest.raises(OSError, match="writeback failure"):
+        app._write_transfer_signed(target)
+    assert not target.exists(), "A failed write must not leave a blocking partial file"
+    monkeypatch.setattr(gui.os, "fsync", real_fsync)
+    app._write_transfer_signed(target)
+    assert json.loads(target.read_text())["kind"] == "evm-signed"
+
+
+def test_failed_export_cleanup_keeps_preexisting_or_replaced_files(tmp_path):
+    app = make_gui(tmp_path)
+    target = tmp_path / "preserve.json"
+    target.write_bytes(b"unrelated existing content")
+    info = target.stat()
+    app._cleanup_failed_export(target, (info.st_dev, info.st_ino + 1))
+    assert target.read_bytes() == b"unrelated existing content"
+    (tmp_path / "alias").symlink_to(target)
+    app._cleanup_failed_export(tmp_path / "alias", (info.st_dev, info.st_ino))
+    assert target.read_bytes() == b"unrelated existing content"
