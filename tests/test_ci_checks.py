@@ -251,7 +251,7 @@ def test_pr_close_jq_filter_requires_positive_pr_identity():
 
     def extract(name):
         match = re.search(
-            rf"(?ms)^          {name}='\\n(.*?)^          '$", workflow
+            rf"(?ms)^          {name}='\n(.*?)^          '$", workflow
         )
         assert match, f"Could not find real workflow jq expression: {name}"
         return match.group(1)
@@ -273,7 +273,7 @@ def test_pr_close_jq_filter_requires_positive_pr_identity():
             ["jq", "-sr", "--arg", "sha", sha,
              "--arg", "branch", "shared-feature", "--arg", "source", source,
              owner_program],
-            input="\\n".join(json.dumps(page) for page in pages) + "\\n",
+            input="\n".join(json.dumps(page) for page in pages) + "\n",
             check=True, capture_output=True, text=True,
         )
         return result.stdout.strip()
