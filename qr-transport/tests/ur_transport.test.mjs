@@ -66,9 +66,17 @@ test("reject mismatched UR type, malformed part, huge and mixed framing", () => 
 test("reject timeout and retry after reset", () => {
   let now = 1000;
   const scanner = new BoundedURScanner({ now: () => now, maxDurationMs: 100 });
+  // The browser may remain open indefinitely before the first scan.
+  now += 3600000;
+  scanner.start();
   now += 101;
   assert.throws(() => scanner.add(encodeFrames(fake(1))[0]), /timed out/);
   scanner.reset();
+  scanner.start();
+  assert.equal(scanner.add(encodeFrames(fake(1))[0]).done, true);
+  scanner.reset();
+  now += 3600000;
+  // First-frame scan also starts the clock without the browser using start().
   assert.equal(scanner.add(encodeFrames(fake(1))[0]).done, true);
 });
 
