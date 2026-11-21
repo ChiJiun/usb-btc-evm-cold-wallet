@@ -6,7 +6,6 @@ Independent SHA256d/BIP143 implementation deliberately avoids embit.sighash.
 import base64
 import hashlib
 import struct
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 import pytest
 from cryptography.exceptions import InvalidSignature
