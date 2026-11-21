@@ -26,28 +26,7 @@ from .review import (ReviewPlan, ReviewSession, build_review_plan,
 from .gui_qr_bridge import parse_qr_input, bind_qr_to_review, signed_qr_text
 from .signer_session import SignerSession, State, DEFAULT_IDLE_SECONDS
 from .policy import read_policy_snapshot, load_policy_snapshot
-from .vault import load_vault
-
-def _atomic_rename_noreplace(parent_fd: int, stage: str, final: str) -> None:
-    """Linux renameat2(RENAME_NOREPLACE), including FAT32; never overwrite.
-
-    os.rename/os.replace may overwrite on Linux; hard links are unsupported on
-    FAT32. An unavailable renameat2 must fail closed.
-    """
-    import ctypes
-
-    libc = ctypes.CDLL(None, use_errno=True)
-    renameat2 = getattr(libc, "renameat2", None)
-    if renameat2 is None:
-        raise OSError(38, "renameat2 is unavailable; refusing unsafe export")
-    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
-                          ctypes.c_char_p, ctypes.c_uint]
-    renameat2.restype = ctypes.c_int
-    if renameat2(parent_fd, os.fsencode(stage), parent_fd,
-                 os.fsencode(final), 1) != 0:
-        err = ctypes.get_errno()
-        raise OSError(err, os.strerror(err), final)
-
+from .vault import load_vault, atomic_create_at
 
 DEFAULT_VAULT = Path("/mnt/cold-vault/wallet.vault")
 DEFAULT_TRANSFER = Path("/mnt/transfer")
@@ -816,15 +795,9 @@ class OfflineReviewApp:
             os.close(fd)
 
     def _write_transfer_signed(self, path: Path) -> None:
-        """Write a hidden staging file, fsync, then atomically publish .json.
-
-        Final filenames are never visible while incomplete, even when USB
-        storage fills mid-write. Existing exports cannot be overwritten.
-        """
+        """Publish complete signed JSON via the pinned TX_TRANSFER directory."""
         if self.session is None or not self.session.signed:
             raise ValueError("No signed response to export")
-        import secrets
-
         text = self.session.signed_envelope_text()
         verify(json.loads(text), self.session.plan.signed_kind)
         data = text.encode("ascii")
@@ -836,50 +809,9 @@ class OfflineReviewApp:
             name = path.name
         else:
             parent, name = self._transfer_parent_fd(path)
-        stage = f".usbwallet-{secrets.token_hex(16)}.partial"
-        fd = None
-        identity = None
         try:
-            fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
-                         getattr(os, "O_NOFOLLOW", 0),
-                         0o600, dir_fd=parent)
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode):
-                raise ValueError("Signed export stage is not a regular file")
-            identity = (info.st_dev, info.st_ino)
-            offset = 0
-            while offset < len(data):
-                count = os.write(fd, data[offset:])
-                if count <= 0:
-                    raise OSError("Short write to signed transaction output")
-                offset += count
-            os.fsync(fd)
-            os.close(fd)
-            fd = None
-
-            staged = os.stat(stage, dir_fd=parent, follow_symlinks=False)
-            if (not stat.S_ISREG(staged.st_mode) or
-                    (staged.st_dev, staged.st_ino) != identity):
-                raise OSError("USB stage was replaced during export")
-            _atomic_rename_noreplace(parent, stage, name)
-            # If this fails, the final file contains complete bytes but
-            # durable persistence is uncertain. Never overwrite on retry.
-            os.fsync(parent)
+            atomic_create_at(parent, name, data)
         finally:
-            if fd is not None:
-                os.close(fd)
-            if identity is not None:
-                try:
-                    staged = os.stat(stage, dir_fd=parent, follow_symlinks=False)
-                    if (stat.S_ISREG(staged.st_mode) and
-                            (staged.st_dev, staged.st_ino) == identity):
-                        os.unlink(stage, dir_fd=parent)
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    # Unplugged USB may prevent cleanup; .partial is never a
-                    # valid signed .json exchange.
-                    pass
             os.close(parent)
 
     def _import_usb(self):

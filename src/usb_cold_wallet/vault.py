@@ -69,6 +69,27 @@ def decrypt_mnemonic(data: dict, passphrase: str) -> str:
         raise ValueError("Incorrect passphrase or corrupted wallet") from exc
 
 
+def _atomic_rename_noreplace(parent_fd: int, stage: str, final: str) -> None:
+    """Linux renameat2(RENAME_NOREPLACE), including FAT32; never overwrite.
+
+    os.rename/os.replace may overwrite on Linux; hard links are unsupported on
+    FAT32. An unavailable renameat2 must fail closed.
+    """
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise OSError(38, "renameat2 is unavailable; refusing unsafe export")
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                          ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    if renameat2(parent_fd, os.fsencode(stage), parent_fd,
+                 os.fsencode(final), 1) != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err), final)
+
+
 def atomic_create_at(parent_fd: int, name: str, data: bytes) -> None:
     """Publish a complete new file under a pinned Linux directory fd.
 
@@ -76,7 +97,6 @@ def atomic_create_at(parent_fd: int, name: str, data: bytes) -> None:
     VFAT volumes. Never expose an incomplete final name or replace any
     pre-existing file; fail closed when atomic publication is unavailable.
     """
-    import ctypes
     import secrets
     import stat
 
@@ -109,17 +129,7 @@ def atomic_create_at(parent_fd: int, name: str, data: bytes) -> None:
         if (not stat.S_ISREG(staged.st_mode) or
                 (staged.st_dev, staged.st_ino) != identity):
             raise OSError("USB staging file changed during export")
-        libc = ctypes.CDLL(None, use_errno=True)
-        renameat2 = getattr(libc, "renameat2", None)
-        if renameat2 is None:
-            raise OSError(38, "renameat2 unavailable; refusing unsafe export")
-        renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
-                              ctypes.c_char_p, ctypes.c_uint]
-        renameat2.restype = ctypes.c_int
-        if renameat2(parent_fd, os.fsencode(stage), parent_fd,
-                     os.fsencode(name), 1) != 0:
-            err = ctypes.get_errno()
-            raise OSError(err, os.strerror(err), name)
+        _atomic_rename_noreplace(parent_fd, stage, name)
         os.fsync(parent_fd)
     finally:
         if fd is not None:

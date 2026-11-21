@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 from embit import bip32, psbt, script, transaction
 
-from usb_cold_wallet import gui
+from usb_cold_wallet import gui, vault
 from usb_cold_wallet.exchange import package
 from usb_cold_wallet.gui import OfflineReviewApp
 from usb_cold_wallet.gui_qr_bridge import (
@@ -419,7 +419,7 @@ def test_failed_export_cleanup_keeps_preexisting_or_replaced_files(tmp_path):
 def test_signed_export_not_visible_until_atomic_publish(monkeypatch, tmp_path):
     app = _signed_test_gui(tmp_path)
     target = tmp_path / "signed.json"
-    original = gui._atomic_rename_noreplace
+    original = vault._atomic_rename_noreplace
     seen = []
 
     def observe(parent, staging, final):
@@ -430,7 +430,7 @@ def test_signed_export_not_visible_until_atomic_publish(monkeypatch, tmp_path):
         seen.append(staging)
         original(parent, staging, final)
 
-    monkeypatch.setattr(gui, "_atomic_rename_noreplace", observe)
+    monkeypatch.setattr(vault, "_atomic_rename_noreplace", observe)
     app._write_transfer_signed(target)
     assert seen and json.loads(target.read_text())["kind"] == "evm-signed"
     assert not list(tmp_path.glob(".*.partial"))
@@ -491,7 +491,7 @@ def test_signed_export_rename_unavailable_fails_closed(monkeypatch, tmp_path):
     def unavailable(*args):
         raise OSError(38, "renameat2 unavailable")
 
-    monkeypatch.setattr(gui, "_atomic_rename_noreplace", unavailable)
+    monkeypatch.setattr(vault, "_atomic_rename_noreplace", unavailable)
     with pytest.raises(OSError, match="renameat2 unavailable"):
         app._write_transfer_signed(target)
     assert not target.exists()
