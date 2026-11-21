@@ -75,15 +75,15 @@ def test_bitcoin_core_v0_unsigned_to_cold_signature_to_finalized_txid():
 def test_core_fixture_policy_substitution_denied(mutation):
     p = psbt.PSBT.parse(base64.b64decode(FIXTURE["enriched_psbt_base64"]))
     if mutation == "recipient":
-        p.tx.vout[0].value += 1
+        p.outputs[0].value += 1
     elif mutation == "change":
-        p.tx.vout[1].script_pubkey = script.Script(b"\x00\x14" + b"\xaa" * 20)
+        p.outputs[1].script_pubkey = script.Script(b"\x00\x14" + b"\xaa" * 20)
     elif mutation == "fee":
-        p.tx.vout[1].value -= 1_001
+        p.outputs[1].value -= 1_001
     elif mutation == "rbf":
-        p.tx.vin[0].sequence = 0xFFFFFFFD
+        p.inputs[0].sequence = 0xFFFFFFFD
     else:
-        p.tx.locktime = 1
+        p.locktime = 1
     with pytest.raises(ValueError):
         review_btc_psbt(ROOT, p.to_base64(), FIXTURE["recipient_testnet"],
                         FIXTURE["recipient_sats"], FIXTURE["fee_sats"], 0)
