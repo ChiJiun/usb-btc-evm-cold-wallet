@@ -32,3 +32,22 @@ Windows CI 會真正執行完成封裝的 EXE，檢查本機 HTTP、CSP、
 目前使用者仍需下載及匯入 JSON 檔。此包不得直接用於真實資產。
 
 後續硬體驗收見 #43；主網與 Release Gate 分別見 #48、#47。
+
+## 封裝安全邊界與 CI 驗證
+
+GitHub 的單一 `CI / Required` 現在以可重用工作流程執行**真正 Windows x64
+EXE 建置與啟動檢查**：任何程式碼變更若 Windows job 失敗、跳過或取消，
+Required 都會失敗。純文件變更預期跳過 Windows job。
+
+Windows 封裝明確排除 `usb_cold_wallet.vault`、`keys`、`btc`、
+`evm`、`recovery`、`cli`、`gui`、`review`、
+`signer_session`、QR 離線簽章流程等冷端模組；CI 進一步使用
+PyInstaller 官方 archive viewer **遞迴檢查實際 EXE archive**，確認
+只有 Companion 公開資料模組，拒絕打包私鑰衍生或簽署程式。
+注意第三方 `eth-account` 等密碼學相依套件仍含一般簽章函式，
+並不意味著這個 EXE 有可用的私鑰或 HTTP 遠端簽章 API。
+
+Artifact 同時包含 SHA-256、GitHub commit／run ID、PyInstaller 版本與
+實際安裝相依套件清單。**目前尚未實作 Windows 平台完整 hash-locked
+依賴、可重現 EXE 或發行者簽章／attestation**，這些仍需在 #47 正式
+Release gate 驗證，SHA-256 只能確認位元組一致，不能獨立證明來源。
