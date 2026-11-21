@@ -255,3 +255,85 @@ def test_usb_v1_envelope_remains_compatible_with_gui_qr_input():
     normalized, qr = parse_qr_input(json.dumps(original), "evm-request")
     assert normalized == original
     assert qr is None
+
+
+def test_real_gui_qr_import_policy_sign_companion_verify_and_broadcast(tmp_path):
+    """Companion → actual GUI QR import → policy/sign → strict Companion → send."""
+    from eth_utils import keccak
+    from usb_cold_wallet.companion_core import CompanionSession, canonical
+    from usb_cold_wallet.keys import watch_only
+
+    class FakeRpc:
+        display_endpoint = "https://fake-sepolia.example"
+        def __init__(self):
+            self.sent = []
+        def assert_sepolia(self):
+            pass
+        def account_state(self, address):
+            assert address == evm_account(ROOT).address
+            return 5 * 10**18, 7
+        def fee_quote(self):
+            return 2_000_000_000, 1_000_000_000
+        def call(self, method, params):
+            if method == "eth_getTransactionCount":
+                return hex(7)
+            if method == "eth_sendRawTransaction":
+                self.sent.append(params[0])
+                return "0x" + keccak(hexstr=params[0]).hex()
+            raise AssertionError(method)
+
+    rpc = FakeRpc()
+    online = CompanionSession(rpc)
+    online.import_wallet(canonical(watch_only(ROOT, count=2)))
+    prepared = online.prepare(RECIPIENT, "0.01")
+    tx = prepared["pending"]["tx"]
+    native = prepare_evm_qr(
+        tx, evm_account(ROOT).address, RECIPIENT, tx["value"],
+        request_id=prepared["pending"]["request_id"],
+    )
+
+    app = make_gui(tmp_path)
+    app.qr_reader = lambda: json.dumps(native)
+    emitted = []
+    app.qr_presenter = emitted.append
+    app._import_qr()
+    assert app.security.state == State.REVIEWING
+    for index in range(len(app.session.plan.pages)):
+        app.session.acknowledge(index, app.session.plan.review_digest)
+    app.session.set_confirmation(app.session.plan.challenge, app.session.plan.review_digest)
+    app._sign()
+    assert app.security.state == State.SIGNED
+    app._present_signed_qr()
+    response = json.loads(emitted[0])
+    signed = verify_evm_response(native, response)
+    assert signed["value_wei"] == 10**16
+    # Companion does its own pending-request, sender, raw transaction and fee validation.
+    verified = online.accept_signed(canonical(package("evm-signed", signed)))
+    assert verified["stage"] == "verified"
+    online.broadcast()
+    assert len(rpc.sent) == 1
+
+    # A previously signed response must not authorize a different pending intent.
+    another = CompanionSession(FakeRpc())
+    another.import_wallet(canonical(watch_only(ROOT, count=2)))
+    another.prepare(RECIPIENT, "0.02")
+    with pytest.raises(ValueError):
+        another.accept_signed(canonical(package("evm-signed", signed)))
+    assert another.rpc.sent == []
+
+
+def test_signed_usb_export_is_create_only_and_stays_under_transfer_dir(tmp_path):
+    app = make_gui(tmp_path)
+    req = prepare_evm_qr(evm_transaction(), evm_account(ROOT).address, RECIPIENT, WEI)
+    app.qr_reader = lambda: json.dumps(req)
+    app.qr_presenter = lambda value: None
+    app._import_qr()
+    for index in range(len(app.session.plan.pages)):
+        app.session.acknowledge(index, app.session.plan.review_digest)
+    app.session.set_confirmation(app.session.plan.challenge, app.session.plan.review_digest)
+    app._sign()
+    target = tmp_path / "signed-response.json"
+    app._write_transfer_signed(target)
+    assert json.loads(target.read_text())["kind"] == "evm-signed"
+    with pytest.raises(FileExistsError):
+        app._write_transfer_signed(target)
