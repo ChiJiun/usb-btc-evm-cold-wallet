@@ -69,4 +69,11 @@ jobs:
           test "$(findmnt -n -o FSTYPE --target "$mountdir")" = vfat
           python scripts/verify_usb_vfat_atomic.py "$mountdir" --after-remount
 
-          echo "PASS: mounted Linux kernel FAT32, atomic publish/collision, fault recovery, remount integrity."
+          # Actual VFAT mount with unsafe directory masks: the cold writer must
+          # fail closed before creating any staging or final .json entry.
+          sudo umount "$mountdir"
+          sudo mount -t vfat -o loop,uid="$(id -u)",gid="$(id -g)",umask=0022 "$image" "$mountdir"
+          test "$(findmnt -n -o FSTYPE --target "$mountdir")" = vfat
+          python scripts/verify_usb_vfat_atomic.py "$mountdir" --reject-insecure-mount
+
+          echo "PASS: mounted Linux kernel FAT32, atomic publish/collision, fault recovery, remount integrity and unsafe-mask rejection."

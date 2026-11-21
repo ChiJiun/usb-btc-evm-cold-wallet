@@ -753,33 +753,6 @@ class OfflineReviewApp:
         finally:
             os.close(parent)
 
-    def _cleanup_failed_export(self, path: Path, identity: tuple[int, int]) -> None:
-        """Only delete the same freshly-created inode after an unsuccessful write.
-
-        A malicious USB can replace directory entries at any time; never
-        unlink an unrelated pre-existing file or follow a path symlink.
-        """
-        parent = None
-        try:
-            if self.development_mode:
-                if not self._path_allowed(path):
-                    return
-                info = os.lstat(path)
-                if stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == identity:
-                    os.unlink(path)
-                return
-            parent, name = self._transfer_parent_fd(path)
-            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
-            if stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == identity:
-                os.unlink(name, dir_fd=parent)
-        except (OSError, ValueError):
-            # E.g. an unplugged USB; the failed export remains invalid and
-            # create-only retry refuses to overwrite any surviving file.
-            pass
-        finally:
-            if parent is not None:
-                os.close(parent)
-
     def _read_transfer_snapshot(self, path: Path) -> tuple[bytes, tuple[int, int]]:
         if path.suffix.lower() != ".json" or path.name.startswith("."):
             raise ValueError("Only completed .json USB exchange files may be imported")
