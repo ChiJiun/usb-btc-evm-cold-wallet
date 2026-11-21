@@ -48,7 +48,7 @@ sha256sum -c usb-cold-wallet.img.sha256
 
 After successful verification, flash `build/output/images/usb-cold-wallet.img` to an empty USB using a graphical flasher, boot it via UEFI, and follow the [feature branch USB guide](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/blob/feat/issue-1-reproducible-live-usb/docs/USB_SETUP.md) to create a test wallet and use its signing menu.
 
-**This development image currently uses two USB drives.** The signer USB contains `USBCOLD_EFI` and `COLD_VAULT` partitions; a separate FAT32 USB labeled `TX_TRANSFER` carries requests and responses. It **does not yet include the Windows Portable Companion or a same-USB cross-boot exchange partition**. The unified single-USB flow becomes available after [Issue #37](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/37) is implemented and verified.
+**This development image currently uses two USB drives.** The signer USB contains `USBCOLD_EFI` and `COLD_VAULT` partitions; a separate FAT32 USB labeled `TX_TRANSFER` carries requests and responses. It **does not yet bundle the Windows Portable Companion or the same-USB exchange partition**. A [separate Windows x64 no-install test build](docs/WINDOWS_PORTABLE_COMPANION.md) is available, with manual JSON transfer. The unified single-USB flow becomes available after [Issue #37](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/37) is implemented and verified.
 
 ## How one USB drive works
 

@@ -48,7 +48,7 @@ sha256sum -c usb-cold-wallet.img.sha256
 
 通過檢查後，將 `build/output/images/usb-cold-wallet.img` 用上述圖形工具刷入空白 USB，從 UEFI 開機，依據[該分支的 USB 操作指南](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/blob/feat/issue-1-reproducible-live-usb/docs/USB_SETUP.md)建立測試錢包與操作簽署選單。
 
-**這個開發版目前是雙 USB 架構**：系統 USB 包含 `USBCOLD_EFI` 和 `COLD_VAULT` 兩個分割區；交易交換使用另一支 FAT32、標籤為 `TX_TRANSFER` 的 USB。它**尚未包含 Windows Portable Companion 或單 USB 跨開機交易交換區**。完整的一支 USB 版本依 [Issue #37](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/37) 整合後才可照 A 流程使用。
+**這個開發版目前是雙 USB 架構**：系統 USB 包含 `USBCOLD_EFI` 和 `COLD_VAULT` 兩個分割區；交易交換使用另一支 FAT32、標籤為 `TX_TRANSFER` 的 USB。它**尚未將 Windows Portable Companion 或單 USB 跨開機交換分割區整合到映像**。目前有[獨立 Windows 免安裝測試版](docs/WINDOWS_PORTABLE_COMPANION.md)，仍需手動交換檔案。完整的一支 USB 版本依 [Issue #37](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/37) 整合後才可照 A 流程使用。
 
 ## 一支 USB 如何運作？
 
@@ -184,7 +184,7 @@ pytest
 usb-cold-wallet --help
 ```
 
-[USB 製作與操作](docs/USB_SETUP.md) · [紙本復原與 USB 交換安全](docs/RECOVERY_AND_USB_EXCHANGE.md) · [MetaMask 原生 QR 測試網 POC](docs/METAMASK_NATIVE_QR.md) · [安全政策](SECURITY.md) · [威脅模型](docs/THREAT_MODEL.md) · [CI 與供應鏈](docs/CI_SECURITY.md) · [開源技術參考](docs/OPEN_SOURCE_REFERENCES.md)
+[USB 製作與操作](docs/USB_SETUP.md) · [Windows 免安裝 Companion](docs/WINDOWS_PORTABLE_COMPANION.md) · [紙本復原與 USB 交換安全](docs/RECOVERY_AND_USB_EXCHANGE.md) · [MetaMask 原生 QR 測試網 POC](docs/METAMASK_NATIVE_QR.md) · [安全政策](SECURITY.md) · [威脅模型](docs/THREAT_MODEL.md) · [CI 與供應鏈](docs/CI_SECURITY.md) · [開源技術參考](docs/OPEN_SOURCE_REFERENCES.md)
 
 ## 授權
 
