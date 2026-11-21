@@ -137,43 +137,59 @@ def test_live_mount_revalidation_rejects_remount_and_media_swap(tmp_path):
         assert any("FAIL: live" in line or "FAIL: unexpected live" in line for line in reasons)
 
 
-def test_live_mount_requires_physically_distinct_transfer_usb(tmp_path):
+def test_live_mount_allows_only_boot_verified_same_device_transfer(tmp_path):
     checks = tmp_path / "boot-checks.txt"
     _boot_checks(checks)
     swaps = tmp_path / "swaps"
     swaps.write_text("Filename Type Size Used Priority\n", encoding="utf-8")
     live = _live_mounts(tmp_path)
-    kwargs = dict(boot_checks=checks, lockdown=tmp_path / "no-lockdown",
-                  proc_net=tmp_path / "no-net", proc_swaps=swaps, **live)
+    transfer_device = tmp_path / "transfer-device"
+    kwargs = dict(
+        boot_checks=checks,
+        lockdown=tmp_path / "no-lockdown",
+        proc_net=tmp_path / "no-net",
+        proc_swaps=swaps,
+        transfer_device=transfer_device,
+        **live,
+    )
     mountinfo = live["proc_mountinfo"]
     original = mountinfo.read_text(encoding="utf-8")
 
-    # Same physical USB disk (/dev/sdb), different partitions: must deny.
-    mountinfo.write_text(
-        original + "4 1 8:19 / /mnt/transfer rw,nodev,nosuid,noexec,sync - vfat /dev/sdb3 rw,sync\n",
-        encoding="utf-8",
+    same_disk = (
+        original
+        + "4 1 8:19 / /mnt/transfer rw,nodev,nosuid,noexec,sync "
+          "- vfat /dev/sdb3 rw,sync\n"
     )
+    mountinfo.write_text(same_disk, encoding="utf-8")
     ok, reasons = runtime_audit(**kwargs)
-    assert not ok and any("separate physical disk" in reason for reason in reasons)
+    assert not ok
+    assert any("exact single-USB partition" in reason for reason in reasons)
 
-    # A separate real disk is allowed when its identity and flags match.
+    transfer_device.write_text("/dev/sdb3\n", encoding="ascii")
+    assert runtime_audit(**kwargs)[0]
+
+    transfer_device.write_text("/dev/sdb4\n", encoding="ascii")
+    assert not runtime_audit(**kwargs)[0]
+
+    transfer_device.unlink()
     mountinfo.write_text(
-        original + "4 1 8:34 / /mnt/transfer rw,nodev,nosuid,noexec,sync - vfat /dev/sdc2 rw,sync\n",
+        original + "4 1 8:34 / /mnt/transfer rw,nodev,nosuid,noexec,sync "
+                   "- vfat /dev/sdc2 rw,sync\n",
         encoding="utf-8",
     )
     assert runtime_audit(**kwargs)[0]
 
-    # A spoofed filesystem source inconsistent with major:minor fails closed.
     mountinfo.write_text(
-        original + "4 1 8:19 / /mnt/transfer rw,nodev,nosuid,noexec,sync - vfat /dev/sdc2 rw,sync\n",
+        original + "4 1 8:19 / /mnt/transfer rw,nodev,nosuid,noexec,sync "
+                   "- vfat /dev/sdc2 rw,sync\n",
         encoding="utf-8",
     )
     assert not runtime_audit(**kwargs)[0]
 
-    # Missing live sysfs evidence cannot be treated as proof of independent media.
     (live["sys_dev_block"] / "8:34").unlink()
     mountinfo.write_text(
-        original + "4 1 8:34 / /mnt/transfer rw,nodev,nosuid,noexec,sync - vfat /dev/sdc2 rw,sync\n",
+        original + "4 1 8:34 / /mnt/transfer rw,nodev,nosuid,noexec,sync "
+                   "- vfat /dev/sdc2 rw,sync\n",
         encoding="utf-8",
     )
     assert not runtime_audit(**kwargs)[0]
