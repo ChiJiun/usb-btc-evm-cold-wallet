@@ -245,7 +245,7 @@ def test_untrusted_release_ref_is_rejected_before_download(failure):
 def test_binary_substitution_is_rejected_before_attestation():
     fake = FakeGitHub()
     fake.binary = b"tampered release asset"
-    with pytest.raises(ReleaseVerificationError, match="SHA256SUMS"):
+    with pytest.raises(ReleaseVerificationError, match="digest mismatch"):
         verify_release(TAG, COMMIT, ASSET, run=fake)
     assert not any(a[:2] == ["attestation", "verify"] for a in fake.calls)
 
