@@ -189,6 +189,9 @@ def gate_errors(env: dict[str, str]) -> list[str]:
     # Native MetaMask QR browser, Keyring, and Python-signer interop are mandatory
     # whenever executable code is changed, never a silently skippable CI job.
     require("NATIVE_QR", "success" if code == "true" else "skipped")
+    # The real Windows EXE boot/API smoke is a required reusable workflow,
+    # including for cross-platform Python-only changes.
+    require("WINDOWS_PORTABLE", "success" if code == "true" else "skipped")
 
     require(
         "WHEEL_SMOKE",

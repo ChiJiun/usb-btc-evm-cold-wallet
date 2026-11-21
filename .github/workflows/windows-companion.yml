@@ -1,0 +1,81 @@
+name: Windows portable Companion
+
+on:
+  # Called by .github/workflows/ci.yml and gated by CI / Required.
+  # Manual build remains available on the default branch for review artifacts.
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-portable-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-portable:
+    name: Windows Portable EXE / real HTTP smoke
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12 x64
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+
+      - name: Install project and pinned bundler
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check --no-input .
+          python -m pip install --disable-pip-version-check --no-input "pyinstaller==6.22.3"
+          python -m pip check
+
+      - name: Build Windows x64 single EXE
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --console --name USBColdCompanion --paths src --exclude-module usb_cold_wallet.vault --exclude-module usb_cold_wallet.keys --exclude-module usb_cold_wallet.evm --exclude-module usb_cold_wallet.btc --exclude-module usb_cold_wallet.recovery --exclude-module usb_cold_wallet.cli --exclude-module usb_cold_wallet.gui --exclude-module usb_cold_wallet.gui_qr_bridge --exclude-module usb_cold_wallet.policy --exclude-module usb_cold_wallet.review --exclude-module usb_cold_wallet.signer_session --exclude-module usb_cold_wallet.qr_cli --exclude-module usb_cold_wallet.qr_workflow --exclude-module usb_cold_wallet.qr_session --exclude-module usb_cold_wallet.keystone_public --add-data "src/usb_cold_wallet/companion_static;usb_cold_wallet/companion_static" scripts/windows_companion.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify actual EXE archive excludes offline signer modules
+        shell: pwsh
+        run: |
+          python scripts/check_windows_companion_archive.py dist/USBColdCompanion.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Smoke actual EXE, browser UI and API isolation
+        shell: pwsh
+        run: |
+          python scripts/smoke_windows_companion.py dist/USBColdCompanion.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/smoke_windows_companion_flow.py dist/USBColdCompanion.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Record executable checksum and build provenance
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist/USBColdCompanion.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  USBColdCompanion.exe" | Out-File -FilePath dist/SHA256SUMS.txt -Encoding ascii
+          python -m pip freeze --all | Out-File -FilePath dist/windows-build-dependencies.txt -Encoding utf8
+          python -m PyInstaller --version | Out-File -FilePath dist/pyinstaller-version.txt -Encoding ascii
+          "commit=${{ github.sha }}" | Out-File -FilePath dist/SOURCE.txt -Encoding ascii
+          "workflow_run=${{ github.run_id }}" | Out-File -FilePath dist/SOURCE.txt -Append -Encoding ascii
+
+      - name: Upload unsigned review artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Windows-Portable-Companion-unsigned
+          path: |
+            dist/USBColdCompanion.exe
+            dist/SHA256SUMS.txt
+            dist/SOURCE.txt
+            dist/windows-build-dependencies.txt
+            dist/pyinstaller-version.txt
+          retention-days: 7
+          if-no-files-found: error
