@@ -14,7 +14,8 @@ from pathlib import Path
 import subprocess
 from unittest.mock import patch
 
-from usb_cold_wallet import vault
+from usb_cold_wallet import vault, policy
+from usb_cold_wallet.keys import root_from_mnemonic
 
 
 PAYLOAD = b'{"kind":"evm-signed","public_test_only":true}\n'
@@ -117,10 +118,35 @@ def validate(mount: Path) -> None:
     assert json.loads((mount / "wallet.vault").read_text()) == VAULT
     assert_no_partial(mount)
 
+    # Exercise the production encrypted Policy writer on this exact VFAT
+    # mount, including Linux flock(), create-only, digest CAS and replace().
+    # This widely known BIP39 test fixture must NEVER be used with funds.
+    root = root_from_mnemonic("abandon " * 11 + "about")
+    password = "public-test-policy-passphrase-only"
+    profile_path = mount / "wallet.policy"
+    initial = policy.default_profile(root)
+    policy.save_profile(profile_path, initial, root, password)
+    first_hash = hashlib.sha256(profile_path.read_bytes()).hexdigest()
+    updated = policy.set_limit(initial, root, "btc_max_fee_sats", 123)
+    policy.save_profile(profile_path, updated, root, password,
+                        replace=True, expected_sha256=first_hash)
+    second_hash = hashlib.sha256(profile_path.read_bytes()).hexdigest()
+    assert second_hash != first_hash
+    assert policy.load_profile(profile_path, root, password,
+                               expected_sha256=second_hash) == updated
+    try:
+        policy.save_profile(profile_path, initial, root, password,
+                            replace=True, expected_sha256=first_hash)
+    except ValueError as exc:
+        assert "Stale policy" in str(exc)
+    else:
+        raise AssertionError("Stale policy overwrote FAT32 profile")
+    assert not list(mount.glob(".policy-*.partial"))
+
     # Record a checksum for verification after an actual unmount/remount.
     fingerprints = {
         filename: hashlib.sha256((mount / filename).read_bytes()).hexdigest()
-        for filename in ("Signed.JSON", "short.json", "recovery.json", "wallet.vault")
+        for filename in ("Signed.JSON", "short.json", "recovery.json", "wallet.vault", "wallet.policy")
     }
     (mount / ".verification-sha256.json").write_text(
         json.dumps(fingerprints, sort_keys=True), encoding="ascii")
@@ -147,7 +173,19 @@ def validate_insecure_mount(mount: Path) -> None:
         raise AssertionError("Unsafe VFAT mount allowed a signed export")
     assert not path.exists()
     assert_no_partial(mount)
-    print("VFAT insecure umask=0022 correctly rejected before staging", flush=True)
+    # Policy staging must share the same strict mount security invariant.
+    root = root_from_mnemonic("abandon " * 11 + "about")
+    try:
+        policy.save_profile(mount / "deny-policy.profile",
+                            policy.default_profile(root), root,
+                            "public-test-policy-passphrase-only")
+    except ValueError as exc:
+        assert "signer-private" in str(exc), exc
+    else:
+        raise AssertionError("Unsafe FAT32 directory allowed encrypted policy")
+    assert not (mount / "deny-policy.profile").exists()
+    assert not list(mount.glob(".policy-*.partial"))
+    print("VFAT insecure umask=0022 rejected for signed export and policy", flush=True)
 
 
 def validate_remount(mount: Path) -> None:

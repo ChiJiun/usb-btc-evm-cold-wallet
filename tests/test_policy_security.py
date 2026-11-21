@@ -35,7 +35,8 @@ def test_encrypted_policy_rollback_requires_independent_anchor(tmp_path):
     assert load_profile(policy, ROOT, PASSWORD, expected_sha256=original_digest) == old
 
     newer = set_limit(old, ROOT, "evm_max_value_wei", 1)
-    save_profile(policy, newer, ROOT, PASSWORD, replace=True)
+    save_profile(policy, newer, ROOT, PASSWORD, replace=True,
+                 expected_sha256=original_digest)
     latest_digest = hashlib.sha256(policy.read_bytes()).hexdigest()
     assert latest_digest != original_digest
     with pytest.raises(ValueError, match="corrupted or mismatched"):
