@@ -21,12 +21,12 @@ def _publish(tmp_path: Path, filename="signed.json", payload=b'{"test":true}\n')
         os.close(parent)
 
 
-@pytest.mark.parametrize("mode", [0o720, 0o707, 0o777])
+@pytest.mark.parametrize("mode", [0o720, 0o707, 0o750, 0o755, 0o777])
 def test_atomic_export_refuses_other_writers_before_creating_stage(tmp_path, mode):
     original_mode = tmp_path.stat().st_mode & 0o777
     tmp_path.chmod(mode)
     try:
-        with pytest.raises(PermissionError, match="not writable by group/others"):
+        with pytest.raises(PermissionError, match="signer-private directory"):
             _publish(tmp_path)
         assert not (tmp_path / "signed.json").exists()
         assert not list(tmp_path.glob(".usbwallet-*.partial"))

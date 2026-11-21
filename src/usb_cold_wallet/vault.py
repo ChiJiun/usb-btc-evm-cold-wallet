@@ -103,10 +103,10 @@ def _require_private_export_directory(parent_fd: int) -> None:
     info = os.fstat(parent_fd)
     if (not stat.S_ISDIR(info.st_mode)
             or info.st_uid != os.geteuid()
-            or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            or info.st_mode & (stat.S_IRWXG | stat.S_IRWXO)):
         raise PermissionError(
             errno.EACCES,
-            "Atomic export needs a signer-owned directory not writable by group/others",
+            "Atomic export needs a signer-private directory (mode 0700)",
         )
 
 

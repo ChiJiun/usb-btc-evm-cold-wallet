@@ -192,8 +192,9 @@ transaction inclusion. No RPC or network backend is implemented.
   Secure deletion is not promised.
 
   **Concurrent modification boundary:** The signer checks that the target
-  directory is owned by its effective UID and is not group/other-writable
-  before creating any staging file. The production VFAT mount must use
+  directory is owned by its effective UID and completely inaccessible to
+  group/other identities (mode `0700`) before creating any staging file.
+  The production VFAT mount must use
   `uid/gid` owned by the signer and `dmask=0077` / `umask=0077`, with no
   other process of the **same UID/root** allowed to write there while signing.
   A FAT32 directory has no per-file permissions; malicious code running with
