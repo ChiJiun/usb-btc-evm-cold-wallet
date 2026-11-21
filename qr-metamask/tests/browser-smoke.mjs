@@ -224,5 +224,35 @@ test('built browser bundle passes CSP and native QR pairing/request/signed respo
   await page.locator('#verify-address').click();
   await page.getByText('MetaMask 選取地址與離線可簽地址不同', {exact:false}).waitFor();
   assert.equal(await page.locator('#download').isDisabled(), true);
+
+  // Simulate Chromium's BFCache lifecycle with an active, authorized request:
+  // pagehide + persisted pageshow must revoke access without a full reload.
+  await page.locator('#metamask-address').fill(publicInfo.address);
+  await page.locator('#verify-address').click();
+  await page.getByText('MetaMask 所選地址與離線可簽地址完全相同', {exact:false}).waitFor();
+  await page.locator('#ur-input').fill(framesFromUr(request, 220, 10).join('\n'));
+  await page.locator('#parse').click();
+  assert.equal(await page.locator('#download').isEnabled(), true);
+  assert.equal(await page.locator('#reply').isEnabled(), true);
+  await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true}));
+    window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}));
+  });
+  for (const id of ['download','signed-file','reply','scan','parse']) {
+    assert.equal(await page.locator('#'+id).isDisabled(), true,
+      id+' must be disabled after a BFCache page lifecycle');
+  }
+  assert.equal(await page.locator('#qr').isHidden(), true);
+  assert.equal(await page.locator('#qr').getAttribute('src'), null);
+  assert.equal(await page.locator('#metamask-address').inputValue(), '');
+  assert.match(await page.locator('#intent').textContent(), /尚無交易/);
+  // An old signed file or unconfirmed address cannot unlock the stale session.
+  await page.locator('#metamask-address').fill(publicInfo.address);
+  assert.equal(await page.locator('#download').isDisabled(), true);
+  assert.equal(await page.locator('#parse').isDisabled(), true);
+  await page.locator('#verify-address').click();
+  assert.equal(await page.locator('#parse').isEnabled(), true,
+    'The restored page may only start a fresh request after re-verification');
+  assert.equal(await page.locator('#download').isDisabled(), true);
   assert.deepEqual(errors, [], 'No console or uncaught browser runtime errors');
 });

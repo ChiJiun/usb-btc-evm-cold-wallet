@@ -240,4 +240,16 @@ $('reply').addEventListener('click',()=>guarded(async()=>{
 $('cancel').addEventListener('click',()=>{
   clearSession();setStatus('已清除目前請求與 QR 動畫。若 MetaMask 尚在等待，請在 MetaMask 取消該交易。');
 });
-window.addEventListener('pagehide',()=>{publicImporter.cancel();stopCamera();qrDisplay.clear();});
+function revokePageSession() {
+  // BFCache may preserve the entire JS heap and form controls. Never allow
+  // browser Back/Forward to resurrect a previously authorized transaction.
+  publicImporter.cancel();
+  clearSession();
+  invalidateAddressConfirmation();
+  $('metamask-address').value='';
+  setStatus('頁面已離開／還原，待簽交易已失效；請重新核對 MetaMask 帳戶。');
+}
+window.addEventListener('pagehide', revokePageSession);
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted) revokePageSession();
+});
