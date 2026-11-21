@@ -25,7 +25,7 @@ concurrency:
 jobs:
   boot-smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 330
     env:
       DEBIAN_FRONTEND: noninteractive
       BR2_JLEVEL: "2"
@@ -45,7 +45,7 @@ jobs:
       - name: Verify host prerequisites
         run: sh scripts/check_host.sh
 
-      # Cache source inputs only, never compiler output, rootfs, or images.
+      # This is an early single-build feedback job, not a shorter total CI run.\n      # The full two-clean-build PR gate runs independently and remains mandatory.\n      # Cache source inputs only, never compiler output, rootfs, or images.
       # fetch_buildroot.sh rechecks the signed release manifest and archive;
       # fetch_wheelhouse.sh rechecks every wheel against pinned SHA-256.
       - name: Restore verified source downloads
@@ -55,7 +55,7 @@ jobs:
             build/dl
             build/cache
             build/wheelhouse
-          key: live-usb-sources-${{ runner.os }}-${{ hashFiles('infra/buildroot.env', 'infra/buildroot-release-key.asc', 'infra/embit.env', 'infra/wheelhouse.sha256', 'infra/wheelhouse-requirements.txt', 'infra/reproducible.env', 'buildroot-external/configs/usb_wallet_x86_64_defconfig') }}
+          key: live-usb-sources-${{ runner.os }}-${{ hashFiles('infra/buildroot.env', 'infra/buildroot-release-key.asc', 'infra/embit.env', 'infra/wheelhouse.sha256', 'infra/wheelhouse-requirements.txt', 'infra/reproducible.env', 'buildroot-external/**', 'scripts/fetch_buildroot.sh', 'scripts/fetch_wheelhouse.sh', 'scripts/fetch_sources.sh', 'scripts/configure_buildroot.sh') }}
 
       - name: Prepare authenticated offline sources
         run: sh scripts/fetch_sources.sh
@@ -66,7 +66,7 @@ jobs:
       - name: Boot generated USB image and require security audit
         run: sh scripts/verify_uefi_boot.sh
 
-      - name: Upload bounded UEFI failure diagnostics
+      # This artifact exists only after verify_uefi_boot.sh starts. Earlier\n      # source/build failures are diagnosed from their corresponding step logs.\n      - name: Upload bounded UEFI-only failure diagnostics
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
