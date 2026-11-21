@@ -17,6 +17,7 @@ ALLOW = {
     "usb_cold_wallet.companion_web",
     "usb_cold_wallet.companion_core",
     "usb_cold_wallet.companion_btc",
+    "usb_cold_wallet.companion_envelope",
 }
 DENY = {
     "vault", "keys", "btc", "evm", "recovery", "cli", "gui", "gui_qr_bridge",
