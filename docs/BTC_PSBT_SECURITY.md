@@ -84,7 +84,7 @@ It retains inputs exposing previously unseen Python lines in `btc.py` and
 exercises `_read_psbt` plus the wallet-specific offline review policy. Every
 campaign **first executes the unmodified public valid PSBT** and fails if its
 full offline review is rejected. Additional parse-valid policy-denial seeds
-exercise wrong recipient amounts and excessive fees. The JSON report separately
+exercise unsupported `SIGHASH` types and unexpected input metadata. The JSON report separately
 counts `parser_accepted`, `parser_rejected`, `policy_accepted`, and
 `policy_rejected`; `baseline_policy_accepted` is an explicit success gate.
 The `cases` count includes initial seeds. Trace state is restored after every
