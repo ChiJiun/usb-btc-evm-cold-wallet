@@ -51,6 +51,9 @@ class TransactionIntent:
     max_fee_per_gas: int | None = None
     max_priority_fee_per_gas: int | None = None
     fee_rate: float | None = None
+    contract: str | None = None
+    method: str | None = None
+    deadline: int | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,7 @@ def default_profile(root) -> dict:
             "btc_max_fee_rate_sat_vb": DEFAULT_BTC_MAX_FEE_RATE,
         },
         "verified_addresses": [],
+        "contract_rules": [],
     }
 
 
@@ -109,7 +113,7 @@ def _bounded_integer(value: object, maximum: int) -> bool:
 
 
 def validate_profile(profile: object, root) -> dict:
-    if not isinstance(profile, dict) or set(profile) != {"version", "wallet_binding", "limits", "verified_addresses"}:
+    if not isinstance(profile, dict) or set(profile) not in ({"version", "wallet_binding", "limits", "verified_addresses"}, {"version", "wallet_binding", "limits", "verified_addresses", "contract_rules"}):
         raise ValueError("Invalid policy profile shape")
     if type(profile["version"]) is not int or profile["version"] != VERSION:
         raise ValueError("Unsupported policy version")
@@ -145,6 +149,27 @@ def validate_profile(profile: object, root) -> dict:
         if key in seen:
             raise ValueError("Duplicate verified address")
         seen.add(key)
+    # Contract permissions are wallet-bound, encrypted profile data, never RPC metadata.
+    from .evm_erc20 import checked_address, checked_uint
+    rules = profile.get("contract_rules", [])
+    if type(rules) is not list or len(rules) > 32:
+        raise ValueError("Invalid offline contract rules")
+    rule_ids = set()
+    for rule in rules:
+        if type(rule) is not dict or set(rule) != {"contract", "method", "counterparty", "max_amount", "expected_nonce"}:
+            raise ValueError("Invalid contract rule shape")
+        contract = checked_address(rule["contract"], "approved contract")
+        counterparty = checked_address(rule["counterparty"], "approved counterparty")
+        if contract != rule["contract"] or counterparty != rule["counterparty"]:
+            raise ValueError("Contract rule addresses must use checksum form")
+        if rule["method"] not in ("transfer", "approve"):
+            raise ValueError("Unsupported contract method")
+        checked_uint(rule["max_amount"], "contract maximum amount")
+        checked_uint(rule["expected_nonce"], "contract expected nonce")
+        identity = (contract, rule["method"], counterparty)
+        if identity in rule_ids:
+            raise ValueError("Duplicate contract rule")
+        rule_ids.add(identity)
     return profile
 
 
@@ -456,3 +481,37 @@ def decide(profile: dict, root, intent: TransactionIntent) -> PolicyDecision:
     if label is None:
         return PolicyDecision("REQUIRE_EXTRA_CONFIRMATION", ("Unverified recipient; compare full address offline",), None)
     return PolicyDecision("ALLOW_FOR_REVIEW", ("Verified address label; compare full address anyway",), label)
+
+
+def decide_erc20(profile: dict, root, payload: dict) -> tuple[dict | None, PolicyDecision]:
+    """Review raw calldata using independently configured wallet-bound offline rules.
+
+    This returns a manual-review decision only; native sign_evm remains unchanged.
+    """
+    from .evm_erc20 import parse_erc20_calldata, review_erc20_transaction, checked_address
+    try:
+        validate_profile(profile, root)
+        decoded = parse_erc20_calldata(payload["data"])
+        contract = checked_address(payload["to"], "transaction contract")
+        method = decoded["method"]
+        party = decoded["recipient"] if method == "transfer" else decoded["spender"]
+        quantity = decoded["amount"] if method == "transfer" else decoded["allowance"]
+        matching = [r for r in profile.get("contract_rules", []) if
+                    (r["contract"], r["method"], r["counterparty"]) == (contract, method, party)]
+        if len(matching) != 1:
+            raise ValueError("No matching independently configured offline contract rule")
+        rule = matching[0]
+        if quantity > rule["max_amount"]:
+            raise ValueError("Token amount or allowance exceeds offline rule")
+        review = review_erc20_transaction(
+            payload, expected_contract=rule["contract"],
+            expected_counterparty=rule["counterparty"], expected_amount=quantity,
+            expected_method=rule["method"], expected_nonce=rule["expected_nonce"],
+            trusted_contracts=[r["contract"] for r in profile["contract_rules"]],
+            max_fee_wei=profile["limits"]["evm_max_fee_wei"])
+        return review, PolicyDecision(
+            "REQUIRE_EXTRA_CONFIRMATION",
+            ("Allowlisted ERC-20 operation requires full offline human review; contract signing remains disabled",),
+            None)
+    except (ValueError, TypeError, KeyError, OverflowError) as exc:
+        return None, PolicyDecision("DENY", (str(exc),), None)
