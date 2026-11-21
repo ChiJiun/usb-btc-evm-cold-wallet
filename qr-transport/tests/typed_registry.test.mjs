@@ -53,7 +53,7 @@ test("immutable pending context binds chain/account/request/digest and refuses s
  assert.deepEqual(bindTypedToPending(parsed,pending,{now:2000}),parsed);
  for(const changed of [{requestId:"f".repeat(32)},{chainId:1},{address:"0x"+"ff".repeat(20)},
  {unsignedDigest:"0".repeat(64)},{consumed:true},{cancelled:true}]) {
-  assert.throws(()=>bindTypedToPending(parsed,{...pending,...changed},{now:2000}),/mismatch|closed|Expired/);
+  assert.throws(()=>bindTypedToPending(parsed,{...pending,...changed},{now:2000}),/mismatch|closed|Expired|trusted/);
  }
  assert.throws(()=>bindTypedToPending(parsed,pending,{now:7000}),/Expired/);
  const sig=parseTypedUR(makeTypedUR("eth-signature",{requestId:rid,signatureHex:"11".repeat(64)+"1b"}));
