@@ -836,7 +836,7 @@ class OfflineReviewApp:
             name = path.name
         else:
             parent, name = self._transfer_parent_fd(path)
-        stage = f".{name}.{secrets.token_hex(12)}.partial"
+        stage = f".usbwallet-{secrets.token_hex(16)}.partial"
         fd = None
         identity = None
         try:
