@@ -44,9 +44,9 @@ USB 內另外分出**加密錢包儲存區**及**交易交換區**，讓兩個�
 
 ### 3. 轉出 BTC 或 EVM 資產
 
-<text>完整的單機、單 USB 操作路徑：</text>
+完整的單機、單 USB 操作路徑：
 
-\`\`\`text
+```text
 Windows：開啟 USB 上的 Companion
     │
     ├─ 選擇 BTC / EVM、收款地址、金額
@@ -67,7 +67,7 @@ Windows：開啟 USB 上的 Companion
     ├─ Companion 匯入簽署結果
     ├─ 驗證帳戶、鏈別與交易內容是否符合原請求
     └─ 點選「廣播交易」→ 顯示 TxID / Tx Hash 與狀態
-\`\`\`
+```
 
 **Bitcoin** 使用 watch-only 帳戶建立 PSBT，離線端核對 UTXO、收款地址、找零與手續費後簽名；連網端完成交易並廣播。
 
@@ -79,11 +79,11 @@ Windows：開啟 USB 上的 Companion
 
 如果有一台專用離線電腦，冷錢包 USB 可以一直留在那台設備上，不必每筆交易都重新開機。
 
-\`\`\`text
+```text
 連網電腦 / Online Companion                離線電腦 / USB Signer
 建立 BTC / EVM 交易          ── QR ──►    掃描、解析、核對交易
 驗證簽章並廣播交易           ◄─ QR ───    人工確認後簽章
-\`\`\`
+```
 
 支援方向包括：
 
@@ -104,7 +104,7 @@ Windows：開啟 USB 上的 Companion
 
 ## 系統架構
 
-\`\`\`text
+```text
                      冷錢包 USB
           ┌──────────────────────────┐
           │ UEFI / Buildroot Live OS │ → 離線簽章介面
@@ -112,7 +112,7 @@ Windows：開啟 USB 上的 Companion
           │ 交易交換區               │ → 待簽請求、簽章結果
           │ Windows Portable App     │ → 連網端交易管理
           └──────────────────────────┘
-\`\`\`
+```
 
 私鑰簽章與交易廣播分處不同執行環境；普通 USB 的安全性仍依賴離線主機及開機映像的可信程度。設計與信任邊界詳見[威脅模型](docs/THREAT_MODEL.md)。
 
@@ -120,7 +120,7 @@ Windows：開啟 USB 上的 Companion
 
 本 README 描述**規劃完成後的產品流程**，並非宣稱所有功能已在目前版本交付。
 
-目前 \`main\` 為 **v0.1.0 研究原型**，已有 Bitcoin testnet PSBT v0 與 Ethereum Sepolia EIP-1559 原生轉帳的**離線 CLI 簽章核心**、加密 Vault、公開帳戶輸出及 CI 安全檢查。可開機 Live USB、Windows Portable Companion、交易 GUI、QR、MetaMask 整合及單 USB 跨開機流程，正在各功能分支整合與驗證；實體硬體 E2E 驗收尚未完成。
+目前 `main` 為 **v0.1.0 研究原型**，已有 Bitcoin testnet PSBT v0 與 Ethereum Sepolia EIP-1559 原生轉帳的**離線 CLI 簽章核心**、加密 Vault、公開帳戶輸出及 CI 安全檢查。可開機 Live USB、Windows Portable Companion、交易 GUI、QR、MetaMask 整合及單 USB 跨開機流程，正在各功能分支整合與驗證；實體硬體 E2E 驗收尚未完成。
 
 目前以 **Bitcoin testnet / Ethereum Sepolia** 進行開發驗證。主網及真實資產使用須待獨立安全審查與完整發行驗收。
 
@@ -130,13 +130,13 @@ Windows：開啟 USB 上的 Companion
 
 目前離線簽章核心的開發環境：Python 3.12+。
 
-\`\`\`bash
+```bash
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e ".[dev]"
 pytest
 usb-cold-wallet --help
-\`\`\`
+```
 
 [USB 製作與操作](docs/USB_SETUP.md) · [安全政策](SECURITY.md) · [威脅模型](docs/THREAT_MODEL.md) · [CI 與供應鏈](docs/CI_SECURITY.md) · [開源技術參考](docs/OPEN_SOURCE_REFERENCES.md)
 
