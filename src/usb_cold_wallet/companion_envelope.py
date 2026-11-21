@@ -79,7 +79,7 @@ def _validate_payload(kind, payload):
             raw = base64.b64decode(payload, validate=True)
         except (ValueError, binascii.Error) as exc:
             raise ValueError("Invalid BTC PSBT base64") from exc
-        if not raw.startswith(b"psbt\\xff") or len(raw) > 130_000:
+        if not raw.startswith(b"psbt\xff") or len(raw) > 130_000:
             raise ValueError("Invalid BTC PSBT framing")
     elif kind in ("evm-signed", "btc-signed", "watch-only"):
         if type(payload) is not dict:

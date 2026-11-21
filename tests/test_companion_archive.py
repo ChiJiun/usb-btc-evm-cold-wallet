@@ -10,6 +10,9 @@ PUBLIC = "\n".join([
     "'usb_cold_wallet.companion_web'",
     "'usb_cold_wallet.companion_portable'",
     "'usb_cold_wallet.companion_envelope'",
+    "'usb_cold_wallet.companion_static.index.html'",
+    "'usb_cold_wallet.companion_static.companion.css'",
+    "'usb_cold_wallet.companion_static.companion.js'",
 ])
 
 
@@ -34,3 +37,12 @@ def test_unknown_local_package_module_is_forbidden():
 def test_missing_required_public_module_is_error():
     with pytest.raises(AssertionError, match="Missing watch-only"):
         examine_listing(PUBLIC.replace("'usb_cold_wallet.companion_btc'", ""))
+
+
+@pytest.mark.parametrize("unapproved", [
+    "companion_static.extra.js", "companion_static.secret.py",
+    "companion_static.recovery.json", "companion_static.index.hta",
+])
+def test_frontend_asset_allowlist_is_exact(unapproved):
+    with pytest.raises(AssertionError, match="Offline or unknown"):
+        examine_listing(PUBLIC + "\n" + repr("usb_cold_wallet." + unapproved))
