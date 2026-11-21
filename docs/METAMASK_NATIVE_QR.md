@@ -57,7 +57,7 @@ MetaMask 原生的 **QR Hardware Wallet Device** 整合已認識以下
              │
        usb-cold-wallet sign-evm
           人工獨立核對收款地址 + Wei
-          在實體離線端輸入 SIGN SEPOLIA
+          在實體離線端輸入包含收款地址尾碼及 Wei 的確認字串
              │
          signed.json
              │
@@ -78,6 +78,10 @@ MetaMask 原生的 **QR Hardware Wallet Device** 整合已認識以下
    usb-cold-wallet --vault /offline/wallet.vault \
      export-keystone-public --out /offline/public-evm.json
    ```
+
+   此命令會要求在離線終端明確確認 `EXPORT PUBLIC EVM ACCOUNT`；
+   輸出的擴充公鑰與 chain code 可推導同帳戶其他公開地址，
+   應避免將檔案放上公開網站。
 
 2. **在可信建置環境**準備靜態前端（建置機應沒有私鑰／Vault）：
 
@@ -118,8 +122,9 @@ MetaMask 原生的 **QR Hardware Wallet Device** 整合已認識以下
      --out /offline/sepolia-signed.json
    ```
 
-   CLI 會要求人工輸入 `SIGN SEPOLIA`。不支援沒有本機確認
-   的自動簽章、不支援 mainnet／EIP-712／ERC-20／盲簽。
+   CLI 會顯示 Sepolia、完整收款地址、完整 Wei 與費用，並要求人工輸入
+   `SEPOLIA <收款地址後 8 碼> <完整十進位 Wei>`（以 CLI 實際顯示為準）。
+   不支援沒有本機確認的自動簽章、不支援 mainnet／EIP-712／ERC-20／盲簽。
 
 6. 將 `sepolia-signed.json` 匯入離線 QR 頁面，按「檢查後產生
    eth-signature QR」。當所有交易欄位及簽章恢復地址都符合本次
@@ -140,6 +145,8 @@ MetaMask 原生的 **QR Hardware Wallet Device** 整合已認識以下
 - 鏡頭僅掃描登入本機的 `localhost` QR 頁面，不使用雲端網站，
   也不透過此處呼叫任何 RPC。線上 MetaMask 處理費用估計、交易
   廣播和狀態；其鏈上資料可受到惡意 RPC 影響。
+- 攝影機啟動需等權限回應；按停止／取消後若先前的啟動請求才完成，
+  會立即關閉遲到的攝影機控制物件，過期掃描回呼不能接受交易。
 - MetaMask 帳戶列舉會呈現更多公開衍生地址，**不代表它們目前
   能簽署**。只有 index 0 經過本版完整測試；其他地址切勿入金。
 - 目前一般 CI 已要求跑 Node 24 MetaMask QR Keyring／Python 跨語言簽署測試、
