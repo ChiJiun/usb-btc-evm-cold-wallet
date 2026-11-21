@@ -172,7 +172,7 @@ def main(argv=None):
     evm.add_argument("--wei", required=True, type=int, help="Independently verified value")
     evm.add_argument("--out", type=Path, required=True)
     evm.add_argument("--policy", type=Path, help="Must equal <vault>.policy")
-    evm.add_argument("--expected-policy-sha256", required=True,
+    evm.add_argument("--expected-policy-sha256",
                      help="Required: independently recorded current encrypted policy SHA-256")
 
     btc = sub.add_parser("sign-btc", help="Review and sign Bitcoin testnet P2WPKH PSBT")
@@ -185,7 +185,7 @@ def main(argv=None):
     btc.add_argument("--change-index", type=int, default=None)
     btc.add_argument("--out", type=Path, required=True)
     btc.add_argument("--policy", type=Path, help="Must equal <vault>.policy")
-    btc.add_argument("--expected-policy-sha256", required=True,
+    btc.add_argument("--expected-policy-sha256",
                      help="Required: independently recorded current encrypted policy SHA-256")
 
     policy = sub.add_parser("policy", help="Manage encrypted offline wallet policy and verified addresses")
