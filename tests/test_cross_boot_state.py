@@ -201,7 +201,7 @@ def test_online_state_survives_restarts_and_prevents_double_broadcast(tmp_path):
     assert store.broadcasted(request, signed["transaction_hash"]).state == "BROADCASTED"
     store = PendingRequestStore(root)
     assert store.get(request["requestId"]).state == "BROADCASTED"
-    with pytest.raises(ValueError, match="transition"):
+    with pytest.raises(ValueError, match="durable pre-broadcast|transition"):
         store.broadcasted(request, signed["transaction_hash"])
 
 
@@ -288,10 +288,25 @@ def test_replay_ledger_rejects_same_btc_outpoint_with_changed_payment(tmp_path):
         first, expected_account=ROOT.my_fingerprint.hex(), trusted_time=100
     )
     parsed = psbt.PSBT.parse(base64.b64decode(btc_psbt()))
-    parsed.tx.vout[0].value += 1
-    parsed.tx.vout[1].value -= 1
+    changed_tx = transaction.Transaction(
+        version=parsed.tx.version,
+        vin=list(parsed.tx.vin),
+        vout=[
+            transaction.TransactionOutput(
+                60_001, script.address_to_scriptpubkey(BTC_RECIPIENT)
+            ),
+            transaction.TransactionOutput(
+                88_499, parsed.tx.vout[1].script_pubkey
+            ),
+        ],
+        locktime=parsed.tx.locktime,
+    )
+    changed_psbt = psbt.PSBT(changed_tx)
+    changed_psbt.inputs[0].witness_utxo = parsed.inputs[0].witness_utxo
+    changed_psbt.inputs[0].non_witness_utxo = parsed.inputs[0].non_witness_utxo
+    changed_psbt.inputs[0].bip32_derivations = dict(parsed.inputs[0].bip32_derivations)
     changed = package_v2_request(
-        "btc-request", parsed.to_base64(), request_id="82" * 16,
+        "btc-request", changed_psbt.to_base64(), request_id="82" * 16,
         account=ROOT.my_fingerprint.hex(), recipient=BTC_RECIPIENT, amount=60_001,
         expiry={"mode": "trusted-time", "notAfter": 200},
     )
