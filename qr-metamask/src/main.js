@@ -1,11 +1,13 @@
 import { BrowserQRCodeReader } from '@zxing/browser';
 import QRCode from 'qrcode';
+import { CameraLifecycle } from './camera_lifecycle.mjs';
 import { makePairingUr, decodeMetaMaskRequest, makeSignedResponseUr,
   framesFromUr, unsignedJsonForOffline, validatePublic, MAX_FRAMES } from './adapter.mjs';
 
 const $ = (id) => document.getElementById(id);
 const setStatus = (text) => { $('status').textContent = String(text); };
-let publicInfo = null, active = null, used = false, qrTimer = null, videoControls = null;
+let publicInfo = null, active = null, used = false, qrTimer = null;
+const camera = new CameraLifecycle();
 const collected = [];
 const decoder = new BrowserQRCodeReader();
 
@@ -17,8 +19,7 @@ async function boundedText(file, max = 120_000) {
   return file.text();
 }
 function stopCamera() {
-  videoControls?.stop?.();
-  videoControls = null;
+  camera.cancel();
   $('camera').hidden = true;
   $('stop').disabled = true;
 }
@@ -104,24 +105,37 @@ $('pair').addEventListener('click',()=>guarded(async()=>{
 }));
 $('scan').addEventListener('click',()=>guarded(async()=>{
   if(!publicInfo || active) throw Error('需先匯入公開帳戶，且沒有現存待處理交易');
-  if(videoControls) return;
+  // Never start a second camera session while the previous permission dialog
+  // is still pending. Stop/Cancel invalidates callbacks from that dialog.
+  const epoch=camera.begin();
+  if(epoch===null) return;
   collected.splice(0);
   $('camera').hidden=false;
   $('stop').disabled=false;
-  videoControls=await decoder.decodeFromVideoDevice(undefined,$('camera'),(result,err,controls)=>{
-    if(!result) return;
-    const piece=result.getText().trim();
-    if(!piece.toLowerCase().startsWith('ur:eth-sign-request/')) return;
-    if(!collected.includes(piece)) collected.push(piece);
-    if(collected.length>MAX_FRAMES) { stopCamera();setStatus('QR 幀數超過上限');return; }
-    try {
-      acceptRequest(collected);
-      controls.stop();
-    } catch(e) {
-      if(!/UR frames incomplete/.test(e.message)) setStatus('掃描尚未成功：'+e.message);
-    }
-  });
-  setStatus('攝影機啟動，請掃描 MetaMask 的 eth-sign-request QR。');
+  try {
+    const controls=await decoder.decodeFromVideoDevice(undefined,$('camera'),(result,err,readerControls)=>{
+      if(!camera.isCurrent(epoch)) { readerControls?.stop?.(); return; }
+      if(!result) return;
+      const piece=result.getText().trim();
+      if(!piece.toLowerCase().startsWith('ur:eth-sign-request/')) return;
+      if(!collected.includes(piece)) collected.push(piece);
+      if(collected.length>MAX_FRAMES) { stopCamera();setStatus('QR 幀數超過上限');return; }
+      try {
+        acceptRequest(collected);
+        readerControls?.stop?.();
+      } catch(e) {
+        if(!/UR frames incomplete/.test(e.message)) setStatus('掃描尚未成功：'+e.message);
+      }
+    });
+    if(!camera.attach(epoch,controls)) return;
+    setStatus('攝影機啟動，請掃描 MetaMask 的 eth-sign-request QR。');
+  } catch(err) {
+    // A canceled start may reject after a newer scan is active; do not
+    // overwrite that session's UI or leave a live camera behind.
+    if(!camera.isCurrent(epoch)) return;
+    stopCamera();
+    throw err;
+  }
 }));
 $('stop').addEventListener('click',()=>{stopCamera();setStatus('已停止掃描。');});
 $('parse').addEventListener('click',()=>guarded(async()=>{
