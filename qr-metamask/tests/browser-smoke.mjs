@@ -69,9 +69,11 @@ test('built browser bundle passes CSP and native QR pairing/request/signed respo
   t.after(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
+  const diagnostics = [];
   page.on('pageerror', (err) => errors.push(err.message));
   page.on('console', (msg) => {
     if (msg.type() === 'error') errors.push(msg.text());
+    if (msg.type() === 'warning') diagnostics.push(msg.text());
   });
   await page.goto(web.address, { waitUntil: 'networkidle' });
   assert.match(await page.locator('h1').textContent(), /MetaMask/);
@@ -109,7 +111,7 @@ test('built browser bundle passes CSP and native QR pairing/request/signed respo
   await page.waitForTimeout(1500);
   const replyStatus = await page.locator('#status').textContent();
   assert.match(replyStatus, /簽章符合本次 MetaMask request/,
-    'Browser signing status: ' + replyStatus + '; errors: ' + errors.join('; '));
+    'Browser signing status: ' + replyStatus + '; errors: ' + errors.join('; ') + '; stack: ' + diagnostics.join('; '));
   assert.match(await page.locator('#qr-type').textContent(), /eth-signature/);
   assert.match(await page.locator('#qr').getAttribute('src'), /^data:image\/png;base64,/);
 

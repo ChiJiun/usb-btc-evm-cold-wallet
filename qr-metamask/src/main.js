@@ -18,7 +18,10 @@ const collected = [];
 const decoder = new BrowserQRCodeReader();
 
 async function guarded(fn) {
-  try { await fn(); } catch (err) { setStatus('拒絕／錯誤：' + (err?.message || String(err))); }
+  try { await fn(); } catch (err) {
+    console.warn('QR caught error stack:', err?.stack || err);
+    setStatus('拒絕／錯誤：' + (err?.message || String(err)));
+  }
 }
 async function boundedText(file, max = 120_000) {
   if (!file || file.size <= 0 || file.size > max) throw Error('只接受大小有限的 JSON 檔案');
