@@ -1,0 +1,80 @@
+name: Live USB image verification
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/live-usb-build.yml"
+      - "buildroot-external/**"
+      - "infra/**"
+      - "scripts/**"
+      - "src/**"
+      - "tests/**"
+      - "Makefile"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-usb-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-reproduce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      BR2_JLEVEL: "2"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Show resource budget
+        run: |
+          uname -m
+          nproc
+          free -h
+          df -h .
+
+      - name: Install build-host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential make gcc g++ patch rsync perl tar cpio file bc gawk gzip \
+            bzip2 xz-utils python3 python3-venv python3-pip curl wget gnupg \
+            coreutils findutils diffutils unzip ca-certificates qemu-system-x86 ovmf
+
+      - name: Verify host prerequisites
+        run: |
+          sh scripts/check_host.sh
+          df -h .
+
+      - name: Prepare authenticated offline sources
+        run: sh scripts/fetch_sources.sh
+
+      - name: Build image and verify reproducibility (two clean builds)
+        run: sh scripts/check_reproducible.sh
+
+      - name: Boot generated USB image using UEFI OVMF/QEMU (TCG)
+        run: sh scripts/verify_uefi_boot.sh
+
+      - name: Upload bounded UEFI failure diagnostics (test image only)
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: live-usb-uefi-failure
+          path: build/reproducibility/uefi-smoke.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload SHA-256 evidence (no wallet secrets or images)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: live-usb-build-hashes
+          path: build/reproducibility/*.sha256
+          if-no-files-found: ignore
+          retention-days: 7

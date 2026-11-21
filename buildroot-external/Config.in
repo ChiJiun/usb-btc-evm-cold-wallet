@@ -1,0 +1,1 @@
+source "$BR2_EXTERNAL_USB_WALLET_PATH/package/usb-wallet-app/Config.in"

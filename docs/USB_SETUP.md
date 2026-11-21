@@ -1,29 +1,212 @@
-# USB 製作與使用指南（尚無自動化 ISO Builder）
+# USB 製作與使用指南
 
-目前交付的是 Python CLI，**不是一鍵刷入即可開機的 ISO**。下列步驟為預定開發／測試流程；請先在測試網完成驗證。
+> **開發中的實際冷錢包產品；目前僅以測試網進行驗證。尚未通過實體 USB 安全驗收，請勿存放真實資產。**
 
-## USB 需求
+## 需要什麼
 
-- **USB-A（系統）**：8 GB 以上，燒錄官方 Linux Live ISO（例如 Ubuntu Desktop Live）。這會清除 USB-A 原有內容。
-- **USB-B（資料交換）**：儲存公開帳戶資料、未簽署的 PSBT/JSON、已簽署交易，**不可儲存 vault/seed**。
-- **離線 vault 媒體**：必須是只有離線環境使用的獨立加密持久儲存媒體/分區；早期測試請用第三支離線專用 USB，避免與 USB-B 混用。
-- 一台可從 USB 開機的電腦，並能在啟動前物理斷開所有網路。
+- **USB-A / Cold Wallet USB**：建議 8 GB 以上。會被完整刷寫成開機映像。
+- **USB-B / Transaction Transfer USB**：另一支 USB，只交換 unsigned / signed transaction；FAT32，Volume Label 設為 `TX_TRANSFER`。操作時只能插入一支此 label 的裝置。
+- **x86_64 UEFI 電腦**：作為真正的離線簽署電腦。
+- **另一台連網電腦**：watch-only、建立 unsigned transaction、廣播 signed transaction。
+- 紙本或金屬 recovery backup。
 
-一般隨身碟只能儲存金鑰檔案，不能自行執行簽署；此流程是由離線電腦完成簽署。
+USB-A 映像有兩個 GPT partition：
 
-## 安裝概觀
+1. `USBCOLD_EFI`：UEFI bootloader + kernel/initramfs。
+2. `COLD_VAULT`：只保存 AES-256-GCM 加密後的 `wallet.vault`。
 
-1. 在線上可信電腦下載官方 Linux ISO，校驗發行者提供的雜湊/簽章；用官方指南製作 USB-A（會格式化）。
-2. **在斷網前**下載 Python 套件與此 repo 的來源碼；將版本、雜湊與上游來源一併記錄，放在可信的安裝傳輸媒體。
-3. 將電腦完全關機；拔除 Ethernet、停用 Wi-Fi / Bluetooth、移除其他網路路徑；再從 USB-A 開啟 Live 系統，不掛載原本的硬碟。
-4. 離線建立 Python 虛擬環境。使用預先下載的 wheels 以 `pip --no-index --find-links` 安裝；**wheel 必須與離線主機的 Python 版本、CPU 架構、作業系統匹配**。
-5. 只在離線系統建立 vault；手抄 24 個助記詞並另外備份，確認能夠離線復原。
-6. 公開帳戶資訊轉給在線錢包，於線上準備 unsigned tx；將其放在 USB-B，回到離線主機核對並簽署，再將簽署結果帶回在線環境廣播。
-7. 簽署時留意：真實目標地址與金額應由可信且獨立的來源核對，不只是複製連網電腦顯示內容。
+Linux root filesystem 位於 RAM，不使用持久 root partition。
 
-## 首次使用的限制
+## 1. 建置 image
 
-- v0.1 沒有自帶只讀 Live ISO、自動建置輪子離線包、QR 模組，也沒有硬體可信螢幕。
-- 採用一般 Live OS，操作期間仍可能把機密寫入交換空間、USB persistence、磁碟、日誌、休眠檔。必須對啟動方式與儲存掛載方式做額外稽核。
-- 加密 vault 遺失、損壞或忘記密碼，唯一可用的復原方式是**外部保存的 BIP39 助記詞及其選用 passphrase**。重新產生 vault 的正式 CLI 尚未實作。
-- **不要把 `init` 實作上的旗標當作實體離線證明。**
+完整建置說明見 [BUILD.md](BUILD.md)。
+
+```bash
+make prepare-sources
+make image
+make verify
+```
+
+成功後：
+
+```
+build/output/images/usb-cold-wallet.img
+build/output/images/usb-cold-wallet.img.sha256
+```
+
+刷寫前再次驗證：
+
+```bash
+cd build/output/images
+sha256sum -c usb-cold-wallet.img.sha256
+```
+
+## 2. 刷寫 USB-A
+
+這一步會清除目標 USB 的所有資料。建議使用能顯示來源 image 與目標 removable device 的圖形工具，例如 Raspberry Pi Imager / balenaEtcher，避免手動選錯磁碟。
+
+目前 repository **不自動執行 destructive flash command**。
+
+刷完後，不要在日常連網電腦上建立或解鎖 wallet。
+
+## 3. 準備 USB-B
+
+將另一支、**與 USB-A 不同的實體裝置**格式化 FAT32，Volume Label 設為：
+
+```
+TX_TRANSFER
+```
+
+簽署時只允許接上一支 `TX_TRANSFER`。若出現多個同名裝置、來源與 boot USB 相同、不是 VFAT，或 mount source/options 不符，系統會 fail closed，不會猜測應使用哪支 USB。
+
+只允許以下類型資料出現在 USB-B：
+
+- 公開 watch-only 資訊
+- Bitcoin testnet unsigned PSBT
+- Sepolia unsigned transaction JSON
+- Issue #5 定義的 integrity-checked `btc-request` / `evm-request` JSON envelope
+- signed PSBT / signed raw transaction / signed exchange envelope
+
+**禁止放入：**
+
+- BIP39 mnemonic
+- BIP39 passphrase
+- `wallet.vault`
+- private key / WIF
+- Debug dump 或記憶體內容
+
+## 4. Boot offline signer
+
+1. 電腦完全關機。
+2. 拔除 Ethernet。
+3. 在 firmware/UEFI 停用 Wi-Fi、Bluetooth、PXE/network boot（硬體允許時）。
+4. 插入 USB-A。
+5. 從 UEFI boot menu 啟動 USB-A。
+
+Production kernel config 明確設定：
+
+```
+# CONFIG_NET is not set
+```
+
+因此不是「Wi-Fi 關掉」而已：Buildroot 改用 **devtmpfs-only** 裝置管理，不使用會強制開啟 `CONFIG_NET` 的 `mdev` 模式。建置時必須以最終 Kernel `.config`（而非只看輸入設定）確認 networking subsystem 確實未編入；若檢查失敗即拒絕產出合格映像。
+
+系統啟動後會直接進入 `usb-wallet-console`，不提供一般 getty/login 作為正常操作介面。
+
+Console 會顯示啟動安全稽核：
+
+- network stack 必須不存在；
+- swap 必須為空；
+- `/` 必須是 RAM-backed `rootfs` / `tmpfs`；
+- boot partition 與 `COLD_VAULT` 必須各自能由固定 GPT PARTUUID 唯一定位；
+- 兩者必須透過 sysfs 驗證屬於同一個 block-device parent；
+- `COLD_VAULT` 必須從已驗證的確切 device source，以 `rw,noexec,nodev,nosuid,sync` 掛載；
+- 不得存在其他 writable non-memory filesystem。
+
+因此同時插入兩支由同一 image clone 出來的 Cold Wallet USB 會因 PARTUUID 重複而進入 lockdown，避免把 vault 寫到錯誤裝置。
+
+若任何檢查為 `FAIL`，系統會建立 `/run/usb-wallet/lockdown`，Console 直接停用建立錢包與簽章功能，只允許關機；不是只顯示警告。
+
+## 5. 第一次建立測試錢包
+
+選：
+
+```
+1) Create encrypted TESTNET wallet
+```
+
+程式會：
+
+1. 從 offline OS CSPRNG 取得 entropy。
+2. 產生 24-word BIP39 mnemonic。
+3. 要求你手抄 recovery words。
+4. 要求確認最後一個 word。
+5. 用 scrypt 衍生 vault encryption key。
+6. 使用 AES-256-GCM 加密 mnemonic。
+7. 只把 encrypted `wallet.vault` 寫到 `COLD_VAULT`。
+
+**紙本 backup 必須獨立存在。USB-A 壞掉或重新刷 image 時，COLD_VAULT 可能遺失。**
+
+### 5-1. 首次建立離線簽署政策（必要）
+
+在 Console 選「7) Initialize encrypted offline signing policy」，輸入錢包密碼並核對離線確認提示。系統建立 COLD_VAULT/wallet.vault.policy 加密政策後會印出目前檔案的 SHA-256。
+
+**將完整 64 字元 SHA-256 抄在獨立紙本上。** 每次 BTC／EVM 離線簽署，都需要從這份紙本抄錄目前雜湊；絕不能直接讀取 USB 中的政策檔來取得可信錨點。更新政策後應重新獨立記錄新雜湊，缺少政策或雜湊時必須拒簽。
+
+## 6. 匯出公開資訊
+
+Console 選：
+
+```
+2) Show public BTC testnet + Sepolia addresses
+```
+
+這只會顯示：
+
+- Bitcoin testnet BIP84 receive addresses
+- Bitcoin account tpub
+- Sepolia address
+
+這些資料可以轉移到連網電腦。不要轉移 vault。
+
+## 7. Bitcoin testnet 簽署
+
+在線上 watch-only wallet 建立 PSBT，存為例如：
+
+```
+unsigned.psbt
+```
+
+放進 USB-B，插到 offline signer，Console 選：
+
+```
+4) Sign Bitcoin testnet PSBT
+```
+
+需要**獨立輸入**：
+
+- 紙本記錄的目前離線政策 SHA-256
+- 預期 recipient testnet address
+- 預期 satoshi amount
+- 最大可接受 fee
+- 預期 change index（若有 change）
+
+程式會拒絕不屬於已知 BIP84 wallet input、未知 output、fee 超標或不相符的 recipient/amount。
+
+## 8. Sepolia 簽署
+
+在 online computer 建立 type-2 EIP-1559 JSON，放入 USB-B，Console 選：
+
+```
+3) Sign Sepolia native ETH transaction
+```
+
+需要獨立輸入 recipient、value in wei，以及紙本記錄的目前離線政策 SHA-256。
+
+目前會拒絕：
+
+- 非 Sepolia chainId
+- legacy transaction
+- contract calldata
+- ERC-20
+- access list
+- 非 21,000 gas native transfer
+- recipient/value 不符
+
+## 9. 結束 session
+
+簽名完成後：
+
+1. 將 signed transaction 留在 USB-B。
+2. Console 選 Power off。
+3. 等電腦完全關機後再移除 USB-A。
+4. USB-B 回到 online computer 廣播。
+
+## 重要限制
+
+- 普通 USB 沒有 Secure Element，解鎖後 private key 會存在 offline PC RAM。
+- 現階段沒有 Secure Boot。
+- Image build 已加入 deterministic metadata、兩次 clean build 與 QEMU/OVMF 開機檢查。各交付版本必須以其自身 CI 成果判斷；實體 USB 驗收另由 Issue #43 追蹤。
+- USB-B 是不可信輸入，parser 仍需 fuzzing。
+- 本分支已相容 Issue #5 / PR #11 的 bounded integrity request envelope。Appliance 的 EVM `.json` 一律交給 `--request` 嚴格 envelope parser；BTC `.json` 走 `--request`、`.psbt` 才走 legacy PSBT。Appliance 不會先讀一次 USB 內容再交給 CLI 重讀，以避免惡意 USB 在兩次讀取間換內容。legacy Sepolia raw JSON 仍可由 CLI 明確使用 `--tx`，但不再由 appliance 自動判斷。SHA-256 envelope 只提供完整性檢查，不是來源認證。
+- 主網與 token/contract signing 都尚未開放。
