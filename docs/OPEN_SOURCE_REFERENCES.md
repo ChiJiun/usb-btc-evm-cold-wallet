@@ -16,6 +16,28 @@ This is an original MIT-licensed CLI with dependencies; **no code copied or vend
 
 Prefer protocol-compatible libraries over writing your own ECDSA, secp256k1, Keccak, AES or BIP32. Upstream license notices remain required when distributing upstream packages or source.
 
+## Verified reuse evidence in current main (2026-11-22)
+
+These are **real dependency integrations**, not evidence of copied source code:
+
+| Local path | Existing upstream reuse | Do not reinvent |
+| --- | --- | --- |
+| `src/usb_cold_wallet/btc.py`, `companion_btc.py`, `keys.py` | `embit` PSBT / BIP32 / BIP39 / Bitcoin primitives | PSBT parsing, key derivation and signature primitives; keep local validation |
+| `src/usb_cold_wallet/evm.py`, `companion_core.py` | `eth-account` | Ethereum signing and transaction encoding |
+| `qr-transport/src/typed_registry.mjs`, `ur_transport.mjs` | Blockchain Commons `@blockchaincommons/uniform-resources` / `dcbor` | UR/CBOR machinery |
+| `qr-metamask/src/adapter.mjs` | `@keystonehq/bc-ur-registry`, `@keystonehq/bc-ur-registry-eth`, `@ngraveio/bc-ur` | Ethereum typed UR and QR registry |
+| `scripts/fetch_buildroot.sh`, `scripts/configure_buildroot.sh` | Pinned Buildroot distribution | Live OS build system |
+
+**Source-copy status:** no confirmed bulk source-copy from Specter-DIY, AirGap, BlueWallet or SignerOS in this inspection. These remain candidates, not completed porting work. `scripts/fetch_sources.sh` fetches Buildroot build inputs; it is not a wallet-source import script.
+
+## Concrete upstream porting procedure
+
+For an issue, locate the relevant row in `docs/USB_MVP_ACCELERATION_PLAN.md` (upstream commit and issue mapping), then inspect the **actual file/function** at that commit. Record the path, license coverage, dependencies and existing local equivalent. Prefer the smallest legal copy-and-adapt patch over a fresh rewrite where it genuinely saves effort.
+
+Before copying, compare exact behavior and integration boundaries. A copied implementation must retain required attribution and pass local negative/security tests. If the upstream path is not yet licensed/verified, use it only as a reference. For SignerOS Buildroot/scripts, Trezor GPL components and Reown Community License code, do not directly copy without an explicit license review.
+
+PRs must distinguish **copied/adapted source LOC**, **third-party dependency LOC**, and **newly authored LOC**. Include exact upstream commit and path; claiming 'reused upstream' without a traceable file or dependency is insufficient.
+
 Research snapshot: November 2026. No audit or security endorsement of any referenced repository is implied.
 
 
