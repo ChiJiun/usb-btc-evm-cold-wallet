@@ -183,3 +183,32 @@ test('Snap source contains no direct private key import/signing branches', async
     }
   }
 });
+
+test('old signed QR cannot replay after bounded closed request ID cache evicts entry', async () => {
+  const {keyring, state} = setup();
+  const account = await keyring.createAccount({address:wallet.address});
+  await keyring.submitRequest(request(account.id, 'reused-id'));
+  const initial = state.requests['reused-id'].pending;
+  const oldResponse = await responseFor(initial);
+  await keyring.rejectRequest('reused-id');
+  for (let i = 0; i < 100; i++) {
+    const id = 'closed-' + i;
+    await keyring.submitRequest(request(account.id, id));
+    await keyring.rejectRequest(id);
+  }
+  assert.equal(state.closedIds.includes('reused-id'), false, 'bounded history evicts first ID');
+  await keyring.submitRequest(request(account.id, 'reused-id'));
+  const current = state.requests['reused-id'].pending;
+  assert.notEqual(initial.qrRequestId, current.qrRequestId);
+  assert.notEqual(initial.qrDigest, current.qrDigest);
+  assert.equal(state.requestSequence, 102);
+  assert.throws(() => verifyQrResponse(oldResponse, current, 1000), /binding mismatch/);
+});
+
+test('persistent request sequence rejects invalid or exhausted state before allocating request', async () => {
+  const {keyring, state} = setup();
+  const account = await keyring.createAccount({address:wallet.address});
+  state.requestSequence = Number.MAX_SAFE_INTEGER;
+  await assert.rejects(() => keyring.submitRequest(request(account.id)), /exhausted/);
+  assert.deepEqual(state.requests, {});
+});
