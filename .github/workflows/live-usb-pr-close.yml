@@ -1,0 +1,69 @@
+name: Cancel obsolete Live USB checks
+
+# Use the base repository's trusted workflow on PR close; do not check out
+# or execute code from the untrusted PR. This workflow becomes active once
+# merged into the default branch.
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  actions: write
+
+jobs:
+  cancel-live-usb:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Cancel unfinished Live USB PR builds
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_SOURCE_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -euo pipefail
+
+          # Match this PR's source repository + branch. GitHub can return an
+          # empty pull_requests array after a PR closes, so an empty array is
+          # permitted only after matching those two fields.
+          filter='
+            .workflow_runs[]?
+            | select(.event == "pull_request")
+            | select(.name == "Live USB image verification" or .name == "Live USB fast boot diagnostics")
+            | select(.head_branch == $branch)
+            | select(.head_repository.full_name == $source)
+            | select((.pull_requests | length) == 0 or any(.pull_requests[]; .number == $number))
+            | .id
+          '
+
+          # Automatic PR checks only. Leave explicitly dispatched manual
+          # diagnostics untouched. New commits are already handled by each
+          # workflow's cancel-in-progress concurrency setting.
+          for status in queued in_progress requested waiting pending; do
+            ids="$(
+              gh api --paginate --method GET \
+                -f event=pull_request \
+                -f status="$status" \
+                -f branch="$PR_BRANCH" \
+                -f per_page=100 \
+                "repos/${REPOSITORY}/actions/runs" \
+                | jq -r \
+                  --arg branch "$PR_BRANCH" \
+                  --arg source "$PR_SOURCE_REPO" \
+                  --argjson number "$PR_NUMBER" \
+                  "$filter"
+            )"
+
+            while IFS= read -r run_id; do
+              [[ -n "$run_id" ]] || continue
+              if [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
+                echo "Unexpected workflow run ID: $run_id" >&2
+                exit 1
+              fi
+              echo "Cancelling obsolete Live USB run $run_id for closed PR #$PR_NUMBER"
+              gh api --method POST "repos/${REPOSITORY}/actions/runs/${run_id}/cancel"
+            done <<< "$ids"
+          done

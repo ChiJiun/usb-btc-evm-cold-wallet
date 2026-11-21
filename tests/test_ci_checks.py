@@ -146,3 +146,25 @@ def test_required_gate_accepts_expected_results(env):
 )
 def test_required_gate_rejects_wrong_results(overrides, expected):
     assert any(expected in error for error in ci_checks.gate_errors(required_env(**overrides)))
+
+
+def test_closed_pr_cancels_only_its_automatic_live_usb_runs():
+    from pathlib import Path
+
+    workflow = (
+        Path(__file__).resolve().parents[1]
+        / ".github/workflows/live-usb-pr-close.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "pull_request_target:" in workflow
+    assert "types: [closed]" in workflow
+    assert "actions: write" in workflow
+    assert "actions/checkout" not in workflow
+    assert "event=pull_request" in workflow
+    assert 'branch="$PR_BRANCH"' in workflow
+    assert ".head_repository.full_name == $source" in workflow
+    assert ".head_branch == $branch" in workflow
+    assert ".number == $number" in workflow
+    assert "Live USB image verification" in workflow
+    assert "Live USB fast boot diagnostics" in workflow
+    assert "gh api --method POST" in workflow
