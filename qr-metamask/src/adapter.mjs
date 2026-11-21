@@ -57,17 +57,22 @@ export function makePairingUr(publicInfo) {
   const parentFingerprint=hexBytes(publicInfo.account_parent_fingerprint,4);
   if (![2,3].includes(key[0])) throw new Error('Invalid account xpub');
   const path = new CryptoKeypath(components().slice(0,3),fingerprint);
+  // MetaMask enumerates five HDKey entries per page. Fix both child
+  // components to 0: every entry is the same index-0 address that can sign.
   const children = new CryptoKeypath([
     new PathComponent({index:0,hardened:false}),
-    new PathComponent({hardened:false}), // wildcard: QR Keyring derives index 0..N
+    new PathComponent({index:0,hardened:false}),
   ]);
   const hdKey = new CryptoHDKey({
     isMaster:false,isPrivateKey:false,key,chainCode,parentFingerprint,origin:path,
     children,name:'USB Cold Signer — Sepolia',note:'Only address index 0 can sign',
   });
-  // MetaMask QR Keyring requests 5 accounts from an HDKey. Exporting a
-  // single-address CryptoAccount fails its getFirstPage() implementation.
+  // CryptoAccount with one descriptor fails the upstream five-entry page.
+  // A fixed HD child path prevents advertising unsupported derived accounts.
   const parsed = CryptoHDKey.fromCBOR(hdKey.toCBOR());
+  if (parsed.getChildren()?.getPath() !== '0/0') {
+    throw new Error('Unrestricted MetaMask derivation path');
+  }
   const first = HDNodeWallet.fromExtendedKey(parsed.getBip32Key()).derivePath('0/0');
   if (first.address !== address) throw new Error('Public account xpub does not derive the exported address');
   return hdKey.toUR();

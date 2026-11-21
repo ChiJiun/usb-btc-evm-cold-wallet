@@ -41,8 +41,16 @@ test('MetaMask upstream QrKeyring pairs actual CryptoHDKey and recognizes exact 
   const keyring=new QrKeyring({bridge:{requestScan:async()=>{throw Error('Not expected')}}});
   keyring.pairDevice({type:ur.type,cbor:ur.cbor.toString('hex')});
   const page=await keyring.getFirstPage();
-  assert.equal(page[0].address,w.address);
+  assert.equal(page.length,5);
+  assert.ok(page.every(({address})=>address===w.address),
+    'Only the signable address may be advertised');
+  const next=await keyring.getNextPage();
+  assert.equal(next.length,5);
+  assert.ok(next.every(({address})=>address===w.address),
+    'No unsupported account may appear on later pages');
   assert.equal(keyring.getPathFromAddress(w.address),"m/44'/60'/0'/0/0");
+  assert.deepEqual(await keyring.addAccounts(5),[w.address]);
+  assert.deepEqual(await keyring.getAccounts(),[w.address]);
   const frames=framesFromUr(ur,220,16);
   const decoded=decodeUr(frames,'crypto-hdkey');
   assert.equal(decoded.cbor.toString('hex'),ur.cbor.toString('hex'));
