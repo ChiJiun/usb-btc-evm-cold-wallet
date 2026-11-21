@@ -37,12 +37,13 @@ The offline-only wheel retains the reviewed signing modules and the
 Python modules: any newly added wallet module fails the release build until
 explicitly security reviewed. It regenerates and verifies the wheel RECORD.
 
-The unit tests validate the offline wheel filtering and reject unreviewed
-modules; **the CI workflow does not yet build and install the sanitized wheel
-as a release gate**. The separate Live USB builder (#7) must consume only
-this verified offline wheel, and CI must prove its installed contents and
-entry points, before an offline boot image can be accepted. The current
-prototype has not established that appliance-level guarantee. Online RPC,
+The test suite validates wheel filtering and rejects unreviewed modules.
+In GitHub Actions, it also builds the actual Python wheel and installs the
+sanitized offline output into a temporary test directory, asserting that no
+online module, browser asset or companion command exists. The separate
+Live USB builder (#7) must **install only this verified offline wheel** and
+check the image contents before an offline boot image can be accepted;
+this appliance-level requirement is not yet implemented in #7. Online RPC,
 Esplora, HTTP server, and web assets are never valid cold-side runtime
 dependencies.
 
