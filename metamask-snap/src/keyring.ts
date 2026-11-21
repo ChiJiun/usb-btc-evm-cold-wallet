@@ -148,6 +148,8 @@ export class ColdKeyring implements Keyring {
     let address: string;
     try { address = checkedAddress(from); } catch { return null; }
     const match = Object.values(this.state.accounts).find((a) => a.address === address);
+    if (match && (this.state.selectedInitialized || this.state.selected.length > 0) &&
+        !this.state.selected.includes(match.id)) return null;
     return match ? {address: `${scope}:${address}` as ResolvedAccountAddress['address']} : null;
   }
   async listRequests(): Promise<KeyringRequest[]> {
@@ -169,7 +171,8 @@ export class ColdKeyring implements Keyring {
     const account = await this.getAccount(request.account);
     // First imported account may be used before MetaMask has sent its initial
     // selection callback; after an explicit selection, allow only selected IDs.
-    if (this.state.selectedInitialized && !this.state.selected.includes(account.id)) {
+    if ((this.state.selectedInitialized || this.state.selected.length > 0) &&
+        !this.state.selected.includes(account.id)) {
       throw new Error('Cold account is not selected for signing');
     }
     if (this.state.requests[request.id] || this.state.closedIds.includes(request.id)) throw new Error('Duplicate/replayed request ID');

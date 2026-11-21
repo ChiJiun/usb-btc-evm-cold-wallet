@@ -68,6 +68,8 @@ test('selected-account policy allows initial import but denies deselected import
   await keyring.rejectRequest('mm-1');
   await keyring.setSelectedAccounts([first.id]);
   assert.equal(state.selectedInitialized,true);
+  assert.equal(await keyring.resolveAccountAddress('eip155:11155111' as never,
+    {method:'eth_signTransaction',params:[{from:extra.address}]} as never),null);
   await assert.rejects(() => keyring.submitRequest(request(second.id,'mm-2',{...intent,from:extra.address})),/not selected/);
   await keyring.setSelectedAccounts([second.id]);
   await assert.rejects(() => keyring.submitRequest(request(first.id,'mm-3')),/not selected/);
@@ -78,6 +80,10 @@ test('selected-account policy allows initial import but denies deselected import
   await assert.rejects(() => keyring.submitRequest(request(first.id,'mm-5')),/not selected/);
   await assert.rejects(() => keyring.submitRequest(request(second.id,'mm-6',{...intent,from:extra.address})),/not selected/);
   await assert.rejects(() => keyring.setSelectedAccounts([first.id,first.id]),/Duplicate selected/);
+  // Existing POC state may already have a selection without the new flag.
+  state.selected=[first.id];
+  delete state.selectedInitialized;
+  await assert.rejects(() => keyring.submitRequest(request(second.id,'mm-7',{...intent,from:extra.address})),/not selected/);
 });
 
 test('strict unsigned policy rejects chain, account, contract, arbitrary methods, fee, gas and fields', async () => {
