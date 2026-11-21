@@ -54,16 +54,52 @@ checkout 不持續保存憑證。
 獨立掃描完整歷史，另建議啟用 GitHub Secret scanning / Push
 protection。
 
-## PR 合併與主線 Commit 政策
+## 多 Agent 開發與 Branch Policy
 
-- **預設使用 Squash Merge**：一個已審查的 PR 在 `main` 對應一個最終 Commit；保留可追溯的 PR／Issue 連結、Review 與 CI 紀錄。開發分支可以保留多次 fix／test Commit，無須為了整理歷史而強制改寫共用分支。
-- **例外使用 Merge Commit**：只有多個子 Commit 確實各自具獨立意義、需要保留完整階段性歷史時，才在 PR 說明理由並採用；一般修補與 Agent 多輪修改不屬於必要例外。不要僅為了整理 Commit 而修改已合併歷史。
-- **合併前門檻**：以最新 PR HEAD 確認必要 CI（包含 `CI / Required`）成功、Review 阻擋已解決、變更範圍與相關 Issue／後續驗收明確。若合併前同步或改動 HEAD，應驗證新的版本。Squash 不代表免 Review。
-- **主線推送**：程式碼、安全修正、測試、CI/workflow 與依賴變更一律走功能分支與 PR；README 等低風險文件只有在維護者**明確授權該次直接推送**時才例外。禁止未經授權的直接寫入、force push 或歷史改寫。
-- **分支同步**：先確認其他 Agent 是否同時修改分支，再同步 `main`。私人獨占分支可視情況 rebase；共用／已有 Review 的分支避免未協調的 rebase 或 force push，必要時使用普通 merge 並保留安全的提交歷史。
-- **合併後**：核對 PR 已 merged、`main` 指向預期結果；只有 Issue 的全部驗收確實完成才關閉，未完成的硬體／Release 驗收繼續追蹤。
+### 目前查證狀態（2026-11-21）
 
-以上是儲存庫**流程規範**，不等於 GitHub 已強制執行。建議在 Settings → General → Pull Requests 保留 **Allow squash merging**、視需要停用 **Allow merge commits** 與 **Allow rebase merging**；在 Rulesets／Branch Protection 對 `main` 強制 PR、必要狀態檢查、Review 與禁止 bypass／force push。停用 Merge Commit 是落實「只用 Squash Merge」的強制選項；若仍保留例外，需透過人工 Review 管理。所有設定變更須由具管理權限者執行並另行驗證。
+以下「實際」指透過 GitHub Repository metadata 或版本庫原始碼確認；**無法從檔案內容推論 Branch Protection / Ruleset 已啟用**。
+
+| 項目 | 目前實際狀態 | 目標政策 |
+| --- | --- | --- |
+| Default branch | `main` | 維持 `main` |
+| Squash merge | 允許 | **唯一允許的 merge method** |
+| Merge commit | 仍允許 | 關閉 |
+| Rebase merge | 仍允許 | 關閉 |
+| Auto merge | 關閉 | 先維持關閉；CI 和 Review 門檻驗證完成後再評估 |
+| Branch Protection / Ruleset | 未取得可確認的完整管理設定 | 對 `main` 強制以下規則 |
+| Required status check | Repository workflow 具備 `CI / Required`，是否列為 Branch required check 尚未確認 | 將 `CI / Required` 設為 required |
+| Merge Queue | 目前 `ci.yml` 沒有 `merge_group` trigger | **暫不啟用**；必須先有合併佇列的 workflow/Required CI 驗證 |
+
+### `main` 保護設定（需 Repository Admin 套用並驗證）
+
+1. **Require a pull request before merging**：所有程式、安全、CI、依賴、文件變更預設都走 PR；禁止直接 push 到 `main`。先前經明確授權的 README 直接推送僅屬歷史例外，新政策啟用後不再保留此旁路。
+2. **Require status checks to pass**：至少將固定的 `CI / Required` 列為 required；選擇執行中的最新 commit／合併結果，檢查內容由 `scripts/ci_checks.py` 依路徑 fail-closed 決定。不得拿較舊 SHA 的成功紀錄替代。對尚未接入 Required 的獨立工作流程，需另列 required check 或補入 aggregate gate 才可視為必測。
+3. **Require conversation resolution**：所有阻擋性 review thread 必須解決；不能只回覆「會後續處理」就合併安全問題。若明確移至後續 Issue，必須說明非阻擋理由。
+4. **Require linear history**，並且僅保留 **Allow squash merging**；關閉 **Allow merge commits** 及 **Allow rebase merging**。每個 PR 在 `main` 生成一筆有意義的 Squash Commit，標題包含功能及 Issue/PR 關聯。
+5. **禁止 force push、刪除 `main` 與一般 bypass**；管理員是否也受限制須以實際 Ruleset/Protection 配置驗證。舊已合併 Commit 不重寫。
+6. **Review approval**：工作流程要求與開發 Agent **不同的審查者**完成獨立 Review。若有可用的獨立 GitHub 審查帳號，再將至少 1 個 approval 設成強制條件；單人儲存庫不應設定成無人能批准、因此永遠無法合併的狀態。同一 GitHub 身分下多個 AI Agent 的留言，不能假裝已滿足 GitHub 的獨立 approval。
+7. **Dismiss stale approvals / require latest push approval**：多 Agent 協作時建議啟用，但先確認是否會阻擋唯一的可用審查者。設定後，每次更新 Head 都要重新評估受影響區域。
+8. **Automatically delete head branches**：合併後刪除專用 PR branch；在刪分支／worktree 前確認沒有其他 Agent 正在使用、沒有未提交修改或依賴該分支的其他 PR。
+
+### 多 Agent 並行實作與合併流程
+
+- **一個 Issue／可獨立驗收的變更範圍，對應一個 Agent 專屬 branch 和 PR**。命名例如 `feat/issue-48-mainnet`、`fix/issue-43-boot-origin`。不同 Agent 不應同時 push 同一個 feature branch；共用 worktree 會增加資料遺失及競態風險。
+- 開發中可反覆 commit、修復 CI 與 Review；**完成後才 Squash Merge**，不需要為了讓 `main` 乾淨而改寫活躍／已被 Review 的 branch commit 歷史。
+- PR 內容需有目的、依賴關係、實作範圍、風險、測試命令與結果、驗收缺口。Draft 及完整 E2E 未驗證的安全關鍵功能不可直接合併成「已完成產品」。
+- 合併前以**最新 PR HEAD** 完成 Review、Required CI、討論串處理及與最新 `main` 的整合檢查。兩個 PR 若改到同一檔案或 API，先確認相容，再依序合併；不得把一個 PR 的綠燈視為另一個 PR 更新後仍然有效。
+- 對 Live USB 這類耗時工作採分層驗證：快速檢查供修正迭代，完整映像／可重現性／QEMU／實體 USB gate 根據安全影響維持真正必要的驗收；**不得為加速而默默跳過 Release 安全條件**。
+- 合併後核對 `main` 的 squash commit、PR 狀態、相關 Issue 是否真的達成驗收；自動清理分支不代表刪除後續實機測試或安全 Review Issue。
+
+### Merge Queue 的啟用條件
+
+多個 PR 經常同時準備合併、且 Required CI 因 `main` 快速前進而反覆重跑時，再評估 Merge Queue。正式啟用之前必須：
+
+- 在主 CI 加入 `merge_group` 事件，讓佇列產生的合併候選 SHA 真正執行 `CI / Required`，且修正路徑選擇器對 merge-group SHA 的處理，不得誤判為文件修改而跳過測試。
+- 以測試 PR 驗證合併佇列遇到測試失敗會拒絕合併、成功時才可進入 `main`；同時確認取消、競態與 Live USB 重跑成本。
+- 確認 GitHub 方案、Ruleset/Branch Protection 支援與實際管理設定後才開啟。現階段**不宣稱 Merge Queue 已部署**。
+
+**管理設定路徑**：GitHub 儲存庫 `Settings → General → Pull Requests` 設定 merge methods；`Settings → Rules → Rulesets`（或 `Branches → Branch protection rules`）建立 `main` 的保護規則；`Settings → General → Pull Requests` 可設定合併後自動刪分支。設定後使用非管理員身分的測試 PR 驗證：直接 push 被拒、缺 CI／未解決 Review 不可合併、Squash 為唯一可選合併方式。**文件政策不能替代 GitHub 伺服器端強制規則**。
 
 `live-usb-pr-close.yml` 在 PR 關閉時取消可確認屬於該 PR 的過時 Live USB 自動建置。優先採用 GitHub run 上唯一的 `pull_requests` 關聯；若 PR 關閉後該關聯被 GitHub 清空，則再透過 GitHub REST Pulls API（涵蓋已關閉 PR）交叉驗證來源儲存庫、來源分支、完整 head SHA 和**唯一的 PR 號碼**，且只取消 head SHA 相符的自動 `pull_request` 工作；來源不唯一、查詢失敗或版本不符均跳過，絕不只憑分支名稱猜測。這項功能是安全優先的 best-effort 取消，不能保證所有過往 Commit 的 run 都能取消。
 
