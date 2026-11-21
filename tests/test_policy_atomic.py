@@ -250,3 +250,63 @@ def test_create_only_racing_destination_rename_never_clobbers(tmp_path, monkeypa
         policy.save_profile(path, policy.default_profile(ROOT), ROOT, PASSWORD)
     assert path.read_bytes() == b"another-writer"
     assert not list(tmp_path.glob(".policy-*.partial"))
+
+
+def test_policy_stage_swapped_during_publish_is_detected(tmp_path, monkeypatch):
+    """Post-rename descriptor identity check exposes a same-UID swap.
+
+    This is detection, not a defense against same-UID/root malware. The attack
+    can leave a suspicious final entry, which must be manually reconciled.
+    """
+    path = tmp_path / "wallet.policy"
+    old = policy.default_profile(ROOT)
+    policy.save_profile(path, old, ROOT, PASSWORD)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    foreign = tmp_path / "malicious-staged"
+    foreign.write_bytes(b"ATTACKER CIPHERTEXT SUBSTITUTE")
+    real_replace = policy.os.replace
+    injected = False
+
+    def substitute_source(src, dst, *args, **kwargs):
+        nonlocal injected
+        if not injected and isinstance(src, str) and src.startswith(".policy-") and dst == path.name:
+            injected = True
+            # Replace the validated staging name just before the real rename.
+            real_replace(foreign, tmp_path / src)
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(policy.os, "replace", substitute_source)
+    changed = policy.set_limit(old, ROOT, "btc_max_fee_sats", 125)
+    with pytest.raises(OSError, match="published file differs"):
+        policy.save_profile(path, changed, ROOT, PASSWORD,
+                            replace=True, expected_sha256=digest)
+    assert injected
+    assert path.read_bytes() == b"ATTACKER CIPHERTEXT SUBSTITUTE"
+    assert not list(tmp_path.glob(".policy-*.partial"))
+
+
+def test_policy_create_only_racing_destination_cannot_be_replaced(tmp_path, monkeypatch):
+    """RENAME_NOREPLACE must fail even if destination appears during publish."""
+    from usb_cold_wallet import vault
+
+    path = tmp_path / "wallet.policy"
+    original_rename = vault._atomic_rename_noreplace
+    injected = False
+
+    def competing_create(parent_fd, stage, final):
+        nonlocal injected
+        injected = True
+        fd = os.open(final, os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                     0o600, dir_fd=parent_fd)
+        try:
+            os.write(fd, b"EXISTING POLICY")
+        finally:
+            os.close(fd)
+        return original_rename(parent_fd, stage, final)
+
+    monkeypatch.setattr(vault, "_atomic_rename_noreplace", competing_create)
+    with pytest.raises(FileExistsError):
+        policy.save_profile(path, policy.default_profile(ROOT), ROOT, PASSWORD)
+    assert injected
+    assert path.read_bytes() == b"EXISTING POLICY"
+    assert not list(tmp_path.glob(".policy-*.partial"))
