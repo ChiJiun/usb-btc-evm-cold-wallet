@@ -21,7 +21,7 @@ The Windows Portable EXE intentionally does not bundle `cross_boot.py`, `btc.py`
 Windows uses the formal `PendingRequestStore` transitions:
 
 ```text
-DRAFT -> EXPORTED -> IMPORTED_VERIFIED -> BROADCASTED
+DRAFT -> EXPORTED -> IMPORTED_VERIFIED -> BROADCAST_REQUESTED -> BROADCASTED
               \-> FAILED
 ```
 
@@ -75,7 +75,7 @@ Normal operation requires no Python, Node, CLI, MetaMask, or manual JSON editing
 - Missing or multiple `TX_TRANSFER` Windows volumes fail closed.
 - Multiple active requests, filename/requestId mismatch, malformed or modified v2 envelopes, account/network mismatch, changed recipient/amount/fee/nonce/UTXO, replay, and stale signatures fail closed.
 - Explicit cancel records `FAILED` and removes only that request's exchange files.
-- A broadcast timeout records terminal `FAILED` with `broadcast outcome unknown`. The signed response remains available so restart reconstructs a `broadcast_unknown` session for **status lookup only**; the Broadcast button/API cannot resend it.
+- Immediately before network I/O, Broadcast durably records `BROADCAST_REQUESTED` with the exact txid. A timeout/crash leaves that reservation in place; restart reconstructs a `broadcast_unknown` session for **status lookup only** and cannot resend it.
 - Completed response + interrupted cold ledger update is recoverable without signing again.
 - SignerSession still provides auto-lock, idle timeout, per-transaction challenge, cancellation, exception locking and attended-session signature quota.
 - Full addresses and values use scrollable character-wrapped read-only fields rather than truncated labels.
