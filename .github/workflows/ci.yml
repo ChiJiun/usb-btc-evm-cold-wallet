@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -16,7 +17,86 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
+  # Run on every PR so CI / Required is always reported.
+  # Skip expensive jobs for documentation-only changes, not the status check.
+  changes:
+    name: Detect CI scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.scope.outputs.code }}
+      deps: ${{ steps.scope.outputs.deps }}
+    steps:
+      - name: Check out source and history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select required checks
+        id: scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          code=false
+          deps=false
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            # Manual dispatch is intentionally a full validation.
+            code=true
+            deps=true
+          else
+            if [[ "$EVENT_NAME" == "pull_request" ]]; then
+              base="$PR_BASE_SHA"
+            else
+              base="$PUSH_BEFORE_SHA"
+            fi
+
+            if [[ -z "$base" ]] || [[ "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+              echo "::warning::Missing comparison commit; running full validation"
+              code=true
+              deps=true
+            else
+              git diff --name-only -z "$base" HEAD > "$RUNNER_TEMP/ci-changed-files"
+
+              if [[ ! -s "$RUNNER_TEMP/ci-changed-files" ]]; then
+                echo "::warning::Empty changed-file list; running full validation"
+                code=true
+                deps=true
+              else
+                while IFS= read -r -d '' file; do
+                  echo "Changed: $file"
+                  case "$file" in
+                    README|README.*|docs/*|LICENSE|LICENSE.*|NOTICE|NOTICE.*|CHANGELOG*|CONTRIBUTING*|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE*)
+                      ;;
+                    *)
+                      code=true
+                      ;;
+                  esac
+
+                  case "$file" in
+                    requirements/*|pyproject.toml|setup.py|setup.cfg|Pipfile*|poetry.lock|uv.lock|infra/wheelhouse*|.github/workflows/ci.yml)
+                      deps=true
+                      ;;
+                  esac
+                done < "$RUNNER_TEMP/ci-changed-files"
+              fi
+            fi
+          fi
+
+          {
+            echo "code=$code"
+            echo "deps=$deps"
+          } >> "$GITHUB_OUTPUT"
+          echo "Code / wheel checks: $code; dependency checks: $deps; secret scanning: always"
+
   tests:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: Tests / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -51,6 +131,8 @@ jobs:
         run: usb-cold-wallet --help
 
   dependency_audit:
+    needs: changes
+    if: needs.changes.outputs.deps == 'true'
     name: Dependency audit
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -91,8 +173,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   dependency_review:
+    needs: changes
     name: Dependency review
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -131,6 +214,8 @@ jobs:
           fail-on-severity: moderate
 
   reproducible_build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     name: Reproducible wheel
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -168,6 +253,7 @@ jobs:
     name: CI / Required
     if: always()
     needs:
+      - changes
       - tests
       - dependency_audit
       - secret_scan
@@ -176,8 +262,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require all security and test jobs
+      - name: Require every scheduled test and security check
         env:
+          SCOPE: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          DEPS: ${{ needs.changes.outputs.deps }}
+          EVENT_NAME: ${{ github.event_name }}
           TESTS: ${{ needs.tests.result }}
           AUDIT: ${{ needs.dependency_audit.result }}
           SECRET_SCAN: ${{ needs.secret_scan.result }}
@@ -185,11 +275,27 @@ jobs:
           REPRODUCIBLE_BUILD: ${{ needs.reproducible_build.result }}
         run: |
           set -euo pipefail
-          test "$TESTS" = "success"
-          test "$AUDIT" = "success"
+          test "$SCOPE" = "success"
           test "$SECRET_SCAN" = "success"
-          test "$REPRODUCIBLE_BUILD" = "success"
-          if [ "$DEPENDENCY_REVIEW" != "success" ] && [ "$DEPENDENCY_REVIEW" != "skipped" ]; then
-            echo "dependency-review result: $DEPENDENCY_REVIEW" >&2
-            exit 1
+
+          if [[ "$CODE" == "true" ]]; then
+            test "$TESTS" = "success"
+            test "$REPRODUCIBLE_BUILD" = "success"
+          else
+            test "$CODE" = "false"
+            test "$TESTS" = "skipped"
+            test "$REPRODUCIBLE_BUILD" = "skipped"
+          fi
+
+          if [[ "$DEPS" == "true" ]]; then
+            test "$AUDIT" = "success"
+          else
+            test "$DEPS" = "false"
+            test "$AUDIT" = "skipped"
+          fi
+
+          if [[ "$EVENT_NAME" == "pull_request" && "$DEPS" == "true" ]]; then
+            test "$DEPENDENCY_REVIEW" = "success"
+          else
+            test "$DEPENDENCY_REVIEW" = "skipped"
           fi
