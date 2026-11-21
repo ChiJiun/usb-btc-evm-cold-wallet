@@ -149,7 +149,7 @@ def _layout_valid(
         or vault[:2] != (
             LINUX_FS_TYPE if len(parts) == 3 else DATA_TYPE, VAULT_UUID
         )
-        or (vault[2] & READ_ONLY)
+        or vault[2] != 0
         or _size(vault) != VAULT_SECTORS
         or boot[4] >= vault[3]
     ):
@@ -158,7 +158,7 @@ def _layout_valid(
         transfer = parts[2]
         if (
             transfer[:2] != (DATA_TYPE, TRANSFER_UUID)
-            or (transfer[2] & READ_ONLY)
+            or transfer[2] != 0
             or _size(transfer) != TRANSFER_SECTORS
             or vault[4] >= transfer[3]
         ):
