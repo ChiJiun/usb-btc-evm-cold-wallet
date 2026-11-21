@@ -150,10 +150,12 @@ def test_cli_policy_cap_denial_precedes_approval(root, tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_password", lambda: PASSWORD)
     monkeypatch.setattr(cli, "sign_evm", lambda *a, **kw: pytest.fail("signing bypassed policy"))
     monkeypatch.setattr(cli, "_approve", lambda phrase: pytest.fail("approval offered on DENY"))
+    import hashlib
+    trusted_digest = hashlib.sha256((tmp_path / "wallet.vault.policy").read_bytes()).hexdigest()
     args = ["--vault", str(vault), "sign-evm", "--tx", str(tx),
-            "--to", RECIPIENT, "--wei", str(10**12), "--out", str(tmp_path / "signed.json")]
-    assert cli.main(args) == 1
-    assert not (tmp_path / "signed.json").exists()
+            "--to", RECIPIENT, "--wei", str(10**12), "--out", str(tmp_path / "signed.json"),
+            "--expected-policy-sha256", trusted_digest]
+    assert cli.main(args) == 1igned.json").exists()
 
 
 def test_symlink_policy_refused(root, tmp_path):
