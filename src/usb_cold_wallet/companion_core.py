@@ -337,7 +337,7 @@ class CompanionSession:
             if self.pending is None or self.pending["stage"] != "prepared":
                 raise ValueError("No pending unsigned request")
             source = self.pending["tx"] if legacy else self.pending["envelope"]
-            return canonical(source) + b"\\n"
+            return canonical(source) + b"\n"
 
     def accept_signed(self, raw: bytes):
         with self.lock:
