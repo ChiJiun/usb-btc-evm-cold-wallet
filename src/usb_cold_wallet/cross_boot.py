@@ -226,6 +226,7 @@ def verify_v2_request(
     data: dict,
     expected_kind: str | None = None,
     *,
+    expected_account: str | None = None,
     trusted_time: int | None = None,
     allow_no_trusted_clock: bool = False,
 ) -> dict:
@@ -238,6 +239,10 @@ def verify_v2_request(
         raise ValueError("V2 request format, type, or network mismatch")
     _request_id(data["requestId"])
     account = _account(kind, data["account"])
+    if expected_account is not None:
+        expected_account = _account(kind, expected_account)
+        if account != expected_account:
+            raise ValueError("V2 request account does not match expected wallet")
     exchange._validate_payload(kind, data["payload"])
     if (type(data["transactionDigest"]) is not str or
             HEX64_RE.fullmatch(data["transactionDigest"]) is None or
@@ -311,11 +316,15 @@ def package_v2_response(
     request: dict,
     signed_payload: dict,
     *,
+    expected_account: str | None = None,
     trusted_time: int | None = None,
     allow_no_trusted_clock: bool = False,
 ) -> dict:
     checked = verify_v2_request(
-        request, trusted_time=trusted_time, allow_no_trusted_clock=allow_no_trusted_clock
+        request,
+        expected_account=expected_account,
+        trusted_time=trusted_time,
+        allow_no_trusted_clock=allow_no_trusted_clock,
     )
     response_kind = REQUEST_TO_RESPONSE[request["kind"]]
     if response_kind == "evm-signed":
@@ -345,11 +354,15 @@ def verify_v2_response(
     request: dict,
     response: dict,
     *,
+    expected_account: str | None = None,
     trusted_time: int | None = None,
     allow_no_trusted_clock: bool = False,
 ) -> dict:
     checked_request = verify_v2_request(
-        request, trusted_time=trusted_time, allow_no_trusted_clock=allow_no_trusted_clock
+        request,
+        expected_account=expected_account,
+        trusted_time=trusted_time,
+        allow_no_trusted_clock=allow_no_trusted_clock,
     )
     if type(response) is not dict or set(response) != _RESPONSE_FIELDS:
         raise ValueError("Invalid v2 signed response fields")
@@ -396,6 +409,7 @@ def read_v2_request(
     path: Path,
     expected_kind: str | None = None,
     *,
+    expected_account: str | None = None,
     trusted_time: int | None = None,
     allow_no_trusted_clock: bool = False,
 ) -> dict:
@@ -403,6 +417,7 @@ def read_v2_request(
     return verify_v2_request(
         data,
         expected_kind,
+        expected_account=expected_account,
         trusted_time=trusted_time,
         allow_no_trusted_clock=allow_no_trusted_clock,
     )
@@ -412,6 +427,7 @@ def read_v2_response(
     path: Path,
     request: dict,
     *,
+    expected_account: str | None = None,
     trusted_time: int | None = None,
     allow_no_trusted_clock: bool = False,
 ) -> dict:
@@ -419,6 +435,7 @@ def read_v2_response(
     verify_v2_response(
         request,
         data,
+        expected_account=expected_account,
         trusted_time=trusted_time,
         allow_no_trusted_clock=allow_no_trusted_clock,
     )
