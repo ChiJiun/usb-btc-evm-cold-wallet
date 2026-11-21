@@ -20,6 +20,7 @@ from usb_cold_wallet.cross_boot import (
     read_v2_request,
     read_v2_response,
     write_v2,
+    new_request_id,
 )
 from usb_cold_wallet.evm import sign_evm
 from usb_cold_wallet.keys import btc_address, btc_key, evm_account, root_from_mnemonic
@@ -283,3 +284,42 @@ def test_v2_file_io_reuses_bounded_atomic_exchange_primitives(tmp_path):
 
     with pytest.raises(FileExistsError):
         write_v2(request_path, request)
+
+
+def test_request_id_generator_is_lowercase_128_bit_hex():
+    first = new_request_id()
+    second = new_request_id()
+    assert len(first) == 32 and int(first, 16) >= 0
+    assert first == first.lower() and first != second
+
+
+@pytest.mark.parametrize("field", ["requestEnvelopeDigest", "signedResultDigest", "sha256"])
+def test_response_digest_fields_reject_non_string_before_compare(field):
+    request = evm_request()
+    signed = sign_evm(ROOT, request["payload"], EVM_RECIPIENT, request["intent"]["amount"])
+    response = package_v2_response(request, signed, trusted_time=100)
+    response[field] = 1
+    with pytest.raises(ValueError, match="Invalid signed response"):
+        verify_v2_response(request, response, trusted_time=100)
+
+
+def test_state_import_verifies_response_before_transition(tmp_path):
+    request = evm_request()
+    signed = sign_evm(ROOT, request["payload"], EVM_RECIPIENT, request["intent"]["amount"])
+    response = package_v2_response(request, signed, trusted_time=100)
+    store = PendingRequestStore(tmp_path / "state")
+    store.create(request)
+    store.exported(request)
+    bad = copy.deepcopy(response)
+    bad["requestId"] = "ff" * 16
+    bad["sha256"] = _envelope_sha(bad)
+    with pytest.raises(ValueError):
+        store.import_verified(request, bad, trusted_time=100)
+    assert store.get(request["requestId"]).state == "EXPORTED"
+
+
+def test_no_clock_cold_review_persists_unverified_assurance(tmp_path):
+    request = evm_request(expiry={"mode": "no-trusted-clock", "notAfter": None})
+    ledger = ReplayLedger(tmp_path / "ledger")
+    snap = ledger.review_once(request, allow_no_trusted_clock=True)
+    assert snap.metadata["expiryAssurance"] == "unverified"
