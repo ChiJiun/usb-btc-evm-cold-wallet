@@ -3,7 +3,6 @@
 const token = document.querySelector('meta[name="companion-token"]').content;
 const $ = (id) => document.getElementById(id);
 let pending = null;
-let requestEnvelope = null;
 let walletLoaded = false;
 
 function message(text, failed=false) {
@@ -42,6 +41,23 @@ function saveJson(name, data) {
   const anchor=document.createElement("a");
   anchor.href=url;anchor.download=name;document.body.append(anchor);anchor.click();anchor.remove();
   setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+async function rawUnsigned(path) {
+  const response = await fetch(path, {cache:"no-store",headers:{"X-Companion-Token":token}});
+  if (!response.ok) throw new Error("無法從本機取得未經數字轉換的完整交易 JSON");
+  const raw = await response.text();
+  if (raw.length > 200000) throw new Error("交換檔超出安全尺寸");
+  return raw;
+}
+function saveRaw(name, raw) {
+  // Never pass Wei-bearing data through JSON.parse/JSON.stringify (JS Number).
+  const blob = new Blob([raw], {type:"application/json"});
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  document.body.append(anchor); anchor.click(); anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 async function fileContents(inputId) {
   const file=$(inputId).files[0];
@@ -125,20 +141,18 @@ $("sendForm").addEventListener("submit",(event)=>{
       amount_eth:$("amount").value.trim(),
       max_fee_gwei:$("maxFee").value.trim()
     });
-    requestEnvelope=data.envelope;
     renderPending(data.pending);
     message("已建立未簽章交易；請確認摘要後下載交換檔。");
   });
 });
 $("downloadBtn").addEventListener("click",()=>action(async()=>{
   if(!pending || pending.stage!=="prepared")throw new Error("沒有待簽請求");
-  if(!requestEnvelope)requestEnvelope=await api("/api/request");
-  saveJson("sepolia-unsigned-"+pending.request_id+".json",requestEnvelope);
+  saveRaw("sepolia-unsigned-"+pending.request_id+".json",await rawUnsigned("/api/request-raw"));
   message("已下載完整性檢查的交換封裝，適用 #5 離線 signer。");
 }));
 $("legacyBtn").addEventListener("click",()=>action(async()=>{
   if(!pending || pending.stage!=="prepared")throw new Error("沒有待簽請求");
-  saveJson("sepolia-legacy-"+pending.request_id+".json",pending.tx);
+  saveRaw("sepolia-legacy-"+pending.request_id+".json",await rawUnsigned("/api/request-legacy"));
   message("已下載舊版 JSON。請在 main 版離線 signer 使用 --tx；此檔不包含封裝完整性雜湊。");
 }));
 $("verifyBtn").addEventListener("click",()=>action(async()=>{
@@ -161,7 +175,6 @@ $("statusBtn").addEventListener("click",()=>action(async()=>{
 $("cancelBtn").addEventListener("click",()=>action(async()=>{
   if(!window.confirm("清除本機待簽請求？已廣播或可能廣播的交易無法藉此撤回。"))return;
   await api("/api/cancel",{});
-  requestEnvelope=null;
   pending=null;
   renderPending(null);
   $("prepareBtn").disabled=!walletLoaded;
