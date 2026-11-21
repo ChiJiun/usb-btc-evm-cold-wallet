@@ -78,12 +78,16 @@ def bind_qr_to_review(qr_request: dict, plan: ReviewPlan, root) -> None:
             raise ValueError("QR fingerprint does not match unlocked BTC wallet")
         payload = qr_request["payload"]
         fee_cap = payload["max_fee_sats"]
+        change_index = payload["change_index"]
+        if (change_index is not None and
+                (type(change_index) is not int or not 0 <= change_index < 2**31)):
+            raise ValueError("BTC QR change index must be a valid non-hardened integer or null")
         if (type(payload["recipient"]) is not str or payload["recipient"] != plan.recipient
                 or type(payload["amount_sats"]) is not int or
                 payload["amount_sats"] != plan.amount_atomic
                 or type(fee_cap) is not int or fee_cap < plan.fee_atomic
                 or fee_cap < 0
-                or payload["change_index"] != plan.change_index):
+                or change_index != plan.change_index):
             raise ValueError("BTC QR intent, fee cap or change index differs from trusted review")
     else:
         raise ValueError("Unsupported QR review transaction kind")
