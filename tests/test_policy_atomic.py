@@ -227,3 +227,26 @@ def test_simultaneous_editors_cannot_both_publish_stale_version(tmp_path):
         outcomes = list(pool.map(update, (10, 20)))
     assert sorted(outcomes) == ["saved", "stale"]
     assert policy.load_profile(path, ROOT, PASSWORD)["limits"]["btc_max_fee_sats"] in (10, 20)
+
+
+def test_create_only_racing_destination_rename_never_clobbers(tmp_path, monkeypatch):
+    from usb_cold_wallet import vault
+
+    path = tmp_path / "wallet.policy"
+    real_publish = vault._atomic_rename_noreplace
+
+    def competing_writer(parent_fd, stage, name):
+        # Race: destination is created after target preflight but immediately
+        # before Linux renameat2(RENAME_NOREPLACE).
+        with os.fdopen(os.open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                               0o600, dir_fd=parent_fd), "wb") as stream:
+            stream.write(b"another-writer")
+            stream.flush()
+            os.fsync(stream.fileno())
+        real_publish(parent_fd, stage, name)
+
+    monkeypatch.setattr(vault, "_atomic_rename_noreplace", competing_writer)
+    with pytest.raises(FileExistsError):
+        policy.save_profile(path, policy.default_profile(ROOT), ROOT, PASSWORD)
+    assert path.read_bytes() == b"another-writer"
+    assert not list(tmp_path.glob(".policy-*.partial"))
