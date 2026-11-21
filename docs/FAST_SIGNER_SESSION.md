@@ -14,7 +14,10 @@ USB HID 解鎖功能，也沒有把 passphrase 或 seed 寫入環境變數。
 2. 啟動 GUI 前再次呼叫 `runtime_audit()`；每次解鎖、定時檢查及簽章時
    讀取即時 `/proc/self/mountinfo`，核對 RAM root、COLD_VAULT 的
    `/run/usb-wallet/vault-device` 來源與安全掛載旗標，並拒絕額外可寫
-   持久化掛載。僅有開機 PASS 紀錄不構成持續有效的安全證據。
+   持久化掛載。TX_TRANSFER 必須透過 `/sys/dev/block/<major>:<minor>`
+   解析至與 COLD_VAULT **不同的實體區塊裝置父磁碟**，同一 USB 的
+   `sdb2`／`sdb3` 分割區無法通過此檢查；sysfs 身分不可解析即拒絕。
+   僅有開機 PASS 紀錄不構成持續有效的安全證據。
 3. 在進入 GUI 時設定目前程序的 `RLIMIT_CORE=0` 和檔案 `umask 077`。
    這不能阻止惡意 root、firmware、DMA、冷開機攻擊或 kernel dump。
 4. 啟動後的第一個畫面預設 **LOCKED**；按選擇 BTC/EVM 才會進入
@@ -55,7 +58,8 @@ LOCKED → UNLOCKING → REVIEWING → APPROVED → SIGNED
 - 取消解鎖、拒絕交易、輸入格式錯誤、USB-B 匯入取消、相機不可用、
   未能完成掃描、UI callback 例外、簽章失敗、匯出錯誤以及監測到來源
   USB 檔案遭刪除或替換，皆返回 **LOCKED**。QR 攝影機讀取會在
-  Vault 解鎖前完成，避免攝影機 SDK 阻塞 UI 計時器時私鑰留在 RAM；
+  Vault 解鎖前完成，且選擇 BTC/EVM 類型時不預先要求密碼，
+  避免攝影機 SDK 阻塞 UI 計時器時私鑰留在 RAM；
   掃描器內部超時仍須由 #18 adapter 執行。
 - GUI 每秒檢查 idle/absolute deadline 與 runtime audit；簽署動作另有
   同步檢查。解鎖錯誤提示不回顯密碼或原始 mnemonic。
@@ -94,8 +98,10 @@ READY locked_gui kernel_boot_elapsed_ms=<毫秒>
 - 失電後從 **LOCKED** 啟動，沒有儲存未加密密碼或 session token；
   已生成但尚未成功寫回的簽章可能遺失，online host 應確認鏈上
   nonce／UTXO 後再重新產生請求，不可不經核對直接重簽或廣播。
-- 若來源 USB 被拔除或檔案身分（inode/device）變更，GUI 在定時檢查
-  或簽署前鎖定。這只能偵測部分已掛載檔案的移除／替換，**無法取代**
+- USB-B 匯入先以一次受上限限制、禁止符號連結的檔案讀取取得資料，
+  對**同一份 bytes** 同時產生不可變的 ReviewPlan 與 SHA-256；然後
+  才解鎖 Vault。若來源 USB 被拔除、inode/device 變更或**同一 inode
+  的檔案內容改寫**，GUI 在定時檢查或簽署前鎖定。這仍**無法取代**
   USB 控制器及實體主機層級的安全監測。
 - 共享／感染主機不能被此軟體改造成可信硬體。鍵盤攔截、顯示器
   替換、firmware malware 與側通道均超出 Python 應用層防護。
