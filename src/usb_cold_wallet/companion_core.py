@@ -271,7 +271,7 @@ class CompanionSession:
             address = self.wallet["evm"]["address"]
             balance, nonce = self.rpc.account_state(address)
             fee, priority = self.rpc.fee_quote()
-            return {"address": address, "balance_wei": str(balance), "pending_nonce": nonce,
+            return {"address": address, "balance_wei": str(balance), "pending_nonce": str(nonce),
                     "suggested_max_fee_gwei": str(Decimal(fee) / 10**9),
                     "suggested_priority_fee_gwei": str(Decimal(priority) / 10**9),
                     "rpc": self.rpc.display_endpoint, "chain": "Sepolia", "chain_id": CHAIN_ID}
