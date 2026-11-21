@@ -51,7 +51,8 @@ def test_shared_policy_gate_requires_external_anchor_and_denies_overspend(root, 
     with pytest.raises(ValueError, match="mismatched"):
         read_policy_snapshot(path, "0" * 64)
     changed = set_limit(default_profile(root), root, "evm_max_value_wei", 1)
-    save_profile(path, changed, root, PASSWORD, replace=True)
+    save_profile(path, changed, root, PASSWORD, replace=True,
+                 expected_sha256=anchor)
     next_anchor = hashlib.sha256(path.read_bytes()).hexdigest()
     with pytest.raises(ValueError, match="denied"):
         enforce_review_policy(load_policy_snapshot(read_policy_snapshot(path, next_anchor), root, PASSWORD),
@@ -75,7 +76,8 @@ def test_shared_policy_gate_applies_btc_fee_cap(root, tmp_path):
     intent, decision = enforce_review_policy(profile, root, reviewed, kind="btc")
     assert intent.maximum_fee == 2000 and decision.status == "REQUIRE_EXTRA_CONFIRMATION"
     limited = set_limit(default_profile(root), root, "btc_max_fee_sats", 100)
-    save_profile(path, limited, root, PASSWORD, replace=True)
+    save_profile(path, limited, root, PASSWORD, replace=True,
+                 expected_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
     with pytest.raises(ValueError, match="denied"):
         next_anchor = hashlib.sha256(path.read_bytes()).hexdigest()
         enforce_review_policy(load_policy_snapshot(read_policy_snapshot(path, next_anchor), root, PASSWORD),
