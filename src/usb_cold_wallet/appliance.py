@@ -13,6 +13,7 @@ BOOT_CHECKS = Path("/run/usb-wallet/boot-checks.txt")
 LOCKDOWN = Path("/run/usb-wallet/lockdown")
 BOOT_PARENT_FILE = Path("/run/usb-wallet/boot-parent")
 VAULT_DEVICE_FILE = Path("/run/usb-wallet/vault-device")
+TRANSFER_DEVICE_FILE = Path("/run/usb-wallet/transfer-device")
 SAFE_MOUNT_OPTIONS = "rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077"
 SYS_BLOCK = Path("/sys/class/block")
 DEV_ROOT = Path("/dev")
@@ -79,12 +80,15 @@ def _transfer_candidates() -> list[str]:
                 not (entry / "partition").is_file()):
             continue
         device = DEV_ROOT / entry.name
+        if device.is_symlink():
+            continue
         if _fat_label(device) == "TX_TRANSFER":
             matches.append(str(device))
     return matches
 
 
 def _unique_transfer_device() -> str | None:
+    """Allow legacy separate USB, or the exact boot-verified single-USB partition."""
     devices = _transfer_candidates()
     if len(devices) != 1:
         return None
@@ -95,11 +99,24 @@ def _unique_transfer_device() -> str | None:
         vault_device = VAULT_DEVICE_FILE.read_text(encoding="utf-8").strip()
     except OSError:
         return None
-
     if not re.fullmatch(r"sd[a-z]+", boot_parent):
         return None
+
     parent = _block_parent(device)
-    if not parent or parent == boot_parent or device == vault_device:
+    if not parent or device == vault_device:
+        return None
+
+    if parent != boot_parent:
+        # Preserve the original two-USB policy for legacy images.
+        return device
+
+    # Same-parent media is allowed only when S01airgap verified the complete
+    # three-partition GPT layout and persisted the exact transfer device path.
+    try:
+        expected = TRANSFER_DEVICE_FILE.read_text(encoding="ascii").strip()
+    except OSError:
+        return None
+    if expected != device or not re.fullmatch(r"/dev/sd[a-z]+[1-9][0-9]*", expected):
         return None
     return device
 
@@ -205,8 +222,8 @@ def _run_cli(arguments: list[str]) -> None:
 def _select_file(suffix: str | tuple[str, ...]) -> Path | None:
     if not mount_transfer():
         print(
-            "TX_TRANSFER USB unavailable or ambiguous. "
-            "Use exactly one separate VFAT USB labelled TX_TRANSFER."
+            "TX_TRANSFER unavailable or ambiguous. "
+            "Use the verified single-USB transfer partition or one separate legacy VFAT USB."
         )
         return None
     suffixes = (suffix,) if isinstance(suffix, str) else suffix
