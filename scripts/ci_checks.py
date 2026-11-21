@@ -17,10 +17,11 @@ class Scope:
     code: bool
     deps: bool
     metadata: bool
+    node: bool
 
 
-FULL = Scope(code=True, deps=True, metadata=False)
-SCHEDULED = Scope(code=False, deps=True, metadata=False)
+FULL = Scope(code=True, deps=True, metadata=False, node=True)
+SCHEDULED = Scope(code=False, deps=True, metadata=False, node=True)
 
 
 def is_document(path: str) -> bool:
@@ -39,18 +40,54 @@ def is_document(path: str) -> bool:
     )
 
 
+# A package manifest/lockfile is a dependency change wherever it lives,
+# including nested Node apps and GitHub Actions used by other workflows.
+NODE_INPUT_NAMES = frozenset({
+    "package.json",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+})
+DEPENDENCY_INPUT_NAMES = NODE_INPUT_NAMES | frozenset({
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "poetry.lock",
+    "uv.lock",
+    "Pipfile",
+    "Pipfile.lock",
+    "requirements.txt",
+    "requirements.lock",
+    "Cargo.toml",
+    "Cargo.lock",
+    "go.mod",
+    "go.sum",
+    "Gemfile",
+    "Gemfile.lock",
+    "composer.json",
+    "composer.lock",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "gradle.lockfile",
+    "packages.lock.json",
+})
+
+
+def is_node_input(path: str) -> bool:
+    return path.rsplit("/", 1)[-1] in NODE_INPUT_NAMES
+
+
 def is_dependency_input(path: str) -> bool:
+    basename = path.rsplit("/", 1)[-1]
     return (
-        path.startswith("requirements/")
-        or path in {
-            "pyproject.toml",
-            "setup.py",
-            "setup.cfg",
-            "poetry.lock",
-            "uv.lock",
-            ".github/workflows/ci.yml",
-        }
-        or path.startswith("Pipfile")
+        (path.startswith(".github/workflows/") and
+         basename.endswith((".yml", ".yaml")))
+        or basename in DEPENDENCY_INPUT_NAMES
+        or (basename.startswith(("requirements-", "requirements_")) and
+            basename.endswith((".txt", ".lock")))
+        or path.startswith("requirements/")
         or path.startswith("infra/wheelhouse")
     )
 
@@ -62,6 +99,7 @@ def classify_paths(paths: list[str]) -> Scope:
         deps=any(is_dependency_input(path) for path in paths),
         # pyproject.toml embeds README.md in the distribution's METADATA.
         metadata="README.md" in paths,
+        node=any(is_node_input(path) for path in paths),
     )
 
 
@@ -129,6 +167,11 @@ def gate_errors(env: dict[str, str]) -> list[str]:
     code = env.get("CODE")
     deps = env.get("DEPS")
     metadata = env.get("METADATA")
+    node = env.get("NODE")
+    if node not in {"true", "false"}:
+        errors.append(f"Invalid NODE scope: {node!r}")
+    if node == "true" and deps != "true":
+        errors.append("NODE scope requires DEPS scope")
     if code not in {"true", "false"}:
         errors.append(f"Invalid CODE scope: {code!r}")
     if deps not in {"true", "false"}:
@@ -139,6 +182,7 @@ def gate_errors(env: dict[str, str]) -> list[str]:
     require("TESTS", "success" if code == "true" else "skipped")
     require("REPRODUCIBLE_BUILD", "success" if code == "true" else "skipped")
     require("AUDIT", "success" if deps == "true" else "skipped")
+    require("NODE_AUDIT", "success" if node == "true" else "skipped")
 
     require(
         "WHEEL_SMOKE",
@@ -179,7 +223,8 @@ def main() -> int:
         output.write(f"code={str(scope.code).lower()}\n")
         output.write(f"deps={str(scope.deps).lower()}\n")
         output.write(f"metadata={str(scope.metadata).lower()}\n")
-    print(f"CI scope: code={scope.code}, deps={scope.deps}, metadata={scope.metadata}")
+        output.write(f"node={str(scope.node).lower()}\n")
+    print(f"CI scope: code={scope.code}, deps={scope.deps}, metadata={scope.metadata}, node={scope.node}")
     return 0
 
 

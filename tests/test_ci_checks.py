@@ -11,19 +11,30 @@ from scripts import ci_checks
 @pytest.mark.parametrize(
     ("paths", "expected"),
     [
-        (["README.md"], ci_checks.Scope(False, False, True)),
-        (["README.en.md"], ci_checks.Scope(False, False, False)),
-        (["docs/USB_SETUP.md"], ci_checks.Scope(False, False, False)),
-        (["LICENSE", "docs/CI_SECURITY.md"], ci_checks.Scope(False, False, False)),
-        (["README.md", "src/usb_cold_wallet/cli.py"], ci_checks.Scope(True, False, True)),
-        (["src/usb_cold_wallet/cli.py"], ci_checks.Scope(True, False, False)),
-        (["requirements/ci.lock"], ci_checks.Scope(True, True, False)),
-        (["pyproject.toml"], ci_checks.Scope(True, True, False)),
-        ([".github/workflows/ci.yml"], ci_checks.Scope(True, True, False)),
-        (["infra/wheelhouse.sha256"], ci_checks.Scope(True, True, False)),
-        (["scripts/ci_checks.py"], ci_checks.Scope(True, False, False)),
-        ([".github/workflows/live-usb-build.yml"], ci_checks.Scope(True, False, False)),
-        (["src/new feature.py", "docs/plan.md"], ci_checks.Scope(True, False, False)),
+        (["README.md"], ci_checks.Scope(False, False, True, False)),
+        (["README.en.md"], ci_checks.Scope(False, False, False, False)),
+        (["docs/USB_SETUP.md"], ci_checks.Scope(False, False, False, False)),
+        (["LICENSE", "docs/CI_SECURITY.md"], ci_checks.Scope(False, False, False, False)),
+        (["README.md", "src/usb_cold_wallet/cli.py"], ci_checks.Scope(True, False, True, False)),
+        (["src/usb_cold_wallet/cli.py"], ci_checks.Scope(True, False, False, False)),
+        (["requirements/ci.lock"], ci_checks.Scope(True, True, False, False)),
+        (["pyproject.toml"], ci_checks.Scope(True, True, False, False)),
+        ([".github/workflows/ci.yml"], ci_checks.Scope(True, True, False, False)),
+        (["infra/wheelhouse.sha256"], ci_checks.Scope(True, True, False, False)),
+        (["scripts/ci_checks.py"], ci_checks.Scope(True, False, False, False)),
+        ([".github/workflows/live-usb-build.yml"], ci_checks.Scope(True, True, False, False)),
+        (["src/new feature.py", "docs/plan.md"], ci_checks.Scope(True, False, False, False)),
+        ([".github/workflows/metamask-snap.yml"], ci_checks.Scope(True, True, False, False)),
+        ([".github/workflows/live-usb-fast.yaml"], ci_checks.Scope(True, True, False, False)),
+        (["qr-metamask/package-lock.json"], ci_checks.Scope(True, True, False, True)),
+        (["metamask-snap/package.json"], ci_checks.Scope(True, True, False, True)),
+        (["tools/npm-shrinkwrap.json"], ci_checks.Scope(True, True, False, True)),
+        (["frontend/pnpm-lock.yaml"], ci_checks.Scope(True, True, False, True)),
+        (["frontend/yarn.lock"], ci_checks.Scope(True, True, False, True)),
+        (["services/go.mod"], ci_checks.Scope(True, True, False, False)),
+        (["service/Cargo.lock"], ci_checks.Scope(True, True, False, False)),
+        (["nested/pyproject.toml"], ci_checks.Scope(True, True, False, False)),
+        (["scripts/any.py"], ci_checks.Scope(True, False, False, False)),
     ],
 )
 def test_classify_paths(paths, expected):
@@ -32,6 +43,7 @@ def test_classify_paths(paths, expected):
 
 def test_scheduled_scan_requires_dependency_audit():
     assert ci_checks.select_scope("schedule") == ci_checks.SCHEDULED
+    assert ci_checks.SCHEDULED.node and ci_checks.SCHEDULED.deps
 
 
 def test_manual_dispatch_runs_full_suite():
@@ -87,6 +99,8 @@ def required_env(**overrides):
         "CODE": "false",
         "DEPS": "false",
         "METADATA": "false",
+        "NODE": "false",
+        "NODE_AUDIT": "skipped",
         "EVENT_NAME": "pull_request",
         "TESTS": "skipped",
         "REPRODUCIBLE_BUILD": "skipped",
@@ -114,14 +128,22 @@ def required_env(**overrides):
             AUDIT="success",
             DEPENDENCY_REVIEW="success",
         ),  # full CI
-        required_env(EVENT_NAME="schedule", DEPS="true", AUDIT="success"),  # daily
+        required_env(
+            EVENT_NAME="pull_request",
+            CODE="true", DEPS="true", NODE="true",
+            TESTS="success", REPRODUCIBLE_BUILD="success",
+            AUDIT="success", NODE_AUDIT="success",
+            DEPENDENCY_REVIEW="success",
+        ),  # Node lock or action dependency
+        required_env(EVENT_NAME="schedule", DEPS="true", NODE="true",
+                     AUDIT="success", NODE_AUDIT="success"),  # daily
         required_env(
             EVENT_NAME="workflow_dispatch",
             CODE="true",
-            DEPS="true",
+            DEPS="true", NODE="true",
             TESTS="success",
             REPRODUCIBLE_BUILD="success",
-            AUDIT="success",
+            AUDIT="success", NODE_AUDIT="success",
         ),
     ],
 )
@@ -141,6 +163,13 @@ def test_required_gate_accepts_expected_results(env):
         ({"METADATA": "true"}, "WHEEL_SMOKE"),
         ({"EVENT_NAME": "schedule", "DEPS": "true"}, "AUDIT"),
         ({"DEPENDENCY_REVIEW": "success"}, "DEPENDENCY_REVIEW"),
+        ({"NODE": "true", "DEPS": "true", "AUDIT": "success",
+          "DEPENDENCY_REVIEW": "success"}, "NODE_AUDIT"),
+        ({"NODE_AUDIT": "success"}, "NODE_AUDIT"),
+        ({"NODE": "true"}, "NODE scope requires DEPS"),
+        ({"NODE": "broken"}, "NODE"),
+        ({"DEPS": "true", "AUDIT": "success", "NODE": "true",
+          "NODE_AUDIT": "success"}, "DEPENDENCY_REVIEW"),
         ({"CODE": "invalid"}, "CODE"),
     ],
 )
@@ -234,3 +263,27 @@ def test_pr_close_jq_filter_requires_positive_pr_identity():
         text=True,
     )
     assert output.stdout.splitlines() == ["101", "109", "110"]
+
+
+@pytest.mark.parametrize("path", [
+    ".github/workflows/live-usb-build.yml",
+    ".github/workflows/metamask-snap.yml",
+    ".github/workflows/other.yaml",
+    "qr-metamask/package-lock.json",
+    "metamask-snap/package-lock.json",
+])
+def test_dependency_review_cannot_be_skipped_on_action_or_node_lock_change(path):
+    scope = ci_checks.classify_paths([path])
+    assert scope.deps is True
+    assert scope.code is True
+    env = required_env(
+        CODE="true", DEPS="true",
+        NODE="true" if scope.node else "false",
+        NODE_AUDIT="success" if scope.node else "skipped",
+        TESTS="success", REPRODUCIBLE_BUILD="success", AUDIT="success",
+        DEPENDENCY_REVIEW="skipped",
+    )
+    assert any("DEPENDENCY_REVIEW" in error
+               for error in ci_checks.gate_errors(env))
+    env["DEPENDENCY_REVIEW"] = "success"
+    assert ci_checks.gate_errors(env) == []
