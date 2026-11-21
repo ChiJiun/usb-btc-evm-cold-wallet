@@ -3,12 +3,13 @@ import QRCode from 'qrcode';
 import { CameraLifecycle } from './camera_lifecycle.mjs';
 import { QrFrameDisplay } from './qr_frame_display.mjs';
 import { PublicAccountImport } from './public_account_import.mjs';
+import { verifySelectedAddress } from './address_verification.mjs';
 import { makePairingUr, decodeMetaMaskRequest, makeSignedResponseUr,
   framesFromUr, unsignedJsonForOffline, validatePublic, MAX_FRAMES } from './adapter.mjs';
 
 const $ = (id) => document.getElementById(id);
 const setStatus = (text) => { $('status').textContent = String(text); };
-let publicInfo = null, active = null, used = false;
+let publicInfo = null, active = null, used = false, confirmedAddress = null;
 const publicImporter = new PublicAccountImport(validatePublic);
 const camera = new CameraLifecycle();
 const qrDisplay = new QrFrameDisplay({
@@ -30,6 +31,18 @@ function stopCamera() {
   camera.cancel();
   $('camera').hidden = true;
   $('stop').disabled = true;
+}
+function invalidateAddressConfirmation() {
+  confirmedAddress=null;
+  $('scan').disabled=true; $('parse').disabled=true;
+}
+function confirmSelectedAddress(value) {
+  if(!publicInfo) throw Error('先匯入離線公開帳戶');
+  const address=verifySelectedAddress(value,validatePublic(publicInfo).address);
+  confirmedAddress=address;
+  $('metamask-address').value=address;
+  $('scan').disabled=false; $('parse').disabled=false;
+  setStatus('MetaMask 所選地址與離線可簽地址完全相同，已允許處理交易 QR。');
 }
 function clearSession() {
   stopCamera();
@@ -80,6 +93,9 @@ function displayIntent(session) {
 }
 function acceptRequest(parts) {
   if(!publicInfo) throw Error('先匯入離線錢包的公開帳戶資訊');
+  if(!confirmedAddress || confirmedAddress!==validatePublic(publicInfo).address) {
+    throw Error('必須先核對 MetaMask 已選帳戶的完整地址');
+  }
   if(active) throw Error('已有待處理請求；請先完成或取消，不可混用 QR 幀');
   const pending=decodeMetaMaskRequest(parts,publicInfo);
   active=pending;used=false;
@@ -94,19 +110,63 @@ function acceptRequest(parts) {
 $('public-file').addEventListener('change',()=>{
   const file=$('public-file').files?.[0];
   // Revoke the previous account and signing request before awaiting file I/O.
-  clearSession(); publicInfo=null;
+  clearSession(); publicInfo=null; invalidateAddressConfirmation();
   $('account').textContent='';
-  $('pair').disabled=true; $('scan').disabled=true; $('parse').disabled=true;
+  $('metamask-address').value='';
+  $('metamask-address').disabled=true;
+  $('verify-address').disabled=true; $('scan-address').disabled=true;
+  $('pair').disabled=true;
   const pending=publicImporter.read(file);
   void guarded(async()=>{
     const result=await pending;
     if (!result || $('public-file').files?.[0] !== file) return;
     publicInfo=result.info;
     $('account').textContent='錢包地址：'+result.validated.address+'（公開資料，請與實體離線電腦比對）';
-    $('pair').disabled=false; $('scan').disabled=false; $('parse').disabled=false;
-    setStatus('公開帳戶已讀取，可以顯示配對 QR。');
+    $('pair').disabled=false;
+    $('metamask-address').disabled=false;
+    $('verify-address').disabled=false; $('scan-address').disabled=false;
+    setStatus('公開帳戶已讀取。配對 MetaMask 後，請先核對所選地址才能掃描交易。');
   });
 });
+$('metamask-address').addEventListener('input',()=>{
+  // Any selection change invalidates a pending signing request, even if the
+  // user later types the same address again.
+  invalidateAddressConfirmation();
+  clearSession();
+  setStatus('MetaMask 帳戶地址已變更；請重新核對完整地址。');
+});
+$('verify-address').addEventListener('click',()=>guarded(async()=>{
+  confirmSelectedAddress($('metamask-address').value);
+}));
+$('scan-address').addEventListener('click',()=>guarded(async()=>{
+  if(!publicInfo || active) throw Error('先匯入公開帳戶，並結束目前交易');
+  const epoch=camera.begin();
+  if(epoch===null) return;
+  $('camera').hidden=false;
+  $('stop').disabled=false;
+  try {
+    const controls=await decoder.decodeFromVideoDevice(
+      undefined,$('camera'),(result,_err,readerControls)=>{
+        if(!camera.isCurrent(epoch)) { readerControls?.stop?.(); return; }
+        if(!result) return;
+        try {
+          confirmSelectedAddress(result.getText());
+          stopCamera();
+          readerControls?.stop?.();
+        } catch(err) {
+          stopCamera();
+          setStatus('拒絕 MetaMask 帳戶 QR：'+err.message);
+        }
+      }
+    );
+    if(!camera.attach(epoch,controls)) return;
+    if(!confirmedAddress) setStatus('請顯示 MetaMask 目前所選帳戶的收款地址 QR。');
+  } catch(err) {
+    if(!camera.isCurrent(epoch)) return;
+    stopCamera();
+    throw err;
+  }
+}));
 $('pair').addEventListener('click',()=>guarded(async()=>{
   if(!publicInfo) throw Error('尚無公開帳戶');
   if(active) throw Error('請先結束當前交易');
@@ -116,7 +176,9 @@ $('pair').addEventListener('click',()=>guarded(async()=>{
   }
 }));
 $('scan').addEventListener('click',()=>guarded(async()=>{
-  if(!publicInfo || active) throw Error('需先匯入公開帳戶，且沒有現存待處理交易');
+  if(!publicInfo || active || confirmedAddress!==validatePublic(publicInfo).address) {
+    throw Error('先驗證 MetaMask 所選地址，並完成／取消目前交易');
+  }
   // Never start a second camera session while the previous permission dialog
   // is still pending. Stop/Cancel invalidates callbacks from that dialog.
   const epoch=camera.begin();

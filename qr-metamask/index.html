@@ -8,9 +8,15 @@
 <section><h2>① 與 MetaMask 配對</h2><p>先在離線 CLI 執行 <code>usb-cold-wallet --vault /offline/wallet.vault export-keystone-public --out public-evm.json</code>，再匯入這份公開資料。</p>
 <label>公開帳戶 JSON <input id="public-file" type="file" accept=".json"></label>
 <button id="pair" disabled>產生 MetaMask 配對 QR</button>
-<p id="account"></p></section>
+<p id="account"></p>
+<p class="warning"><strong>配對後、入金或簽署前，必須驗證 MetaMask 實際選中的完整地址。</strong>
+Keyring 可能顯示多列重複地址；禁止使用任何與上方不同的地址。</p>
+<label>MetaMask 已選帳戶地址（完整 0x 地址）
+<input id="metamask-address" type="text" autocomplete="off" spellcheck="false" placeholder="0x..." disabled></label>
+<button id="verify-address" disabled>核對完整地址</button>
+<button id="scan-address" disabled class="secondary">掃描 MetaMask 帳戶地址 QR</button></section>
 <section><h2>② 從 MetaMask 掃描待簽交易</h2><p>MetaMask → Connect Hardware Wallet → QR-based，使用上面的配對 QR；<strong>只使用與可信離線端完全相同的 index 0 地址</strong>；列表可能有多個重複地址列，出現任何不同地址都應中止配對。要轉帳時，掃描 MetaMask 顯示的 <code>ur:eth-sign-request</code>。</p>
-<button id="scan" disabled>開啟攝影機掃描</button><button id="stop" disabled class="secondary">停止掃描</button>
+<button id="scan" disabled>開啟攝影機掃描待簽交易</button><button id="stop" disabled class="secondary">停止掃描</button>
 <video id="camera" playsinline muted hidden></video>
 <label>或貼上掃描得到的 UR 字串（每幀一行）<textarea id="ur-input" rows="3" spellcheck="false" placeholder="ur:eth-sign-request/..."></textarea></label>
 <button id="parse" disabled>檢查 QR 交易</button>

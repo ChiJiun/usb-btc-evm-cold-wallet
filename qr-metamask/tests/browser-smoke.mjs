@@ -82,10 +82,25 @@ test('built browser bundle passes CSP and native QR pairing/request/signed respo
     buffer: Buffer.from(JSON.stringify(publicInfo)),
   });
   await page.getByText('公開帳戶已讀取', {exact:false}).waitFor();
+  assert.equal(await page.locator('#scan').isDisabled(), true,
+    'Cannot scan a MetaMask signing request before account verification');
+  assert.equal(await page.locator('#parse').isDisabled(), true);
   await page.locator('#pair').click();
   await page.locator('#qr').waitFor({state:'visible'});
   assert.match(await page.locator('#qr').getAttribute('src'), /^data:image\/png;base64,/);
   assert.match(await page.locator('#qr-type').textContent(), /crypto-hdkey/);
+
+  // Mismatched MetaMask account must fail closed, matching account unlocks.
+  await page.locator('#metamask-address').fill(recipient);
+  await page.locator('#verify-address').click();
+  await page.getByText('MetaMask 選取地址與離線可簽地址不同', {exact:false}).waitFor();
+  assert.equal(await page.locator('#scan').isDisabled(), true);
+  assert.equal(await page.locator('#parse').isDisabled(), true);
+  await page.locator('#metamask-address').fill(publicInfo.address.toLowerCase());
+  await page.locator('#verify-address').click();
+  await page.getByText('MetaMask 所選地址與離線可簽地址完全相同', {exact:false}).waitFor();
+  assert.equal(await page.locator('#scan').isEnabled(), true);
+  assert.equal(await page.locator('#parse').isEnabled(), true);
 
   const unsigned = Transaction.from(transfer);
   const request = EthSignRequest.constructETHRequest(
@@ -189,5 +204,8 @@ test('built browser bundle passes CSP and native QR pairing/request/signed respo
     new RegExp(publicInfo.address, 'i'));
   assert.match(await page.locator('#status').textContent(), /公開帳戶已讀取/);
   assert.equal(await page.locator('#pair').isEnabled(), true);
+  assert.equal(await page.locator('#scan').isDisabled(), true,
+    'Importing a new public file must reset account selection confirmation');
+  assert.equal(await page.locator('#parse').isDisabled(), true);
   assert.deepEqual(errors, [], 'No console or uncaught browser runtime errors');
 });

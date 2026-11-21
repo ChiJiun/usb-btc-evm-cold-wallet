@@ -104,9 +104,14 @@ MetaMask 原生的 **QR Hardware Wallet Device** 整合已認識以下
    `public-evm.json`，點選「產生 MetaMask 配對 QR」。
    MetaMask 擴充功能的 **Connect Hardware Wallet → QR-based** 掃描。
    MetaMask QR Keyring 可能列出五筆重複的相同公開地址。
-   本橋接已將 HD 子路徑固定為 `0/0`，避免對外列出其他不可簽的
-   衍生地址。**只匯入與可信離線端顯示的完整 `m/44'/60'/0'/0/0`
-   地址相同的帳戶**；若 MetaMask 顯示任何不同地址，立即中止配對。
+   本橋接已將 HD 子路徑固定為 `0/0`，避免對外列出其他不可簽的衍生地址。
+   配對後請在 MetaMask 顯示**目前選取的帳戶地址 QR**，以離線頁面的
+   「掃描 MetaMask 帳戶地址 QR」核對；或於離線頁面手動輸入完整
+   `0x` 地址，按「核對完整地址」。核對成功後，才會啟用掃描與解析
+   待簽交易的功能。支援純地址或 `ethereum:0x...@11155111` 帳戶 QR；
+   不接受其他鏈別或付款指令。**只匯入與可信離線端顯示的完整
+   `m/44'/60'/0'/0/0` 地址相同的帳戶**；若 MetaMask 顯示任何不同
+   地址，立即中止配對且不得入金。
 
 4. MetaMask 上切換 **Sepolia**，對 index 0 帳戶進行原生測試 ETH
    轉帳。MetaMask 顯示待簽 QR 時，在離線頁面開啟攝影機掃描
@@ -154,7 +159,10 @@ MetaMask 原生的 **QR Hardware Wallet Device** 整合已認識以下
 - QR 動畫採序列化渲染與 session generation；取消或新交易會使尚未完成的 QR 編碼失效，舊簽章 QR 不會重新顯示。
 - 配對 QR 現以固定子路徑把帳戶列舉限制在同一個 index 0 公開地址；
   上游 Keyring 的五筆/頁規則可能在 MetaMask UI 顯示重複列。
-  任何不同地址都不得入金或使用。此行為仍須實際 MetaMask 擴充功能驗收。
+  離線頁面額外要求核對 MetaMask **實際選中**的完整帳戶地址；更改
+  地址／匯入新公開檔會立即清除核對狀態與待簽工作階段，禁止在未核對
+  前掃描或解析交易。任何不同地址都不得入金或使用。
+  此行為仍須實際 MetaMask 擴充功能驗收。
 - 目前一般 CI 已要求跑 Node 24 MetaMask QR Keyring／Python 跨語言簽署測試、
   Vite build 和 production dependency audit；實機 camera/browser、
   獨立離線 OS、RPC 斷線/nonce stale/reorg 仍須另外驗收。
@@ -188,7 +196,8 @@ EIP-1559 交易，再經 Keystone UR 返回上游 MetaMask
 實際 Python 跨語言測試、Vite build、Playwright Chromium 瀏覽器 smoke
 與 npm audit 納入 `CI / Required` 必要條件；缺少 `qr-metamask/`
 的舊分支安全略過該部分。Chromium smoke 以實際 `dist/` 和 CSP
-驗證公開帳戶匯入、配對 QR、交易解析、簽章 QR 及取消。
+驗證公開帳戶匯入、配對 QR、地址不符拒絕／驗證後解鎖、
+交易解析、實際 unsigned.json 下載、簽章 QR 及取消。
 **實體 MetaMask 擴充功能、相機權限與雙機離線操作尚未驗收**；
 上游 `vm` polyfill 警告仍存在，瀏覽器 smoke 只證明受測路徑可執行。
 
