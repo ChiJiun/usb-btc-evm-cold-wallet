@@ -49,6 +49,13 @@ def lookup_public_transaction(session: CompanionSession, btc_session: BitcoinCom
             status = _quantity(receipt.get("status"), "receipt status")
             if status not in (0, 1):
                 raise ValueError("Invalid receipt status")
+            # Match the existing session status policy. A bare receipt status
+            # without an inclusion height must not be presented as confirmed.
+            _quantity(receipt.get("blockNumber"), "block number")
+            block_hash = receipt.get("blockHash")
+            if block_hash is not None and (not isinstance(block_hash, str)
+                    or not EVM_HASH.fullmatch(block_hash)):
+                raise ValueError("Invalid receipt block hash")
             result = "confirmed" if status == 1 else "reverted"
         return {"asset": asset, "txid": txid, "result": result, "untrusted_rpc": True}
     if asset == "bitcoin-testnet":
@@ -60,6 +67,18 @@ def lookup_public_transaction(session: CompanionSession, btc_session: BitcoinCom
         elif not isinstance(info, dict) or type(info.get("confirmed")) is not bool:
             raise ValueError("Invalid Bitcoin testnet transaction response")
         else:
+            # Esplora normally returns only a status object. If an identifier
+            # is supplied, it must match the request; never trust a bare
+            # confirmed flag without a valid inclusion block hash.
+            supplied_txid = info.get("txid")
+            if supplied_txid is not None and (not isinstance(supplied_txid, str)
+                    or not BTC_HASH.fullmatch(supplied_txid)
+                    or supplied_txid.lower() != txid.lower()):
+                raise ValueError("Bitcoin explorer supplied mismatched transaction ID")
+            if info["confirmed"]:
+                block_hash = info.get("block_hash")
+                if not isinstance(block_hash, str) or not BTC_HASH.fullmatch(block_hash):
+                    raise ValueError("Confirmed BTC status missing block hash")
             result = "confirmed" if info["confirmed"] else "pending"
         return {"asset": asset, "txid": txid.lower(), "result": result, "untrusted_rpc": True}
     raise ValueError("Unsupported network; mainnet is disabled")
