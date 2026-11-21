@@ -186,6 +186,9 @@ def gate_errors(env: dict[str, str]) -> list[str]:
     require("NODE_AUDIT", "success" if node == "true" else "skipped")
     # Executable QR/bridge changes MUST run the actual JS + Python interop job.
     require("QR_TRANSPORT", "success" if code == "true" else "skipped")
+    # Native MetaMask QR browser, Keyring, and Python-signer interop are mandatory
+    # whenever executable code is changed, never a silently skippable CI job.
+    require("NATIVE_QR", "success" if code == "true" else "skipped")
 
     require(
         "WHEEL_SMOKE",

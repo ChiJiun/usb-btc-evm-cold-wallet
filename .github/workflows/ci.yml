@@ -94,12 +94,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Require QR transport dependency manifest and lockfile
+      - name: Require QR transport manifest and lockfile
         run: |
-          if [[ ! -f qr-transport/package.json || ! -f qr-transport/package-lock.json ]]; then
-            echo "::error::QR transport manifest/lockfile missing; cannot skip required security tests"
-            exit 1
-          fi
+          set -euo pipefail
+          test -f qr-transport/package.json
+          test -f qr-transport/package-lock.json
 
       - name: Set up Node 24
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -127,6 +126,65 @@ jobs:
           python -m pip install --require-hashes -r requirements/ci.lock
           python -m pip install --no-deps --no-build-isolation -e .
           QR_INTEROP=1 python -m pytest -q tests/test_qr_interop.py
+
+  metamask_native_qr:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    name: MetaMask native QR / Node 24
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Require native MetaMask QR app files (fail closed)
+        run: |
+          set -euo pipefail
+          test -f qr-metamask/package.json
+          test -f qr-metamask/package-lock.json
+
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: qr-metamask/package-lock.json
+
+      - name: Set up Python for cross-language signing test
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned Python and Node dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements/ci.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+          npm ci --prefix qr-metamask --ignore-scripts --no-audit --no-fund
+
+      - name: Verify Python public account export
+        run: python -m pytest -q tests/test_keystone_public.py
+
+      - name: Test real MetaMask QR Keyring and Python-signed transactions
+        working-directory: qr-metamask
+        env:
+          PYTHON_BIN: python
+        run: |
+          npm test
+          npm run test:python
+
+      - name: Build offline browser bundle
+        run: npm run build --prefix qr-metamask
+
+      - name: Test production browser bundle under its CSP
+        working-directory: qr-metamask
+        run: |
+          npx playwright install --with-deps --only-shell chromium
+          npm run test:browser
+
+      - name: Audit native QR runtime dependencies
+        run: npm audit --prefix qr-metamask --omit=dev --audit-level=high
 
   dependency_audit:
     needs: changes
@@ -224,9 +282,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      # Dependency Review uses the dependency-graph/compare endpoint, not
-      # the unrelated SBOM export API. A failed/404 review action is a failed
-      # job, and CI / Required refuses to merge the PR.
+      # Dependency Review uses dependency-graph/compare; a failure must
+      # fail this job and the downstream Required gate.
       - name: Review dependency changes (required)
         uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.0
         with:
@@ -313,6 +370,7 @@ jobs:
     needs:
       - changes
       - tests
+      - metamask_native_qr
       - dependency_audit
       - node_audit
       - qr_transport
@@ -336,6 +394,7 @@ jobs:
           NODE: ${{ needs.changes.outputs.node }}
           NODE_AUDIT: ${{ needs.node_audit.result }}
           QR_TRANSPORT: ${{ needs.qr_transport.result }}
+          NATIVE_QR: ${{ needs.metamask_native_qr.result }}
           METADATA: ${{ needs.changes.outputs.metadata }}
           EVENT_NAME: ${{ github.event_name }}
           TESTS: ${{ needs.tests.result }}

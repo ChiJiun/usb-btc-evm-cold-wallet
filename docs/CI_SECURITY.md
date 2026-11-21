@@ -9,14 +9,18 @@
 | --- | --- |
 | 純文件（README.en、`SECURITY.md`、docs） | 變更分類、完整歷史 Secret scan、Required |
 | README.md | 以上檢查，以及一次 wheel build 與 Python package metadata 驗證 |
-| Python／其他程式碼、QR Transport JS | Python 3.12/3.13 pytest、可重現 wheel 雙次建置、QR Transport Node 24 單元測試／bundle build／Python↔QR 互通測試、Required |
+| Python／其他程式碼、QR Transport JS／MetaMask QR JS | Python 3.12/3.13 pytest、可重現 wheel 雙次建置、QR Transport Node 24 單元測試／bundle build／Python↔QR 互通、選用 MetaMask QR Node 24／Keyring／Chromium CSP／Python 簽章互通、Required |
 | 依賴 manifest、lockfile、任何 `.github/workflows/*.yml/.yaml` | 上述程式碼驗證，另執行 Python `pip-audit`；PR 必須通過實際 GitHub Dependency Review |
 | npm manifest／lockfile 或 CI workflow 變更 | 額外執行全部 tracked npm 專案的 production `npm ci --ignore-scripts`、`npm audit --omit=dev --audit-level=high` |
 | 每日 schedule（02:20 UTC） | Secret scan、Python `pip-audit`、所有 npm lockfile 的 production 及 dev/build dependency audit；QR 建置等其他昂貴檢查不執行 |
 | workflow_dispatch | 完整驗證（包含 QR Transport、Python/Node 稽核） |
 
-QR Transport 的功能驗證在程式碼變更時不能被跳過，且
-`CI / Required` 必須確認 QR job 實際成功。QR 的建置工作還額外
+QR Transport 與選用 MetaMask Native QR 的功能驗證在程式碼變更時不能被跳過，且
+`CI / Required` 必須確認兩個 QR job 都實際成功。純文件及每日依賴稽核時兩者可跳過，
+但對 QR 修改、CI workflow 及依賴修改，缺少 lockfile、失敗或被取消均不得放行。
+MetaMask Native QR 的 Chromium 測試包含正式 bundle、CSP、交易 JSON 下載、簽章回覆與頁面恢復失效；
+實體 MetaMask Extension／雙機相機／Sepolia 廣播仍屬獨立產品驗收。
+QR 的建置工作還額外
 對 **dev/build dependencies** 執行 `npm audit --audit-level=high`；
 Node 排程稽核則先分別檢查 production 相依，再針對**完整 lockfile（含 dev/build dependencies）** 執行 `npm audit --audit-level=high`，避免每日不跑 QR bundle 時遺漏建置工具的新增漏洞。完整 Node 稽核目前
 使用 npm lockfile；雖然 pnpm/yarn 依賴檔會觸發檢查，尚未支援
