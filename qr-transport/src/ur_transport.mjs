@@ -37,18 +37,26 @@ function safeJson(text) {
 }
 
 function noSecrets(value, depth = 0) {
+  // Match the offline Python decoder's per-container and ASCII limits.
   if (depth > 16) throw new Error("Excessive QR nesting");
   if (Array.isArray(value)) {
+    if (value.length > 1024) throw new Error("QR array too large");
     for (const item of value) noSecrets(item, depth + 1);
   } else if (value !== null && typeof value === "object") {
-    for (const [key, item] of Object.entries(value)) {
+    const entries = Object.entries(value);
+    if (entries.length > 256) throw new Error("QR object too large");
+    for (const [key, item] of entries) {
+      if (key.length > 128 || /[^\\x00-\\x7f]/.test(key)) {
+        throw new Error("Invalid QR object key");
+      }
       if (/(mnemonic|passphrase|private|seed|secret|xprv|password|vault)/i.test(key)) {
         throw new Error("QR must not contain secret fields");
       }
       noSecrets(item, depth + 1);
     }
-  } else if (typeof value === "string" && [...value].some(ch => ch.codePointAt(0) > 127)) {
-    throw new Error("QR protocol payload only accepts ASCII text");
+  } else if (typeof value === "string" &&
+             (value.length > MAX_PAYLOAD || /[^\\x00-\\x7f]/.test(value))) {
+    throw new Error("QR protocol payload only accepts bounded ASCII text");
   }
 }
 
@@ -80,7 +88,7 @@ function parseEnvelope(payload) {
   }
   if (parsed.version !== 1 || !["bitcoin-testnet", "sepolia"].includes(parsed.network) ||
       !["unsigned", "signed"].includes(parsed.direction) ||
-      typeof parsed.account !== "string" || parsed.account.length < 8 || parsed.account.length > 150 ||
+      typeof parsed.account !== "string" || !/^[A-Za-z0-9:_-]{8,150}$/.test(parsed.account) ||
       typeof parsed.request_id !== "string" || !/^[0-9a-f]{32}$/.test(parsed.request_id) ||
       typeof parsed.payload_digest !== "string" || !/^[0-9a-f]{64}$/.test(parsed.payload_digest) ||
       (parsed.direction === "signed" && !/^[0-9a-f]{64}$/.test(parsed.request_digest ?? "")) ||
