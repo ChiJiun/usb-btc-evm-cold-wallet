@@ -20,7 +20,7 @@ PACKAGE = "usb_cold_wallet/"
 ALLOWED_OFFLINE_MODULES = frozenset({
     "__init__.py", "btc.py", "cli.py", "evm.py", "exchange.py",
     "keys.py", "recovery.py", "vault.py", "policy.py", "gui.py", "review.py",
-    "keystone_public.py",
+    "keystone_public.py", "signer_session.py",
 })
 ONLINE_MODULES = frozenset({"companion_core.py", "companion_btc.py", "companion_web.py"})
 ONLINE_ENTRY = re.compile(r"^\s*usb-cold-companion\s*=", re.MULTILINE)
