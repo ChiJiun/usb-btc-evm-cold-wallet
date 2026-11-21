@@ -19,7 +19,7 @@ def test_valid_psbt_passes_both_parser_and_offline_policy():
 
 def test_well_formed_psbt_can_fail_policy_without_failing_parser():
     bad = vector()
-    bad.tx.vout[0].value += 1
+    bad.inputs[0].sighash_type = 2
     observation = execute(bad.serialize())
     assert observation.parser_accepted
     assert not observation.policy_accepted
