@@ -10,7 +10,7 @@ from embit import bip32, ec, psbt, script, transaction
 from usb_cold_wallet import cli
 from usb_cold_wallet.btc import sign_btc_psbt
 from usb_cold_wallet.evm import sign_evm
-from usb_cold_wallet.exchange import MAX_BYTES, package, read, write
+from usb_cold_wallet.exchange import MAX_BYTES, package, read, read_envelope, write
 from usb_cold_wallet.keys import btc_key, btc_address, root_from_mnemonic, watch_only
 
 ROOT = root_from_mnemonic("abandon " * 11 + "about")
@@ -223,3 +223,65 @@ def test_legacy_btc_rejects_non_psbt_regular_file_before_unlock(tmp_path, monkey
                      "--sats", "1000", "--max-fee-sats", "1000",
                      "--out", str(outbound)]) == 1
     assert not outbound.exists()
+
+
+def _write_checksum_valid_attack(path, envelope):
+    """Checksum validity must never mask a malformed untrusted schema."""
+    content = {key: value for key, value in envelope.items() if key != "sha256"}
+    envelope["sha256"] = hashlib.sha256(
+        json.dumps(content, sort_keys=True, ensure_ascii=True,
+                   separators=(",", ":"), allow_nan=False).encode("ascii")
+    ).hexdigest()
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+
+
+@pytest.mark.parametrize("invalid_kind", [
+    ["evm-request"],
+    {"type": "evm-request"},
+])
+def test_unhashable_exchange_kind_rejected_before_unlock(
+        tmp_path, monkeypatch, capsys, invalid_kind):
+    """Reject malicious top-level kind as ValueError, not an uncaught TypeError."""
+    with pytest.raises(ValueError, match="kind"):
+        package(invalid_kind, TX)
+
+    envelope = package("evm-request", TX)
+    envelope["kind"] = invalid_kind
+    attacker = tmp_path / "forged-kind.json"
+    _write_checksum_valid_attack(attacker, envelope)
+    with pytest.raises(ValueError, match="(format|type|network)"):
+        read_envelope(attacker)
+
+    monkeypatch.setattr(
+        cli, "_wallet_root", lambda args: pytest.fail("Invalid USB data must not unlock vault")
+    )
+    assert cli.main(["inspect-transfer", "--input", str(attacker)]) == 1
+    output = tmp_path / "must-not-sign.json"
+    assert cli.main([
+        "sign-evm", "--request", str(attacker), "--to", DEST,
+        "--wei", str(TX["value"]), "--out", str(output),
+    ]) == 1
+    assert not output.exists()
+    assert "ERROR:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("invalid_address", [
+    ["unhashable"],
+    {"address": "unhashable"},
+])
+def test_unhashable_watch_only_address_rejected_cleanly(
+        tmp_path, monkeypatch, capsys, invalid_address):
+    """A forged SHA-256 envelope cannot cause an unhandled hashability error."""
+    envelope = package("watch-only", watch_only(ROOT, count=2))
+    envelope["payload"]["bitcoin"]["receive_addresses"][0] = invalid_address
+    attacker = tmp_path / "forged-watch-only.json"
+    _write_checksum_valid_attack(attacker, envelope)
+    with pytest.raises(ValueError, match="(watch-only receive address|Bitcoin)"):
+        read_envelope(attacker)
+
+    monkeypatch.setattr(
+        cli, "_wallet_root", lambda args: pytest.fail("Watch-only import must not unlock vault")
+    )
+    assert cli.main(["inspect-transfer", "--input", str(attacker)]) == 1
+    assert cli.main(["show-watch-only", "--input", str(attacker)]) == 1
+    assert "ERROR:" in capsys.readouterr().err
