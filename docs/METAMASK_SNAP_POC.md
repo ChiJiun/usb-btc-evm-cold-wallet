@@ -154,3 +154,16 @@ transaction and should never accept an old response after account/state reset.
 This POC deliberately does not claim that the Issue #22 acceptance criteria
 have all been completed. Keep its PR in Draft pending an actual developer
 MetaMask install and air-gapped integration test.
+
+
+## 終止事件失敗恢復（Draft 修復，尚待真實 MetaMask 驗收）
+
+本 Snap 在核准或拒絕交易時，會先把唯一的已驗證結果或拒絕狀態記錄到持久化 outbox，再嘗試向 MetaMask 發送終止事件。任何 `save` 失敗都不能直接變成已確認發送；`emit` 失敗後，重新啟動 Snap 仍會保留 **相同 request ID／狀態／v,r,s**，不得帶入新的簽章資料，也不接受新的交易請求覆蓋。
+
+本機 Companion 的「失敗後的事件恢復」區提供：
+
+1. **重送相同事件**：手動重新發送原本持久化的核准／拒絕事件，不重新簽章，也不重新解碼一個新的 QR 回覆。MetaMask 可能已收到前一次事件，因此重送可能是重複通知；不做背景自動重試。
+2. **確認後清除**：只有在已確認 MetaMask 中該筆請求**完成或已取消**，才用此功能清除不確定的 outbox 狀態。保留 closed request ID 的重播保護，不會廣播或簽署交易。
+3. 在 event 狀態未處理前，新交易繼續 fail closed；恢復完成後才可發起新 request。MetaMask 事件 API 與 Snap 持久化之間無共同原子交易，因此**無法保證精確一次通知**。
+
+已加入持久化失敗、事件傳送失敗、Snap 重啟後重送及「已送出但最終儲存失敗」情境的故障注入測試。此工作仍是 **Draft POC**；建立/刪除帳戶的 AccountCreated/AccountDeleted 事件與儲存順序尚有另一個 P2 待改進，實體 MetaMask 擴充功能完整 E2E 尚未驗收。
