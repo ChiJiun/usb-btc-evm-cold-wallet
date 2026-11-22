@@ -225,14 +225,15 @@ def test_buildroot_device_manager_preserves_offline_kernel_policy():
     assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_(MDEV|EUDEV)=y" in verifier
 
 
-def test_reproducibility_builds_use_distinct_buildroot_output_directories():
+def test_reproducibility_builds_wipe_generated_buildroot_state_between_runs():
     repro = (ROOT / "scripts/check_reproducible.sh").read_text()
     configure = (ROOT / "scripts/configure_buildroot.sh").read_text()
     build = (ROOT / "scripts/build_image.sh").read_text()
     verify = (ROOT / "scripts/verify_image.sh").read_text()
-    assert 'OUT1="$ROOT/build/output-repro-1"' in repro
-    assert 'OUT2="$ROOT/build/output"' in repro
-    assert 'BUILD_OUTPUT_DIR="$out"' in repro
-    assert 'if [ "$OUT1" = "$OUT2" ]' in repro
+    assert 'OUT="$ROOT/build/output"' in repro
+    assert 'rm -rf "$OUT"' in repro
+    assert 'test ! -e "$OUT"' in repro
+    assert "build_once 1" in repro and "build_once 2" in repro
+    assert "output-repro-1" not in repro
     for script in (configure, build, verify):
         assert 'BUILD_OUTPUT_DIR:-$ROOT/build/output' in script

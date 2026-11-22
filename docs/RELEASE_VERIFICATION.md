@@ -25,7 +25,7 @@ Candidate 的 signed annotated tag 必須精確指向 input source SHA；GitHub 
 流程固定為：
 
 1. signed tag → exact source SHA 驗證。
-2. 同一來源做兩次 clean Buildroot image build，分別使用 `O=build/output-repro-1` 與 `O=build/output`，不共用 generated output tree；`scripts/check_reproducible.sh` 比對完整 raw `usb-cold-wallet.img` 與 `bzImage` SHA-256。兩次建置可共用已驗證且 hash-locked 的 source/download cache，但不共用 Buildroot output state。
+2. 同一來源做兩次獨立 clean Buildroot image rebuild；每次都先完整刪除 canonical `O=build/output` generated tree，再由零重建，`scripts/check_reproducible.sh` 比對完整 raw `usb-cold-wallet.img` 與 `bzImage` SHA-256。兩次建置只共用已驗證且 hash-locked 的 source/download cache，不共用任何 generated Buildroot output state；此 Gate 驗證 clean-rebuild reproducibility，不把不同絕對 `O=` 路徑造成的 build-path sensitivity 誤判為 artifact nondeterminism。
 3. 對兩次 raw image 的 SHA-256 再做顯式相等檢查，將共同 digest 寫入 `release-metadata.json`；使用該 Buildroot 版本所固定的 host `xz`，以 `-6 --threads=1 --check=crc64 --no-sparse` 壓縮兩次並 byte-for-byte 比對。
 4. 由最後 Buildroot target root filesystem 產生 SPDX JSON SBOM；metadata 明確固定 `sbom_scope=buildroot-target-rootfs`，不宣稱這份 SPDX 已完整盤點 EFI partition／kernel。另記錄 `efi_partition_sha256` 與 `kernel_sha256`，完整 raw image 則由 `raw_image_sha256` 綁定。保存 `build-host-packages.txt`、`release-metadata.json` 與 `SHA256SUMS`；manifest 精確涵蓋最後壓縮 image、SBOM、metadata、host dependency evidence。
 5. Candidate workflow 將這批 bytes 上傳成名稱綁定 `run_id` / `run_attempt` 的 Actions artifact，並先做無特權的本機 digest／metadata／tag-object 驗證。

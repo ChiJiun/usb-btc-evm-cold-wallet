@@ -125,7 +125,7 @@ Run:
 make reproducibility-check
 ```
 
-That target performs **two clean Buildroot builds with distinct output directories** (`O=build/output-repro-1` and `O=build/output`) and requires identical SHA-256 values for both `usb-cold-wallet.img` and `bzImage`. The first output tree is removed only after the digests match; the second remains as the verified image consumed by later UEFI/artifact steps.\n\nBoth builds intentionally share the same authenticated source/download cache and fixed Buildroot source tree, but they do not share generated Buildroot output state. A successful two-build check is evidence for this pinned environment, not a claim of independent third-party reproducibility.
+That target performs **two independent clean Buildroot rebuilds at the canonical `O=build/output` path** and requires identical SHA-256 values for both `usb-cold-wallet.img` and `bzImage`. Before each run it removes the entire generated output tree and asserts that it is gone; only then is the image rebuilt from zero. The second clean output remains as the verified image consumed by later UEFI/artifact steps.\n\nBoth builds intentionally share the same authenticated/hash-locked source/download cache and fixed Buildroot source tree, but they do not share generated Buildroot output state. Keeping the canonical absolute `O=` path avoids treating build-path sensitivity as artifact nondeterminism; this gate proves clean-rebuild reproducibility in the pinned CI environment, not independent third-party or path-independent reproducibility.
 
 ## Runtime memory / swap / persistence audit
 
