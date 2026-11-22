@@ -470,17 +470,28 @@ def test_no_clock_cold_review_persists_unverified_assurance(tmp_path):
     assert snap.metadata["expiryAssurance"] == "unverified"
 
 
-@pytest.mark.parametrize("mutation", ["boolean_version", "numeric_request_id"])
+@pytest.mark.parametrize("mutation", ["boolean_version", "numeric_request_id", "list_state"])
 def test_hostile_journal_rejects_rehashed_ambiguous_metadata(tmp_path, mutation):
     request = evm_request()
     root = tmp_path / "online-state"
     PendingRequestStore(root).create(request)
     if mutation == "boolean_version":
         _rewrite_journal_record(root, lambda record: record.__setitem__("version", True))
-    else:
+    elif mutation == "numeric_request_id":
         _rewrite_journal_record(root, lambda record: record.__setitem__("requestId", 42))
+    else:
+        _rewrite_journal_record(root, lambda record: record.__setitem__("state", []))
     with pytest.raises(StateCorruptionError):
         PendingRequestStore(root)
+
+
+def test_state_api_rejects_non_string_external_identifiers(tmp_path):
+    root = tmp_path / "online-state"
+    store = PendingRequestStore(root)
+    with pytest.raises(ValueError, match="requestId"):
+        store.get(42)
+    with pytest.raises(ValueError, match="anchor"):
+        PendingRequestStore(root, expected_tip=True)
 
 
 def test_online_journal_import_does_not_load_cold_signing_modules():
