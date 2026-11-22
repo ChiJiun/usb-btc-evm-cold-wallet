@@ -12,17 +12,20 @@ import array
 from dataclasses import dataclass
 import fcntl
 import hashlib
+import math
 import mmap
 import os
 from pathlib import Path
 import re
 import select
 import struct
+import time
 import termios
 import tty
 from typing import Callable
 
 from .review import ReviewField, ReviewPage, ReviewPlan, _canonical, _review_document
+from .signer_session import DEFAULT_IDLE_SECONDS, MAX_IDLE_SECONDS
 
 # linux/fb.h
 FBIOGET_VSCREENINFO = 0x4600
@@ -240,16 +243,42 @@ def render_review(
 class ReviewController:
     """Display acknowledgement only; no signer authorization is produced."""
 
-    def __init__(self, plan: ReviewPlan, *, audit: Callable[[], bool]):
+    def __init__(
+        self,
+        plan: ReviewPlan,
+        *,
+        audit: Callable[[], bool],
+        clock: Callable[[], float] = time.monotonic,
+        idle_seconds: int = DEFAULT_IDLE_SECONDS,
+    ):
         _validate_plan(plan)
+        if type(idle_seconds) is not int or not 0 < idle_seconds <= MAX_IDLE_SECONDS:
+            raise ValueError("Framebuffer idle timeout must be in 1..600 seconds")
         self.plan = plan
         self.audit = audit
+        self.clock = clock
+        self.idle_seconds = idle_seconds
         self.page = 0
         self.offset = 0
         self.seen: set[int] = set()
         self.cancelled = False
         self.locked = False
+        self.lock_reason: str | None = None
         self.scroll_bottom = 0
+        # This display-only controller cannot extend SignerSession lifetime.
+        # Invalid clocks fail closed before opening the virtual terminal.
+        self.last_activity = self._checked_clock()
+
+    def _checked_clock(self) -> float:
+        now = self.clock()
+        if type(now) not in (int, float) or not math.isfinite(now):
+            raise ValueError("Invalid monotonic clock")
+        return float(now)
+
+    def fail_closed(self, reason: str) -> None:
+        self.locked = True
+        self.lock_reason = reason
+        self.seen.clear()
 
     def _audit_ok(self) -> bool:
         try:
@@ -260,12 +289,26 @@ class ReviewController:
     def action(self, key: str) -> bool:
         if self.cancelled or self.locked:
             return False
+        try:
+            now = self._checked_clock()
+        except Exception:
+            self.fail_closed("clock_failed")
+            return False
+        if now < self.last_activity:
+            self.fail_closed("clock_reversed")
+            return False
+        if now - self.last_activity >= self.idle_seconds:
+            self.fail_closed("idle_timeout")
+            return False
         if key == "ESC":
             self.cancelled = True
+            self.seen.clear()
             return False
         if not self._audit_ok():
-            self.locked = True
+            self.fail_closed("audit_failed")
             return False
+        if key in ("LEFT", "RIGHT", "DOWN", "UP", "ENTER"):
+            self.last_activity = now
         if key == "LEFT":
             self.page = max(0, self.page - 1)
             self.offset = 0
@@ -430,10 +473,10 @@ def run_vt(
             discard_queued_input = True
             while not controller.cancelled and not controller.locked:
                 if not _vt_is_active(fd, tty_number):
-                    controller.locked = True
+                    controller.fail_closed("vt_failed")
                     break
                 if not controller._audit_ok():
-                    controller.locked = True
+                    controller.fail_closed("audit_failed")
                     break
                 total = render_review(
                     display,
@@ -459,7 +502,7 @@ def run_vt(
                 after = (controller.page, controller.offset, frozenset(controller.seen))
                 if after != before:
                     discard_queued_input = True
-            reason = "cancelled" if controller.cancelled else "audit_or_vt_failed"
+            reason = "cancelled" if controller.cancelled else (controller.lock_reason or "fail_closed")
             return ReviewIntent(plan.review_digest, False, reason)
         finally:
             # A reviewed result is suppressed if secure cleanup cannot complete.
