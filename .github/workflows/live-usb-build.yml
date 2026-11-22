@@ -1,27 +1,35 @@
 name: Live USB image verification
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/live-usb-build.yml"
-      - "buildroot-external/**"
-      - "infra/**"
-      - "scripts/**"
-      - "src/**"
-      - "tests/**"
-      - "Makefile"
-      - "pyproject.toml"
+  workflow_call:
+    inputs:
+      smoke_only:
+        type: boolean
+        required: false
+        default: false
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: live-usb-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: live-usb-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.smoke_only && 'smoke' || 'full' }}
   cancel-in-progress: true
 
 jobs:
+  contract-smoke:
+    if: inputs.smoke_only == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Verify real reusable workflow invocation
+        run: |
+          set -euo pipefail
+          test "${{ inputs.smoke_only }}" = "true"
+          echo "Live USB reusable workflow_call contract executed"
+
   build-and-reproduce:
+    if: inputs.smoke_only != true
     runs-on: ubuntu-24.04
     timeout-minutes: 330
     env:
@@ -30,7 +38,18 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          # Test and publish bytes from the PR's exact HEAD, not a synthetic merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+
+      - name: Verify exact checkout identity
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -eu
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXPECTED_HEAD_SHA"
+          printf 'Exact checkout: %s\n' "$actual"
 
       - name: Show resource budget
         run: |
@@ -60,6 +79,80 @@ jobs:
 
       - name: Boot generated USB image using UEFI OVMF/QEMU (TCG)
         run: sh scripts/verify_uefi_boot.sh
+
+      # Publish only after both clean builds match AND the generated image
+      # actually booted through OVMF with the startup security audit passing.
+      # No artifact is created on failed/cancelled/incomplete verification.
+      - name: Package and verify exact image artifact
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          ARTIFACT_DIR: build/verified-artifact
+          XZ_PARAMS: "--threads=1 --check=crc64 -9e"
+        run: |
+          set -eu
+          image="build/output/images/usb-cold-wallet.img"
+          evidence="build/reproducibility"
+          mkdir -p "$ARTIFACT_DIR"
+
+          # Bind the published bytes to the second clean build that was boot-audited.
+          (
+            cd build/output/images
+            sha256sum -c ../../reproducibility/run-2.sha256
+            sha256sum usb-cold-wallet.img > usb-cold-wallet.img.sha256
+            sha256sum -c usb-cold-wallet.img.sha256
+          )
+
+          cp "$image" "$ARTIFACT_DIR/usb-cold-wallet.img"
+          cp build/output/images/usb-cold-wallet.img.sha256 "$ARTIFACT_DIR/"
+          cp "$evidence/run-1.sha256" "$evidence/run-2.sha256" "$ARTIFACT_DIR/"
+
+          # xz does not embed timestamps. Single-threaded fixed parameters make
+          # the compressed representation independently reproducible.
+          xz $XZ_PARAMS --keep --stdout "$image" > "$ARTIFACT_DIR/usb-cold-wallet.img.xz"
+          (
+            cd "$ARTIFACT_DIR"
+            sha256sum usb-cold-wallet.img.xz > usb-cold-wallet.img.xz.sha256
+            sha256sum -c usb-cold-wallet.img.sha256
+            sha256sum -c usb-cold-wallet.img.xz.sha256
+            xz --test usb-cold-wallet.img.xz
+            xz --decompress --stdout usb-cold-wallet.img.xz | cmp - usb-cold-wallet.img
+          )
+
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXPECTED_HEAD_SHA"
+          {
+            echo "classification=TESTNET ONLY / NOT A RELEASE"
+            echo "repository=${{ github.repository }}"
+            echo "commit_sha=$actual"
+            echo "event_head_sha=$EXPECTED_HEAD_SHA"
+            echo "workflow_run_id=${{ github.run_id }}"
+            echo "workflow_run_attempt=${{ github.run_attempt }}"
+            echo "workflow_ref=${{ github.workflow_ref }}"
+            echo "source_date_epoch=$(sed -n 's/^SOURCE_DATE_EPOCH=//p' infra/reproducible.env)"
+            echo "xz_version=$(xz --version | head -n1)"
+            echo "xz_params=$XZ_PARAMS"
+            echo "buildroot_env_sha256=$(sha256sum infra/buildroot.env | awk '{print $1}')"
+            echo "reproducible_env_sha256=$(sha256sum infra/reproducible.env | awk '{print $1}')"
+            echo "defconfig_sha256=$(sha256sum buildroot-external/configs/usb_wallet_x86_64_defconfig | awk '{print $1}')"
+            echo "genimage_cfg_sha256=$(sha256sum buildroot-external/board/usb-wallet/genimage.cfg | awk '{print $1}')"
+            echo "image_sha256=$(sha256sum "$image" | awk '{print $1}')"
+            echo "compressed_image_sha256=$(sha256sum "$ARTIFACT_DIR/usb-cold-wallet.img.xz" | awk '{print $1}')"
+          } > "$ARTIFACT_DIR/ARTIFACT-MANIFEST.txt"
+
+          # Manifest and evidence must all describe the exact same raw image.
+          expected="$(awk '$2 == "usb-cold-wallet.img" {print $1}' "$evidence/run-2.sha256")"
+          test -n "$expected"
+          test "$expected" = "$(awk '{print $1}' "$ARTIFACT_DIR/usb-cold-wallet.img.sha256")"
+          test "$expected" = "$(sed -n 's/^image_sha256=//p' "$ARTIFACT_DIR/ARTIFACT-MANIFEST.txt")"
+
+      - name: Upload verified testnet-only boot image (NOT A RELEASE)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: testnet-only-NOT-A-RELEASE-usb-cold-wallet
+          path: build/verified-artifact/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
 
       - name: Upload bounded UEFI failure diagnostics (test image only)
         if: failure()
