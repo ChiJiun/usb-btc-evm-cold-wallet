@@ -444,6 +444,21 @@ class PendingRequestStore(_Journal):
     def __init__(self, root: Path, *, expected_tip: str | None = None):
         super().__init__(root, "online", expected_tip=expected_tip)
 
+    def active_request_ids(self) -> set[str]:
+        """Enumerate visible in-flight reservations, including missing exchange files.
+
+        This only checks the currently visible journal. An independent anchor
+        remains necessary to detect a coherent rollback of the whole store.
+        """
+        self._reload()
+        ids = {record["requestId"] for record in self._records}
+        return {
+            request_id for request_id in ids
+            if self.get(request_id).state in {
+                "DRAFT", "EXPORTED", "IMPORTED_VERIFIED", "BROADCAST_REQUESTED"
+            }
+        }
+
     def create(self, request: dict) -> StateSnapshot:
         return self._transition(
             request["requestId"], "DRAFT", request["sha256"], request["transactionDigest"],

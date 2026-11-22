@@ -2,6 +2,7 @@
 import hashlib
 import http.client
 import json
+import shutil
 import threading
 from pathlib import Path
 
@@ -514,6 +515,57 @@ def _prepared_imported_evm(tmp_path):
     write_response(manager, request_id, response)
     manager.resume_response(online, btc)
     return manager, online, btc, request_id
+
+
+@pytest.mark.parametrize("state", [
+    "EXPORTED", "IMPORTED_VERIFIED", "BROADCAST_REQUESTED",
+])
+def test_missing_request_with_active_journal_blocks_reboot_and_new_export(tmp_path, state):
+    if state == "EXPORTED":
+        manager = CrossBootManager(tmp_path)
+        online, btc, _ = fresh_sessions()
+        request_id = online.prepare(RECIPIENT, "0.01")["pending"]["request_id"]
+        manager.export_current(online, btc)
+    else:
+        manager, online, btc, request_id = _prepared_imported_evm(tmp_path)
+        if state == "BROADCAST_REQUESTED":
+            manager.mark_broadcast_requested(online, btc, online.pending["tx_hash"])
+
+    manager._request_path(request_id).unlink()
+    restored, restored_btc, _ = fresh_sessions()
+    restored.pending = None
+    restored_btc.pending = None
+    with pytest.raises(ValueError, match="Active online journal lacks its request file"):
+        CrossBootManager(tmp_path).restore(restored, restored_btc)
+
+    new_online, new_btc, _ = fresh_sessions()
+    new_online.prepare(RECIPIENT, "0.01")
+    with pytest.raises(ValueError, match="Active online journal lacks its request file"):
+        manager.export_current(new_online, new_btc)
+    assert PendingRequestStore(manager.state_root).get(request_id).state == state
+
+
+def test_coherent_exchange_and_journal_snapshot_rollback_requires_external_anchor(tmp_path):
+    """Expose the known BLOCKED gap: complete snapshots fool an unpinned store."""
+    manager, online, btc, request_id = _prepared_imported_evm(tmp_path)
+    snapshot = tmp_path / "old-valid-snapshot"
+    shutil.copytree(manager.base, snapshot)
+
+    manager.mark_broadcast_requested(online, btc, online.pending["tx_hash"])
+    trusted_tip = PendingRequestStore(manager.state_root).tip_anchor()
+    assert PendingRequestStore(manager.state_root).get(request_id).state == "BROADCAST_REQUESTED"
+
+    # Simulate hostile Windows restoring BOTH the immutable journal and exchange.
+    shutil.rmtree(manager.base)
+    shutil.copytree(snapshot, manager.base)
+
+    unpinned = PendingRequestStore(manager.state_root)
+    assert unpinned.rollback_resistant is False
+    assert unpinned.get(request_id).state == "IMPORTED_VERIFIED"
+    with pytest.raises(ValueError, match="tip differs from externally pinned anchor"):
+        PendingRequestStore(manager.state_root, expected_tip=trusted_tip)
+    # This is deliberately NOT a security-pass assertion: production has no
+    # independently retained anchor source, so remain Draft / BLOCKED.
 
 
 def _delete_online_journal(manager):

@@ -298,11 +298,10 @@ class CrossBootManager:
         return btc_session
 
     def _active_request_ids(self):
-        if not self.exchange.exists():
-            return []
         store = self._store()
         active = []
-        for path in sorted(self.exchange.glob("request-*.json")):
+        paths = sorted(self.exchange.glob("request-*.json")) if self.exchange.exists() else []
+        for path in paths:
             match = re.fullmatch(r"request-([0-9a-f]{32})\.json", path.name)
             if match is None:
                 raise ValueError("Unexpected request filename in TX_TRANSFER")
@@ -331,6 +330,11 @@ class CrossBootManager:
                 self._cleanup_files(request_id)
             else:
                 raise ValueError("Unsupported persisted online state")
+        # Never use the hostile exchange directory as the source of truth for
+        # whether an in-flight reservation exists. Lost request files (rename,
+        # crash, deletion, or host tampering) must block restore and new export.
+        if store.active_request_ids().difference(active):
+            raise ValueError("Active online journal lacks its request file; recovery fails closed")
         return active
 
     def restore(self, session, btc_session) -> bool:
