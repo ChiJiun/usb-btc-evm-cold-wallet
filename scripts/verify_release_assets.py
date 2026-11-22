@@ -28,7 +28,7 @@ ASSET_RE = re.compile(
 CHECKSUM_RE = re.compile(r"([a-fA-F0-9]{64}) [ *]([A-Za-z0-9][A-Za-z0-9._+-]*)")
 MAX_MANIFEST_BYTES = 128 * 1024
 REQUIRED_STAGED_FILES = ("SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt")
-DEFAULT_AUTHORIZED_RELEASE_SIGNERS = frozenset({"ChiJiun"})
+DEFAULT_AUTHORIZED_RELEASE_TAGGER_EMAILS = frozenset({"0311gino@gmail.com"})
 Run = Callable[[list[str]], str]
 
 
@@ -131,66 +131,34 @@ def _validate_identity(tag: str, commit: str, asset: str | None = None) -> tuple
 
 
 def _verify_authorized_tag_signer(
-    run: Run,
-    tag_sha: str,
-    authorized_signers: frozenset[str],
+    annotated: dict,
+    authorized_tagger_emails: frozenset[str],
 ) -> None:
-    if not authorized_signers:
-        raise ReleaseVerificationError("No authorized release signer is configured")
-    query = """
-    query($owner:String!, $name:String!, $oid:GitObjectID!) {
-      repository(owner:$owner, name:$name) {
-        object(oid:$oid) {
-          ... on Tag {
-            oid
-            signature {
-              isValid
-              state
-              signer { login }
-              wasSignedByGitHub
-            }
-          }
-        }
-      }
-    }
-    """
-    result = _json(
-        run,
-        [
-            "api",
-            "graphql",
-            "-f",
-            f"query={query}",
-            "-F",
-            "owner=ChiJiun",
-            "-F",
-            "name=usb-btc-evm-cold-wallet",
-            "-F",
-            f"oid={tag_sha}",
-        ],
-    )
-    repository = result.get("data", {}).get("repository")
-    obj = repository.get("object") if isinstance(repository, dict) else None
-    signature = obj.get("signature") if isinstance(obj, dict) else None
-    signer = signature.get("signer") if isinstance(signature, dict) else None
-    login = signer.get("login") if isinstance(signer, dict) else None
+    """Bind a GitHub-verified GPG tag signature to an explicit release identity."""
+    if not authorized_tagger_emails:
+        raise ReleaseVerificationError("No authorized release tagger email is configured")
+
+    verification = annotated.get("verification")
+    tagger = annotated.get("tagger")
+    signature = verification.get("signature") if isinstance(verification, dict) else None
+    email = tagger.get("email") if isinstance(tagger, dict) else None
     if (
-        not isinstance(obj, dict)
-        or obj.get("oid") != tag_sha
-        or not isinstance(signature, dict)
-        or signature.get("isValid") is not True
-        or signature.get("state") != "VALID"
-        or signature.get("wasSignedByGitHub") is True
-        or login not in authorized_signers
+        not isinstance(verification, dict)
+        or verification.get("verified") is not True
+        or verification.get("reason") != "valid"
+        or not isinstance(signature, str)
+        or not signature.startswith("-----BEGIN PGP SIGNATURE-----")
+        or not isinstance(email, str)
+        or email not in authorized_tagger_emails
     ):
-        raise ReleaseVerificationError("Tag signer is not an authorized release identity")
+        raise ReleaseVerificationError("Tag signature is not from an authorized release identity")
 
 
 def _verify_signed_tag(
     run: Run,
     tag: str,
     commit: str,
-    authorized_signers: frozenset[str],
+    authorized_tagger_emails: frozenset[str],
     *,
     expected_tag_object_sha: str | None = None,
 ) -> str:
@@ -217,7 +185,7 @@ def _verify_signed_tag(
         or verification.get("verified") is not True
     ):
         raise ReleaseVerificationError("Tag signature, tag name, or pinned commit mismatch")
-    _verify_authorized_tag_signer(run, tag_sha, authorized_signers)
+    _verify_authorized_tag_signer(annotated, authorized_tagger_emails)
     return tag_sha
 
 
@@ -226,7 +194,7 @@ def verify_source(
     commit: str,
     *,
     run: Run = _gh,
-    authorized_signers: frozenset[str] = DEFAULT_AUTHORIZED_RELEASE_SIGNERS,
+    authorized_tagger_emails: frozenset[str] = DEFAULT_AUTHORIZED_RELEASE_TAGGER_EMAILS,
     expected_tag_object_sha: str | None = None,
 ) -> str:
     """Verify signed tag, exact source commit, authorized signer, and optional tag-object pin."""
@@ -235,7 +203,7 @@ def verify_source(
         run,
         tag,
         commit,
-        authorized_signers,
+        authorized_tagger_emails,
         expected_tag_object_sha=expected_tag_object_sha,
     )
 
@@ -444,7 +412,7 @@ def verify_local_artifacts(
     *,
     workflow_sha: str,
     run: Run = _gh,
-    authorized_signers: frozenset[str] = DEFAULT_AUTHORIZED_RELEASE_SIGNERS,
+    authorized_tagger_emails: frozenset[str] = DEFAULT_AUTHORIZED_RELEASE_TAGGER_EMAILS,
     expected_tag_object_sha: str | None = None,
 ) -> str:
     """Verify the exact staged bytes after attestation and before publish."""
@@ -453,7 +421,7 @@ def verify_local_artifacts(
         run,
         tag,
         commit,
-        authorized_signers,
+        authorized_tagger_emails,
         expected_tag_object_sha=expected_tag_object_sha,
     )
 
@@ -509,7 +477,7 @@ def verify_release(
     *,
     workflow_sha: str,
     run: Run = _gh,
-    authorized_signers: frozenset[str] = DEFAULT_AUTHORIZED_RELEASE_SIGNERS,
+    authorized_tagger_emails: frozenset[str] = DEFAULT_AUTHORIZED_RELEASE_TAGGER_EMAILS,
     expected_tag_object_sha: str | None = None,
 ) -> str:
     """Independently download and verify an already-published immutable release."""
@@ -518,7 +486,7 @@ def verify_release(
         run,
         tag,
         commit,
-        authorized_signers,
+        authorized_tagger_emails,
         expected_tag_object_sha=expected_tag_object_sha,
     )
 
