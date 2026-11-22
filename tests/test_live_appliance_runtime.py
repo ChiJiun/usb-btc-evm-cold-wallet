@@ -9,6 +9,13 @@ import pytest
 from usb_cold_wallet import appliance, cli, gui
 
 
+def test_console_ready_marker_contains_no_wallet_data(monkeypatch, tmp_path):
+    serial = tmp_path / "ttyS0"
+    monkeypatch.setattr(appliance, "SERIAL_DIAGNOSTIC", serial)
+    appliance._signal_console_ready()
+    assert serial.read_text(encoding="ascii") == "USB_WALLET_CONSOLE_READY\n"
+
+
 def test_appliance_live_audit_failure_is_visible_and_blocks_menu(monkeypatch, tmp_path):
     boot = tmp_path / "boot-checks.txt"
     boot.write_text("PASS: synthetic boot checks recorded\n", encoding="utf-8")
