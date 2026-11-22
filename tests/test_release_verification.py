@@ -113,6 +113,8 @@ class FakeGitHub:
                     "run_attempt": 1,
                     "repository": {"full_name": REPOSITORY},
                     "head_repository": {"full_name": REPOSITORY},
+                    "actor": {"login": "ChiJiun"},
+                    "triggering_actor": {"login": "ChiJiun"},
                 }
             )
         if args[:2] == ["release", "view"]:
@@ -228,6 +230,8 @@ def test_trusted_main_candidate_workflow_run_is_accepted():
         ("path", ".github/workflows/evil.yml"),
         ("repository", {"full_name": "attacker/repo"}),
         ("head_repository", {"full_name": "attacker/repo"}),
+        ("actor", {"login": "attacker"}),
+        ("triggering_actor", {"login": "attacker"}),
         ("run_attempt", 2),
     ],
 )
@@ -243,6 +247,8 @@ def test_untrusted_or_mismatched_candidate_workflow_run_is_rejected(field, value
         "run_attempt": 1,
         "repository": {"full_name": REPOSITORY},
         "head_repository": {"full_name": REPOSITORY},
+        "actor": {"login": "ChiJiun"},
+        "triggering_actor": {"login": "ChiJiun"},
     }
     base[field] = value
 
