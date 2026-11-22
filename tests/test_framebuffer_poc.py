@@ -363,3 +363,15 @@ def test_framebuffer_final_runtime_audit_failure_locks_signer():
         fb.authorize_review_intent(
             plan, intent, signer, rebuild_plan=_plan, audit=lambda: False)
     assert signer.state == State.LOCKED
+
+
+
+def test_evdev_same_path_replacement_fails_closed(tmp_path: Path):
+    event = tmp_path / "event0"
+    event.write_bytes(b"old")
+    with fb.EvdevInput(tmp_path) as inputs:
+        original = tmp_path / "event0.old"
+        event.rename(original)
+        event.write_bytes(b"new")
+        with pytest.raises(fb.InputDeviceChanged, match="identity changed"):
+            inputs._assert_stable()

@@ -121,6 +121,7 @@ class EvdevInput:
         self.directory = directory
         self.paths: tuple[str, ...] = ()
         self._fds: dict[int, str] = {}
+        self._identities: dict[str, tuple[int, int, int]] = {}
 
     def _discover(self) -> tuple[str, ...]:
         try:
@@ -141,7 +142,9 @@ class EvdevInput:
         try:
             for path in self.paths:
                 fd = os.open(path, flags)
+                stat = os.fstat(fd)
                 self._fds[fd] = path
+                self._identities[path] = (stat.st_dev, stat.st_ino, stat.st_rdev)
         except Exception:
             self.close()
             raise
@@ -154,6 +157,7 @@ class EvdevInput:
             except OSError:
                 pass
         self._fds.clear()
+        self._identities.clear()
 
     def __exit__(self, _exc_type, _exc, _tb) -> None:
         self.close()
@@ -161,6 +165,14 @@ class EvdevInput:
     def _assert_stable(self) -> None:
         if self._discover() != self.paths:
             raise InputDeviceChanged("Input device set changed during review")
+        for path, expected in self._identities.items():
+            try:
+                stat = os.stat(path, follow_symlinks=False)
+            except OSError as exc:
+                raise InputDeviceChanged("Input device disappeared during review") from exc
+            current = (stat.st_dev, stat.st_ino, stat.st_rdev)
+            if current != expected:
+                raise InputDeviceChanged("Input device identity changed during review")
 
     def drain(self) -> None:
         """Discard input queued before the current stable rendered frame."""
