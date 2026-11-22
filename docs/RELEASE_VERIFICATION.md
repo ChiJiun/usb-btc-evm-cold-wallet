@@ -25,7 +25,7 @@ Candidate 的 signed annotated tag 必須精確指向 input source SHA；GitHub 
 流程固定為：
 
 1. signed tag → exact source SHA 驗證。
-2. 同一來源做兩次 clean Buildroot image build，`scripts/check_reproducible.sh` 比對 raw `usb-cold-wallet.img` SHA-256。
+2. 同一來源做兩次 clean Buildroot image build，分別使用 `O=build/output-repro-1` 與 `O=build/output`，不共用 generated output tree；`scripts/check_reproducible.sh` 比對完整 raw `usb-cold-wallet.img` 與 `bzImage` SHA-256。兩次建置可共用已驗證且 hash-locked 的 source/download cache，但不共用 Buildroot output state。
 3. 對兩次 raw image 的 SHA-256 再做顯式相等檢查，將共同 digest 寫入 `release-metadata.json`；使用該 Buildroot 版本所固定的 host `xz`，以 `-6 --threads=1 --check=crc64 --no-sparse` 壓縮兩次並 byte-for-byte 比對。
 4. 由最後 root filesystem 產生 SPDX JSON SBOM；保存 `build-host-packages.txt`、`release-metadata.json` 與 `SHA256SUMS`。manifest 精確涵蓋最後 image、SBOM、metadata、host dependency evidence。
 5. Candidate workflow 將這批 bytes 上傳成名稱綁定 `run_id` / `run_attempt` 的 Actions artifact，並先做無特權的本機 digest／metadata／tag-object 驗證。
