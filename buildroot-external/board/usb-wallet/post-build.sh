@@ -28,14 +28,23 @@ if [ -f "$TARGET_DIR/etc/inittab" ]; then
 	# Fail on every other interactive respawn/askfirst program too (login,
 	# cttyhack, alternate interpreters, etc.). Exactly one tty1 appliance is allowed.
 	UNEXPECTED_INTERACTIVE="$(awk -F: '
-		($3 == "respawn" || $3 == "askfirst") &&
-		$4 != "/usr/bin/usb-wallet-gui-session" { print }
+		(
+		    $1 ~ /^tty[0-9]+$/ ||
+		    $3 == "respawn" || $3 == "askfirst" ||
+		    (($3 == "once" || $3 == "wait") &&
+		     $4 ~ /(getty|login|cttyhack|\/bin\/(a|ba|z)?sh)/)
+		) &&
+		!($1 == "tty1" && $3 == "respawn" &&
+		  $4 == "/usr/bin/usb-wallet-gui-session") { print }
 	' "$TARGET_DIR/etc/inittab")"
 	if [ -n "$UNEXPECTED_INTERACTIVE" ] || [ "$(grep -c '^tty1::respawn:/usr/bin/usb-wallet-gui-session$' "$TARGET_DIR/etc/inittab" || true)" -ne 1 ]; then
 		echo "ERROR: unexpected interactive inittab entry survived appliance lockdown" >&2
 		printf '%s\n' "$UNEXPECTED_INTERACTIVE" >&2
 		exit 1
 	fi
+else
+	echo "ERROR: missing /etc/inittab; cannot enforce appliance lockdown" >&2
+	exit 1
 fi
 
 for required in \

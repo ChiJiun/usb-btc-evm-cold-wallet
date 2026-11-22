@@ -340,6 +340,18 @@ def test_post_build_enforces_single_appliance_tty_and_fails_closed(tmp_path):
     assert result.returncode != 0
     assert "unexpected interactive inittab entry" in result.stderr
 
+    # A one-shot unapproved terminal program must not bypass respawn filtering.
+    inittab.write_text("::sysinit:/etc/init.d/rcS\ntty2::once:/usr/bin/unapproved\n")
+    result = subprocess.run(["sh", str(script)], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "unexpected interactive inittab entry" in result.stderr
+
+    # Missing init policy must not silently produce an unguarded Live OS.
+    inittab.unlink()
+    result = subprocess.run(["sh", str(script)], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "missing /etc/inittab" in result.stderr
+
     # A missing appliance launcher must also block the build.
     inittab.write_text("::sysinit:/etc/init.d/rcS\n")
     (target / "usr/bin/usb-wallet-gui-session").unlink()
