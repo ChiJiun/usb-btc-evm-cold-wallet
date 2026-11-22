@@ -6,6 +6,7 @@ authenticate the USB contents or provide a trusted boot root.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 import struct
@@ -25,54 +26,122 @@ SECTOR_SIZE = 512
 BOOT_SECTORS = 64 * 1024 * 1024 // SECTOR_SIZE
 VAULT_SECTORS = 64 * 1024 * 1024 // SECTOR_SIZE
 TRANSFER_SECTORS = 512 * 1024 * 1024 // SECTOR_SIZE
+GPT_ENTRY_COUNT = 128
+GPT_ENTRY_SIZE = 128
+GPT_TABLE_SECTORS = GPT_ENTRY_COUNT * GPT_ENTRY_SIZE // SECTOR_SIZE
+
+
+def _read_header(source, lba: int) -> dict[str, int | uuid.UUID]:
+    source.seek(lba * SECTOR_SIZE)
+    header = source.read(SECTOR_SIZE)
+    if len(header) != SECTOR_SIZE or header[:8] != b"EFI PART":
+        raise ValueError("missing GPT header")
+    revision, size, checksum = struct.unpack_from("<III", header, 8)
+    if revision != 0x00010000 or not 92 <= size <= SECTOR_SIZE:
+        raise ValueError("invalid GPT header geometry")
+    canonical = bytearray(header[:size])
+    canonical[16:20] = bytes(4)
+    if zlib.crc32(canonical) != checksum:
+        raise ValueError("invalid GPT header CRC")
+    current_lba, backup_lba, first_usable, last_usable = struct.unpack_from("<QQQQ", header, 24)
+    disk_id = uuid.UUID(bytes_le=header[56:72])
+    entries_lba, count, width, entries_crc = struct.unpack_from("<QIII", header, 72)
+    if (
+        current_lba != lba
+        or first_usable > last_usable
+        or count != GPT_ENTRY_COUNT
+        or width != GPT_ENTRY_SIZE
+    ):
+        raise ValueError("invalid GPT header geometry")
+    return {
+        "current_lba": current_lba,
+        "backup_lba": backup_lba,
+        "first_usable": first_usable,
+        "last_usable": last_usable,
+        "disk_id": disk_id,
+        "entries_lba": entries_lba,
+        "count": count,
+        "width": width,
+        "entries_crc": entries_crc,
+    }
+
+
+def _read_entries(source, header: dict[str, int | uuid.UUID]) -> bytes:
+    lba = int(header["entries_lba"])
+    count = int(header["count"])
+    width = int(header["width"])
+    source.seek(lba * SECTOR_SIZE)
+    entries = source.read(count * width)
+    if len(entries) != count * width or zlib.crc32(entries) != int(header["entries_crc"]):
+        raise ValueError("invalid GPT entries CRC")
+    return entries
 
 
 def read_gpt(
     disk: Path,
 ) -> tuple[uuid.UUID, list[tuple[uuid.UUID, uuid.UUID, int, int, int]]]:
-    """Read/CRC-check the primary GPT, rejecting malformed entries."""
+    """Read and cross-check protective MBR plus primary/backup GPT copies."""
     if disk.is_symlink():
         raise ValueError("block device path must not be a symlink")
     with disk.open("rb") as source:
+        source.seek(0, os.SEEK_END)
+        size_bytes = source.tell()
+        if size_bytes < 68 * SECTOR_SIZE or size_bytes % SECTOR_SIZE:
+            raise ValueError("invalid disk geometry")
+        last_lba = size_bytes // SECTOR_SIZE - 1
+
+        source.seek(0)
         mbr = source.read(SECTOR_SIZE)
-        if (len(mbr) != SECTOR_SIZE or mbr[510:512] != b"\x55\xaa"
-                or mbr[450] != 0xEE or any(mbr[462:510])):
-            raise ValueError("missing or hybrid protective MBR")
-        header = source.read(SECTOR_SIZE)
-        if len(header) != SECTOR_SIZE or header[:8] != b"EFI PART":
-            raise ValueError("missing GPT")
-        size, checksum = struct.unpack_from("<II", header, 12)
-        if not 92 <= size <= SECTOR_SIZE:
-            raise ValueError("invalid GPT header size")
-        copy = bytearray(header[:size])
-        copy[16:20] = b"\x00" * 4
-        if zlib.crc32(copy) != checksum:
-            raise ValueError("invalid GPT header CRC")
-        disk_id = uuid.UUID(bytes_le=header[56:72])
-        lba, count, width, entries_crc = struct.unpack_from("<QIII", header, 72)
-        if not 2 <= count <= 128 or not 128 <= width <= 512 or width % 8 or lba < 2:
-            raise ValueError("invalid GPT partition table")
-        source.seek(lba * SECTOR_SIZE)
-        entries = source.read(count * width)
-        if len(entries) != count * width or zlib.crc32(entries) != entries_crc:
-            raise ValueError("invalid GPT entries CRC")
+        if len(mbr) != SECTOR_SIZE or mbr[510:512] != b"\x55\xaa":
+            raise ValueError("missing protective MBR")
+        first = mbr[446:462]
+        if first[0] != 0 or first[4] != 0xEE or struct.unpack_from("<I", first, 8)[0] != 1:
+            raise ValueError("invalid protective MBR")
+        if any(mbr[462:510]):
+            raise ValueError("hybrid protective MBR")
+
+        primary = _read_header(source, 1)
+        backup = _read_header(source, last_lba)
+        if (
+            int(primary["backup_lba"]) != last_lba
+            or int(backup["backup_lba"]) != 1
+            or primary["disk_id"] != backup["disk_id"]
+            or primary["first_usable"] != backup["first_usable"]
+            or primary["last_usable"] != backup["last_usable"]
+            or primary["count"] != backup["count"]
+            or primary["width"] != backup["width"]
+            or primary["entries_crc"] != backup["entries_crc"]
+            or int(primary["entries_lba"]) != 2
+            or int(backup["entries_lba"]) != last_lba - GPT_TABLE_SECTORS
+            or int(primary["first_usable"]) < 2 + GPT_TABLE_SECTORS
+            or int(primary["last_usable"]) >= int(backup["entries_lba"])
+        ):
+            raise ValueError("primary/backup GPT geometry mismatch")
+
+        entries = _read_entries(source, primary)
+        backup_entries = _read_entries(source, backup)
+        if entries != backup_entries:
+            raise ValueError("primary/backup GPT partition tables differ")
+        disk_id = primary["disk_id"]
+        assert isinstance(disk_id, uuid.UUID)
+
     partitions = []
     seen_empty = False
-    for index in range(count):
-        entry = entries[index * width:(index + 1) * width]
+    first_usable = int(primary["first_usable"])
+    last_usable = int(primary["last_usable"])
+    for index in range(GPT_ENTRY_COUNT):
+        entry = entries[index * GPT_ENTRY_SIZE:(index + 1) * GPT_ENTRY_SIZE]
         if entry[:16] == bytes(16):
             seen_empty = True
             continue
-        # Linux names GPT entry N as sdXN; gaps can bind an unexpected
-        # partition to an expected device path even with valid GPT CRCs.
         if seen_empty:
             raise ValueError("non-contiguous GPT partition entries")
         kind = uuid.UUID(bytes_le=entry[:16])
         part_id = uuid.UUID(bytes_le=entry[16:32])
-        first_lba, last_lba, attrs = struct.unpack_from("<QQQ", entry, 32)
-        if not first_lba or last_lba < first_lba:
+        first_lba, last_part_lba, attrs = struct.unpack_from("<QQQ", entry, 32)
+        if first_lba < first_usable or last_part_lba > last_usable or last_part_lba < first_lba:
             raise ValueError("invalid GPT partition range")
-        partitions.append((kind, part_id, attrs, first_lba, last_lba))
+        partitions.append((kind, part_id, attrs, first_lba, last_part_lba))
     return disk_id, partitions
 
 
@@ -144,7 +213,7 @@ def _layout_valid(
     boot, vault = parts[0], parts[1]
     if (
         boot[:2] != (EFI_TYPE, BOOT_UUID)
-        or not (boot[2] & READ_ONLY)
+        or boot[2] != READ_ONLY
         or _size(boot) != BOOT_SECTORS
         or vault[:2] != (
             LINUX_FS_TYPE if len(parts) == 3 else DATA_TYPE, VAULT_UUID
