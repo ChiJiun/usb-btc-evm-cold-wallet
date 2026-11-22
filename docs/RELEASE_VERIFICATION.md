@@ -4,7 +4,7 @@
 
 ## Release workflow 信任邊界
 
-Release workflow 必須從受保護的 `refs/heads/main` 執行 `workflow_dispatch`；workflow definition 的 commit SHA（`GITHUB_SHA`）與待發布 source commit（input `source_sha`）分開處理。Validate job 先要求 `GITHUB_REF == refs/heads/main`，再從 trusted workflow commit checkout verifier；之後才驗證 release tag 是 signed annotated tag、tag 指向 exact source SHA，且 GitHub GraphQL `Tag.signature.signer.login` 是允許的 release signer。Validate 會固定 annotated tag object SHA，供 verify / publish 再次比對。
+Release workflow 必須從受保護的 `refs/heads/main` 執行 `workflow_dispatch`；workflow definition 的 commit SHA（`GITHUB_SHA`）與待發布 source commit（input `source_sha`）分開處理。Validate job 先要求 `GITHUB_REF == refs/heads/main`，再從 trusted workflow commit checkout verifier；之後才驗證 release tag 是 signed annotated tag、tag 指向 exact source SHA，且 GitHub 將該 GPG tag 標為 `verified`/`reason=valid`，signed tagger email 必須命中受保護 verifier 內的 release identity allowlist。Validate 會固定 annotated tag object SHA，供 verify / publish 再次比對。
 
 因此 SLSA provenance 的 workflow/source identity 綁到 **trusted main workflow SHA**，而 release source SHA/tag 則由 signed tag + release metadata 獨立綁定。這避免把不可信 tag commit 同時當成 privileged workflow definition。PR 事件不會執行此 workflow。
 
@@ -65,7 +65,7 @@ python3 scripts/verify_release_assets.py \
 1. **Immutable Releases**：Repository → Settings → General → Releases 啟用 immutable releases。正式發布後執行 `gh release verify <tag> -R ChiJiun/usb-btc-evm-cold-wallet`。
 2. **Release tag ruleset（目前 BLOCKER）**：建立 Active tag ruleset，include 精確設定 `refs/tags/v*`，啟用 **Restrict creations / Restrict updates / Restrict deletions**；bypass 僅允許實際 release maintainer。Release workflow 的 validate job 會從 Rulesets API fail-closed 驗證 target=tag、Active、pattern 與三個限制；bypass actor 的實際人員身分仍須 Admin 人工核對。
 3. **main / workflow trust anchor（目前 BLOCKER）**：現有 `main-protection` 必須至少要求 1 個有效 PR approval、**Require approval of the most recent reviewable push**，並把 `CI / Required` 設為 required status check；不得保留 0 approval / 0 required check。Release workflow 的 validate job 會從 Rulesets API fail-closed 驗證這些條件。完成後讀 ruleset detail 確認 `refs/heads/main`、Active、approval count ≥ 1、last-push approval=true、required check 包含 `CI / Required`。
-4. **Authorized signer**：workflow/verifier 目前只接受 GitHub signer login `ChiJiun`，且要求 signature `isValid=true`、state=`VALID`、不是 GitHub 代簽。若未來增加 release maintainer，必須先經受保護 main PR 修改 allowlist。
+4. **Authorized signer**：release tag 目前明確限制為 **GPG signed annotated tag**；verifier 同時要求 GitHub `verified=true`、`reason=valid`、PGP signature armor，以及 signed tagger email 命中受保護 main 內的 allowlist。GitHub 對 GPG tag 的 Verified 判定會核對 tagger email、GPG key identity 與該帳號已驗證 email。若未來增加 release maintainer，必須先經受保護 main PR 修改 allowlist。
 5. **Protected release environment（建議的第二道人工 gate）**：建立 `release` environment 並設 required reviewer / deployment protection，再把 publish job 綁定該 environment。未完成前不得把 environment protection 當成已存在。
 
 ## 第三方 clean rebuild
