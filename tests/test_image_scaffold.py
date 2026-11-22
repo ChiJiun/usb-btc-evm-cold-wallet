@@ -299,3 +299,50 @@ def test_media_identifier_checks_primary_and_backup_gpt():
         assert "entries_crc" in text
     assert "primary/backup GPT partition tables differ" in helper
     assert "primary/backup GPT partition tables differ" in verifier
+
+def test_post_build_has_valid_posix_shell_syntax():
+    import subprocess
+
+    script = ROOT / "buildroot-external/board/usb-wallet/post-build.sh"
+    check = subprocess.run(["sh", "-n", str(script)], capture_output=True, text=True)
+    assert check.returncode == 0, check.stderr
+
+
+def test_post_build_enforces_single_appliance_tty_and_fails_closed(tmp_path):
+    import os
+    import subprocess
+
+    script = ROOT / "buildroot-external/board/usb-wallet/post-build.sh"
+    target = tmp_path / "target"
+    images = tmp_path / "images"
+    (target / "etc").mkdir(parents=True)
+    (target / "root").mkdir()
+    (target / "usr/bin").mkdir(parents=True)
+    images.mkdir()
+    for name in ("usb-wallet-console", "usb-wallet-gui-session"):
+        executable = target / "usr/bin" / name
+        executable.write_text("#!/bin/sh\nexit 0\n")
+        executable.chmod(0o755)
+    inittab = target / "etc/inittab"
+    env = {**os.environ, "TARGET_DIR": str(target), "BINARIES_DIR": str(images)}
+
+    # Existing getty/shell entries are removed, leaving only the appliance.
+    inittab.write_text("::sysinit:/etc/init.d/rcS\ntty1::respawn:/bin/sh\ntty2::respawn:/sbin/getty\n")
+    result = subprocess.run(["sh", str(script)], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert inittab.read_text().count("tty1::respawn:/usr/bin/usb-wallet-gui-session") == 1
+    assert "/bin/sh" not in inittab.read_text()
+    assert "getty" not in inittab.read_text()
+
+    # Any second interactive daemon must block the build.
+    inittab.write_text("::sysinit:/etc/init.d/rcS\ntty2::respawn:/usr/bin/unapproved\n")
+    result = subprocess.run(["sh", str(script)], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "unexpected interactive inittab entry" in result.stderr
+
+    # A missing appliance launcher must also block the build.
+    inittab.write_text("::sysinit:/etc/init.d/rcS\n")
+    (target / "usr/bin/usb-wallet-gui-session").unlink()
+    result = subprocess.run(["sh", str(script)], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "required appliance launcher missing" in result.stderr
