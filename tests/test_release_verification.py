@@ -16,6 +16,7 @@ from scripts.verify_release_assets import (
     require_successful_jobs,
     verify_local_artifacts,
     verify_release,
+    verify_repository_release_controls,
     verify_source,
 )
 
@@ -178,6 +179,73 @@ def test_tag_object_replacement_after_validation_is_rejected():
     fake = FakeGitHub()
     with pytest.raises(ReleaseVerificationError, match="changed after validation"):
         verify_source(TAG, COMMIT, run=fake, expected_tag_object_sha="d" * 40)
+
+
+def _ruleset_run(*, main_approvals=1, last_push=True, checks=("CI / Required",), include_tag=True, tag_rules=("creation", "update", "deletion")):
+    summaries = [
+        {"id": 1, "enforcement": "active"},
+        *([{"id": 2, "enforcement": "active"}] if include_tag else []),
+    ]
+    main = {
+        "id": 1,
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["refs/heads/main"], "exclude": []}},
+        "rules": [
+            {
+                "type": "pull_request",
+                "parameters": {
+                    "required_approving_review_count": main_approvals,
+                    "require_last_push_approval": last_push,
+                },
+            },
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "required_status_checks": [{"context": name} for name in checks],
+                },
+            },
+        ],
+    }
+    tag = {
+        "id": 2,
+        "target": "tag",
+        "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
+        "rules": [{"type": name} for name in tag_rules],
+    }
+
+    def run(args):
+        if args == ["api", f"repos/{REPOSITORY}/rulesets"]:
+            return json.dumps(summaries)
+        if args == ["api", f"repos/{REPOSITORY}/rulesets/1"]:
+            return json.dumps(main)
+        if args == ["api", f"repos/{REPOSITORY}/rulesets/2"] and include_tag:
+            return json.dumps(tag)
+        raise AssertionError(args)
+
+    return run
+
+
+def test_repository_release_controls_require_protected_main_and_release_tags():
+    verify_repository_release_controls(run=_ruleset_run())
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"main_approvals": 0},
+        {"last_push": False},
+        {"checks": ()},
+        {"include_tag": False},
+        {"tag_rules": ("creation", "deletion")},
+        {"tag_rules": ("update", "deletion")},
+        {"tag_rules": ("creation", "update")},
+    ],
+)
+def test_missing_repository_release_control_blocks_release(kwargs):
+    with pytest.raises(ReleaseVerificationError, match="not enforced"):
+        verify_repository_release_controls(run=_ruleset_run(**kwargs))
 
 
 def test_staged_final_bytes_verify_before_publish(tmp_path):
