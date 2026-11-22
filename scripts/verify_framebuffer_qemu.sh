@@ -169,8 +169,10 @@ printf '%s\n' "actual QEMU screendump captured" >> "$ACTIONS"
 page=1
 while [ "$page" -le 5 ]; do
     hmp "sendkey down" "sendkey ret"
+    sleep 1
     if [ "$page" -lt 5 ]; then
         hmp "sendkey right"
+        sleep 1
     fi
     page=$((page + 1))
 done
