@@ -57,6 +57,24 @@ python3 scripts/verify_release_assets.py \
   --asset usb-cold-wallet-v0.1.0-beta.1.img.xz
 ~~~
 
+POSIX shell 與 Windows PowerShell 入口只封裝同一個 Python verifier，不另做第二套安全邏輯：
+
+~~~sh
+sh scripts/verify_release.sh \
+  v0.1.0-beta.1 \
+  <independently-verified-40-hex-source-commit> \
+  <independently-verified-40-hex-main-workflow-commit> \
+  usb-cold-wallet-v0.1.0-beta.1.img.xz
+~~~
+
+~~~powershell
+.\scripts\verify_release.ps1 `
+  v0.1.0-beta.1 `
+  <independently-verified-40-hex-source-commit> `
+  <independently-verified-40-hex-main-workflow-commit> `
+  usb-cold-wallet-v0.1.0-beta.1.img.xz
+~~~
+
 驗證器固定 repository，不接受 URL；它從 GitHub Release 下載 `SHA256SUMS`、指定 image、SPDX SBOM、release metadata 與 host dependency evidence，要求 manifest 精確覆蓋全部 payload 並逐一重算 SHA-256，再對每個檔案要求 Immutable Release asset integrity，以及由 `.github/workflows/release-finalize.yml` 在指定 protected-main SHA 簽發的 SLSA Build Provenance。它會解析已驗證 attestation 的 JSON statement，要求 SLSA predicate 中的 signed source SHA/tag/tag object/candidate run/Buildroot input 與 release metadata、外部指定 workflow SHA 完全一致；任一缺失或不一致均 nonzero exit。
 
 `SHA256SUMS` 只能證明 bytes 與 manifest 一致；其本身仍需 GitHub 的 Release integrity / asset verification。signed tag、Immutable Release、Build Provenance 各自提供不同保證，不能互相替代。
