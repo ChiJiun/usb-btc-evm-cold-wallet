@@ -72,6 +72,21 @@ jobs:
       - name: Boot generated USB image using UEFI OVMF/QEMU (TCG)
         run: sh scripts/verify_uefi_boot.sh
 
+      - name: Verify actual framebuffer GUI pixels and keyboard intents in OVMF guest
+        run: sh scripts/verify_framebuffer_qemu.sh
+
+      - name: Upload framebuffer QEMU evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: framebuffer-qemu-evidence
+          path: |
+            build/reproducibility/framebuffer-gui.ppm
+            build/reproducibility/framebuffer-metrics.txt
+            build/reproducibility/framebuffer-actions.log
+          if-no-files-found: warn
+          retention-days: 7
+
       # Publish only after both clean builds match AND the generated image
       # actually booted through OVMF with the startup security audit passing.
       # No artifact is created on failed/cancelled/incomplete verification.
