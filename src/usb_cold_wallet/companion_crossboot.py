@@ -364,20 +364,27 @@ class CrossBootManager:
         expected = (session.wallet["evm"]["address"] if request["kind"] == "evm-request"
                     else session.wallet["bitcoin"]["master_fingerprint"])
         request = self._load_request(request_id, expected)
-        owner = self._reconstruct(request, session, btc_session)
-        snap = self._store().get(request_id)
-        if snap.state in {"IMPORTED_VERIFIED", "BROADCAST_REQUESTED"}:
-            response = _read_json(self._response_path(request_id))
-            payload = _verify_response_public(
-                request, response, expected_account=expected, allow_no_trusted_clock=True
-            )
-            if snap.metadata.get("responseDigest") != response["sha256"]:
-                # Re-encoding a valid signed payload does not permit replacing
-                # the exact response committed before the previous reboot.
-                raise ValueError("Signed response differs from durable import journal")
-            owner.accept_signed(canonical(payload))
-            if snap.state == "BROADCAST_REQUESTED":
-                owner.pending["stage"] = "broadcast_unknown"
+        original_session_pending = session.pending
+        original_btc_pending = btc_session.pending
+        try:
+            owner = self._reconstruct(request, session, btc_session)
+            snap = self._store().get(request_id)
+            if snap.state in {"IMPORTED_VERIFIED", "BROADCAST_REQUESTED"}:
+                response = _read_json(self._response_path(request_id))
+                payload = _verify_response_public(
+                    request, response, expected_account=expected, allow_no_trusted_clock=True
+                )
+                if snap.metadata.get("responseDigest") != response["sha256"]:
+                    # Re-encoding a valid signed payload does not permit replacing
+                    # the exact response committed before the previous reboot.
+                    raise ValueError("Signed response differs from durable import journal")
+                owner.accept_signed(canonical(payload))
+                if snap.state == "BROADCAST_REQUESTED":
+                    owner.pending["stage"] = "broadcast_unknown"
+        except Exception:
+            session.pending = original_session_pending
+            btc_session.pending = original_btc_pending
+            raise
         return True
 
     def export_current(self, session, btc_session) -> dict:
