@@ -15,17 +15,28 @@ open mounted USB devices. Included exercises:
 
 | Area | Expected result |
 | --- | --- |
-| Published BIP39 128-bit zero-entropy mnemonic + `TREZOR` passphrase | Public vector seed prefix and PBKDF2 independent calculation match |
+| Published BIP39 128-bit zero-entropy mnemonic + `TREZOR` passphrase | Full 64-byte seed, independent PBKDF2 and SHA-256 of the published BIP32 master xprv match the pinned Trezor vector |
 | Recovery with BIP39 passphrase | First BTC testnet address, Sepolia address, BIP84 account tpub, derivation metadata, master fingerprint, policy wallet binding identical |
-| Wrong checksum, wrong mnemonic, wrong BIP39 passphrase or wrong independently recorded address | Refuse restore; no final vault created |
+| Wrong checksum, mnemonic, BIP39 passphrase, Bitcoin network, BIP84 account/index or independently recorded address | Refuse restore; no final vault created |
 | Lost disposable vault, restored from public words | Recover exactly; newly encrypted bytes differ; repeated restore never overwrites |
-| Wrong vault encryption password, invalid format/version, tampered AES-GCM ciphertext/salt, truncated JSON | Refuse load; never silently return another wallet |
-| Simulated file `fsync` failure before publish | No partial final vault; retry works after injected failure removed |
-| Staging filename replaced by another inode | Raise and do not report success; inspect any suspicious final entry |
+| Wrong vault encryption password, invalid format/version, one-bit ciphertext/salt/nonce tampering, truncated JSON or missing Vault | Refuse load; never silently return another wallet |
+| Simulated file `fsync` failure before publish or nonprivate directory | No partial final vault; retry works after injected failure removed; unsafe directory rejected before staging |
+| Staging filename replaced by another inode | Injected rename definitely occurs; writer raises, published attacker entry cannot decrypt (same-UID race remains outside trust model) |
 | Whole historical authenticated Vault snapshot restored | **Accepted by decryption**: negative evidence that AEAD alone cannot detect replay |
 | Historical authenticated Policy restored | Without independent current SHA, load succeeds; with separately retained current SHA, reject |
 | Policy bound to another HD wallet | Reject |
 | Rehearsal error output | No test mnemonic or encryption password in messages |
+
+The official oracle comes from
+[Trezor python-mnemonic `vectors.json` at commit `b57a5ad77a981e743f4167ab2f7927a55c1e82a8`](https://github.com/trezor/python-mnemonic/blob/b57a5ad77a981e743f4167ab2f7927a55c1e82a8/vectors.json)
+(English vector 0). This test stores only the published full seed and a SHA-256
+of the published master xprv. Neither is a live wallet credential.
+
+Recovery's external identity arguments contain BTC and EVM addresses, but
+an EVM address does not encode its chain ID. The watch-only metadata is
+checked for Sepolia (11155111); a different EVM network using the same
+address cannot be rejected by the paper-address check alone. Production
+transaction chain validation remains a separate mandatory boundary.
 
 For write interruption after publication (directory fsync failure), interrupted
 file writes, and destination no-overwrite races, also see
