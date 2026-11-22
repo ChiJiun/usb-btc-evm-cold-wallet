@@ -11,6 +11,7 @@ from __future__ import annotations
 import array
 from dataclasses import dataclass
 import fcntl
+import hashlib
 import mmap
 import os
 from pathlib import Path
@@ -21,7 +22,7 @@ import termios
 import tty
 from typing import Callable
 
-from .review import ReviewField, ReviewPage, ReviewPlan
+from .review import ReviewField, ReviewPage, ReviewPlan, _canonical, _review_document
 
 # linux/fb.h
 FBIOGET_VSCREENINFO = 0x4600
@@ -66,6 +67,23 @@ def _validate_plan(plan: ReviewPlan) -> None:
         raise ValueError("ReviewPlan page count outside display bounds")
     if not re.fullmatch(r"[0-9a-f]{64}", plan.review_digest):
         raise ValueError("ReviewPlan digest is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", plan.request_digest):
+        raise ValueError("ReviewPlan request digest is invalid")
+    if len(plan.pages) < 2 or plan.pages[1].key != "integrity":
+        raise ValueError("ReviewPlan integrity page is missing")
+    integrity = plan.pages[1]
+    expected_integrity = (
+        ReviewField("request_digest", plan.request_digest, "verified exchange envelope.sha256"),
+        ReviewField("review_digest", plan.review_digest, "SHA-256(canonical offline reviewed fields)"),
+    )
+    if integrity.fields != expected_integrity:
+        raise ValueError("ReviewPlan integrity page is inconsistent")
+    reviewed_pages = (plan.pages[0], *plan.pages[2:])
+    calculated = hashlib.sha256(
+        _canonical(_review_document(plan.kind, plan.request_digest, reviewed_pages))
+    ).hexdigest()
+    if calculated != plan.review_digest:
+        raise ValueError("ReviewPlan pages do not match review digest")
     total = 0
     for page in plan.pages:
         if type(page) is not ReviewPage or type(page.fields) is not tuple or not page.fields:
