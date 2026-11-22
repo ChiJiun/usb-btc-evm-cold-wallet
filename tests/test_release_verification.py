@@ -71,7 +71,7 @@ class FakeGitHub:
         self.fail_command: tuple[str, ...] | None = None
         self.lightweight = False
         self.draft = False
-        self.signer_login = "ChiJiun"
+        self.tagger_email = "0311gino@gmail.com"
         self.tag_object_sha = TAG_OBJECT_SHA
 
     def __call__(self, args: list[str]) -> str:
@@ -85,12 +85,15 @@ class FakeGitHub:
             return json.dumps(
                 {
                     "tag": TAG,
-                    "verification": {"verified": self.tag_verified},
+                    "verification": {
+                        "verified": self.tag_verified,
+                        "reason": "valid" if self.tag_verified else "invalid",
+                        "signature": "-----BEGIN PGP SIGNATURE-----\nfake",
+                    },
+                    "tagger": {"name": "Release Maintainer", "email": self.tagger_email},
                     "object": {"type": "commit", "sha": self.object_commit},
                 }
             )
-        if args[:2] == ["api", "graphql"]:
-            return json.dumps({"data": {"repository": {"object": {"oid": self.tag_object_sha, "signature": {"isValid": self.tag_verified, "state": "VALID" if self.tag_verified else "INVALID", "signer": {"login": self.signer_login}, "wasSignedByGitHub": False}}}}})
         if args[:2] == ["release", "view"]:
             return json.dumps({"tagName": TAG, "isDraft": self.draft})
         if args[:2] == ["release", "download"]:
@@ -164,13 +167,13 @@ def test_good_release_verifies_pinned_tag_and_build_provenance():
 def test_source_only_accepts_signed_annotated_tag_bound_to_exact_commit():
     fake = FakeGitHub()
     assert verify_source(TAG, COMMIT, run=fake) == TAG_OBJECT_SHA
-    assert len(fake.calls) == 3
+    assert len(fake.calls) == 2
     assert not any(a and a[0] == "release" for a in fake.calls)
 
 
 def test_valid_signature_from_unauthorized_release_signer_is_rejected():
     fake = FakeGitHub()
-    fake.signer_login = "mallory"
+    fake.tagger_email = "mallory@example.com"
     with pytest.raises(ReleaseVerificationError, match="authorized release identity"):
         verify_source(TAG, COMMIT, run=fake)
 
