@@ -8,6 +8,8 @@ BOARD_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 mkdir -p "$TARGET_DIR/usr/libexec"
 install -m 0755 "$BOARD_DIR/identify_media.py" \
     "$TARGET_DIR/usr/libexec/usb-wallet-identify-media"
+install -m 0755 "$BOARD_DIR/framebuffer-demo.py" \
+    "$TARGET_DIR/usr/libexec/usb-wallet-framebuffer-demo"
 
 mkdir -p "$BINARIES_DIR/efi-part/EFI/BOOT"
 cp "$BOARD_DIR/grub.cfg" "$BINARIES_DIR/efi-part/EFI/BOOT/grub.cfg"
