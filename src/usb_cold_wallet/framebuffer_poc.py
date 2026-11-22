@@ -372,7 +372,11 @@ def run_vt(
 ) -> ReviewIntent:
     """Render a verified plan on the active VT and return non-signing intent."""
     _validate_plan(plan)
-    if audit() is not True:
+    try:
+        initial_audit_ok = audit() is True
+    except Exception:
+        initial_audit_ok = False
+    if not initial_audit_ok:
         return ReviewIntent(plan.review_digest, False, "audit_failed")
     font = load_psf2(font_path)
     with open(fb_path, "r+b", buffering=0) as fb:
@@ -395,6 +399,10 @@ def run_vt(
             tty.setraw(fd)
             fcntl.ioctl(fd, KDSETMODE, KD_GRAPHICS)
             ready_reported = False
+            # Discard any keystrokes queued before the first stable frame and
+            # after every visual state change. Approval cannot ride behind a
+            # navigation/scroll key while the next frame is still being drawn.
+            discard_queued_input = True
             while not controller.cancelled and not controller.locked:
                 if not _vt_is_active(fd, tty_number):
                     controller.locked = True
@@ -413,12 +421,19 @@ def run_vt(
                 controller.scroll_bottom = max(0, total - visible)
                 controller.offset = min(controller.offset, controller.scroll_bottom)
                 present(display, fb_path)
+                if discard_queued_input:
+                    termios.tcflush(fd, termios.TCIFLUSH)
+                    discard_queued_input = False
                 if not ready_reported and on_ready is not None:
                     on_ready()
                     ready_reported = True
                 key = _read_key(fd)
+                before = (controller.page, controller.offset, frozenset(controller.seen))
                 if controller.action(key):
                     return ReviewIntent(plan.review_digest, True, "reviewed")
+                after = (controller.page, controller.offset, frozenset(controller.seen))
+                if after != before:
+                    discard_queued_input = True
             reason = "cancelled" if controller.cancelled else "audit_or_vt_failed"
             return ReviewIntent(plan.review_digest, False, reason)
         finally:
