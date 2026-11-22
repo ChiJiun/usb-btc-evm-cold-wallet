@@ -185,6 +185,7 @@ class _Journal:
             raise ValueError("Invalid state owner")
         self.root = Path(root)
         self.owner = owner
+        self._external_anchor_verified = expected_tip is not None
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         if os.name != "nt":
             self.root.chmod(0o700)
@@ -435,8 +436,8 @@ class _Journal:
 
     @property
     def rollback_resistant(self) -> bool:
-        # A local hash chain cannot distinguish a whole-store rollback.
-        return False
+        # True only when this open validated an independently supplied tip.
+        return self._external_anchor_verified
 
 
 class PendingRequestStore(_Journal):
@@ -525,7 +526,9 @@ class PendingRequestStore(_Journal):
 
 
 class ReplayLedger(_Journal):
-    def __init__(self, root: Path, *, expected_tip: str | None = None):
+    def __init__(self, root: Path, *, expected_tip: str | None = None,
+                 allow_unanchored_for_testing: bool = False):
+        self._allow_unanchored_for_testing = allow_unanchored_for_testing
         super().__init__(root, "cold", expected_tip=expected_tip)
 
     def _ensure_unseen(self, request: dict) -> None:
@@ -565,6 +568,10 @@ class ReplayLedger(_Journal):
         allow_no_trusted_clock: bool = False,
         verifier=None,
     ) -> StateSnapshot:
+        if not self.rollback_resistant and not self._allow_unanchored_for_testing:
+            raise RollbackDetected(
+                "Cold replay ledger has no independent monotonic anchor; signing fails closed"
+            )
         verify = verifier or _official_verifier("verify_v2_request")
         checked = verify(
             request,
