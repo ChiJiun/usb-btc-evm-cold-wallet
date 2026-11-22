@@ -137,6 +137,7 @@ class ReviewController:
         self.seen: set[int] = set()
         self.cancelled = False
         self.locked = False
+        self.scroll_bottom = 0
 
     def action(self, key: str):
         if self.cancelled or self.locked:
@@ -154,10 +155,12 @@ class ReviewController:
             self.page = min(len(self.plan.pages) - 1, self.page + 1)
             self.offset = 0
         elif key == "DOWN":
-            self.offset += 1
+            self.offset = min(self.scroll_bottom, self.offset + 1)
         elif key == "UP":
             self.offset = max(0, self.offset - 1)
         elif key == "ENTER":
+            if self.offset < self.scroll_bottom:
+                return False
             self.seen.add(self.page)
             return len(self.seen) == len(self.plan.pages)
         return False
@@ -222,7 +225,8 @@ def run_vt(plan, font_path: Path, *, audit, tty_path="/dev/tty1", fb_path="/dev/
             while not controller.cancelled and not controller.locked:
                 total = render_review(display, plan, controller.page, controller.offset,
                                       acknowledged=controller.page in controller.seen)
-                controller.offset = min(controller.offset, max(0, total - 1))
+                controller.scroll_bottom = max(0, total - max(1, (height - 160) // (font[1] + 3)))
+                controller.offset = min(controller.offset, controller.scroll_bottom)
                 present(display, fb_path)
                 ready, _, _ = select.select([fd], [], [], 1.0)
                 if not audit():
