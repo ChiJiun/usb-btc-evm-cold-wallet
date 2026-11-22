@@ -55,6 +55,16 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      - name: Require active repository release protections
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from scripts.verify_release_assets import verify_repository_release_controls
+          verify_repository_release_controls()
+          PY
+
       - name: Require authorized signed tag to exact source SHA binding
         id: source
         env:
@@ -128,15 +138,15 @@ jobs:
         run: |
           set -euo pipefail
           packages=(build-essential make gcc g++ patch rsync perl tar cpio file bc gawk gzip bzip2 xz-utils python3 python3-venv python3-pip curl wget gnupg coreutils findutils diffutils unzip ca-certificates qemu-system-x86 ovmf)
-          sudo apt-get update --snapshot "$APT_SNAPSHOT"
+          sudo apt-get --snapshot "$APT_SNAPSHOT" update
           pinned=()
           for package in "${packages[@]}"; do
-            version="$(apt-cache policy --snapshot "$APT_SNAPSHOT" "$package" | awk '/Candidate:/ {print $2; exit}')"
+            version="$(apt-cache -o "APT::Snapshot=$APT_SNAPSHOT" policy "$package" | awk '/Candidate:/ {print $2; exit}')"
             test -n "$version"
             test "$version" != "(none)"
             pinned+=("$package=$version")
           done
-          sudo apt-get install -y --no-install-recommends --allow-downgrades --snapshot "$APT_SNAPSHOT" "${pinned[@]}"
+          sudo apt-get --snapshot "$APT_SNAPSHOT" install -y --no-install-recommends --allow-downgrades "${pinned[@]}"
           for item in "${pinned[@]}"; do
             package="${item%%=*}"
             expected="${item#*=}"
