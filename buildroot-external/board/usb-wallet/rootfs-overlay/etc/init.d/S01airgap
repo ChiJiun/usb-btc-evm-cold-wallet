@@ -104,6 +104,17 @@ if [ -n "$BOOT_DEVICE" ] && [ -n "$VAULT_DEVICE" ]; then
 	fi
 fi
 
+# The ESP is needed only by firmware/GRUB. It must not remain mounted in the
+# cold runtime. GPT bit 60 is verified from raw media separately; Linux does
+# not treat that GPT attribute as a generic block-device write lock.
+if [ "$FAILED" -eq 0 ] && [ -n "$BOOT_DEVICE" ]; then
+	if awk -v source="$BOOT_DEVICE" '$1 == source { found=1 } END { exit found ? 0 : 1 }' /proc/mounts 2>/dev/null; then
+		fail "boot partition is mounted in cold runtime"
+	else
+		pass "boot partition is not mounted in cold runtime"
+	fi
+fi
+
 # Mount only the exact, unique vault partition identified above. A duplicated
 # PARTUUID (for example, two cloned boot USBs attached at once) fails closed.
 if [ "$FAILED" -eq 0 ] && [ -n "$VAULT_DEVICE" ]; then
@@ -147,12 +158,16 @@ VAULT_TYPE="$(awk '$2 == "/mnt/cold-vault" { print $3; exit }' /proc/mounts 2>/d
 VAULT_OPTS="$(awk '$2 == "/mnt/cold-vault" { print $4; exit }' /proc/mounts 2>/dev/null || true)"
 if [ "$VAULT_TYPE" = "vfat" ] && [ -n "$VAULT_DEVICE" ] && [ "$VAULT_SOURCE" = "$VAULT_DEVICE" ]; then
 	pass "COLD_VAULT mounted from verified PARTUUID device as vfat"
+	VAULT_FLAGS_OK=1
 	for option in rw noexec nodev nosuid sync fmask=0177 dmask=0077; do
 		case ",$VAULT_OPTS," in
 			*",$option,"*) ;;
-			*) fail "COLD_VAULT missing mount option: $option" ;;
+			*) fail "COLD_VAULT missing mount option: $option"; VAULT_FLAGS_OK=0 ;;
 		esac
 	done
+	if [ "$VAULT_FLAGS_OK" -eq 1 ]; then
+		pass "COLD_VAULT restrictive mount options verified"
+	fi
 else
 	fail "COLD_VAULT source/type does not match verified PARTUUID device"
 fi
@@ -188,6 +203,9 @@ fi
 # addresses are written to this diagnostic channel.
 if [ -c /dev/ttyS0 ]; then
 	if [ "$FAILED" -eq 0 ]; then
+		# Emit bounded, public audit evidence before the final marker so CI
+		# validates the guest checks themselves, not a marker in isolation.
+		grep '^PASS:' "$CHECKS" > /dev/ttyS0 || true
 		printf 'USB_WALLET_UEFI_AUDIT_OK\n' > /dev/ttyS0
 	else
 		# Failure reasons contain only public mount/configuration facts.
