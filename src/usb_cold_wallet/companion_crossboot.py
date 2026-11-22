@@ -257,6 +257,8 @@ class CrossBootManager:
             p = btc_session.pending
             if p.get("stage") != "prepared" or btc_session.wallet is None:
                 raise ValueError("BTC request is not exportable")
+            if p.get("change_index") is None or type(p.get("change_sats")) is not int or p["change_sats"] <= 0:
+                raise ValueError("BTC cross-boot requires a change output to preserve fee-rate provenance")
             return _package_request(
                 "btc-request", p["psbt_base64"], request_id=p["request_id"],
                 account=btc_session.wallet["master_fingerprint"], recipient=p["recipient"],
@@ -296,6 +298,8 @@ class CrossBootManager:
         change_sats = input_total - intent["amount"] - intent["fee"]
         if (change_sats > 0) != (change_index is not None):
             raise ValueError("BTC change amount/output mismatch after reboot")
+        if change_sats <= 0 or len(parsed.tx.vout) != 2 or change_index is None:
+            raise ValueError("BTC fee-rate provenance is unavailable after reboot")
         estimated_vbytes = 12 + 70 * len(parsed.inputs) + 32 * len(parsed.tx.vout)
         if intent["fee"] % estimated_vbytes:
             raise ValueError("BTC fee rate is not losslessly recoverable from persisted PSBT")
