@@ -6,7 +6,7 @@
 
 `.github/workflows/release.yml` 是**無特權 candidate workflow**。它可由 `workflow_dispatch` 接受 tag、source SHA 與 publish intent，但整個 workflow 都沒有 `contents: write`、OIDC 或 attestation write 權限；即使有人刻意從非 main ref dispatch，也不能直接建立 attestation 或 Release。Candidate 仍要求 `GITHUB_REF == refs/heads/main`，用來拒絕非 main 的正式候選建置，但這項檢查本身不被當成發布權限的信任錨點。
 
-真正有特權的 `.github/workflows/release-finalize.yml` 只由 `workflow_run` 啟動，workflow definition 由 repository default branch 取得。Finalizer 只接受成功完成、event=`workflow_dispatch`、head branch=`main`、workflow path=`.github/workflows/release.yml`、repository/head repository 均為本 repository 的前置 run，並要求觸發 run 的 head SHA 與 finalizer 當下的 protected-main `GITHUB_SHA` 完全相同。main 若在長時間 Buildroot 建置期間前進，finalizer 直接 fail closed，必須從新 main 重新產生 candidate。
+真正有特權的 `.github/workflows/release-finalize.yml` 只由 `workflow_run` 啟動，workflow definition 由 repository default branch 取得。Finalizer 只接受成功完成、event=`workflow_dispatch`、head branch=`main`、workflow path=`.github/workflows/release.yml`、repository/head repository 均為本 repository 的前置 run，並要求觸發 run 的 head SHA 與 finalizer 當下的 protected-main `GITHUB_SHA` 完全相同。此外，Workflow Run API 的 `actor` 與 `triggering_actor` 都必須命中受保護 verifier 內的 Release Actor allowlist；具一般 write 權限但未列入 allowlist 的 collaborator 不能替合法 signed tag 要求發布。main 若在長時間 Buildroot 建置期間前進，finalizer 直接 fail closed，必須從新 main 重新產生 candidate。
 
 Candidate 的 signed annotated tag 必須精確指向 input source SHA；GitHub 必須回報 GPG tag `verified=true` / `reason=valid`，tagger email 必須命中受保護 verifier 內的 release identity allowlist。Validate 固定 annotated tag object SHA；finalizer 在 attestation 前與 publish 前都重新比對。SLSA provenance 的 signer workflow / source identity 綁定 **`release-finalize.yml` 的 protected-main SHA**；實際 release source SHA/tag 則由 signed tag、metadata 與 manifest 獨立綁定。
 
