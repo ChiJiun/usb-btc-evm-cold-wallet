@@ -34,6 +34,16 @@ Python 3.12/3.13 測試、可重現 wheel 建置仍依
 執行 Dependency Review 與適用的 Python/Node 稽核；每天 02:20 UTC
 仍跑完整依賴弱點掃描（含 Node dev/build 套件）。
 
+### CI 效能最佳化（#87）
+
+完整 Live USB 在每次需要時仍執行 **兩次 Clean Build、SHA-256 比對與 QEMU/OVMF 安全開機驗證**。
+在啟動昂貴建置前，先要求 Python 3.12/3.13 測試矩陣成功；若測試失敗，Live USB Job 因相依關係跳過，但 `CI / Required` 必須拒絕合併。
+
+為減少跨 PR 重複下載，Live USB 只快取 `build/dl`、`build/cache`、`build/wheelhouse`。
+每次仍由 Buildroot 的來源雜湊驗證、Buildroot 發行版簽章與 Wheelhouse SHA-256 驗證確認內容；快取不可取代來源驗證。編譯輸出、rootfs、映像與驗證結果**不快取**，也不將舊 Commit 的結果視為最新 HEAD 已通過。
+
+此優化主要降低 **Python 失敗時的浪費**與**下載成本**；成功的冷端修改仍需完成雙 Clean Build，效益應以 CI Job 實際耗時量測，不承諾固定百分比。
+
 ### 完整 Live USB 合併門檻
 
 `scripts/install_target_python.py` 僅將
