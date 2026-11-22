@@ -92,7 +92,7 @@ The integration suite uses only the public BIP39 `abandon ... about` test vector
 - restart auto-import of a valid response with zero automatic broadcasts;
 - ambiguous broadcast restart keeps `BROADCAST_REQUESTED` and exchange evidence when only untrusted RPC/Esplora status is available;
 - successful explicit broadcast followed by restart with duplicate broadcast blocked;
-- ambiguous broadcast restart recovery as status-only plus exact-txid reconciliation without resend;
+- ambiguous broadcast restart recovery as exact-txid status-only lookup without resend or durable state advance;
 - pinned Bitcoin Core regtest `finalizepsbt` / `decoderawtransaction` as an independent BTC signing/finalization oracle;
 - browser UI export controls with no broadcast side effect;
 - SignerSession lock clearing the active single-USB binding;
