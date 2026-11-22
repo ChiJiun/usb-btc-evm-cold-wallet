@@ -3,7 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+  # Default PR activity only. Draft and Ready run the identical gate, so
+  # marking a draft Ready must not repeat a ~40 min image build on the same SHA.
   pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
   # Scheduled workflows run from the default branch even when no files change.
   schedule:
@@ -344,8 +347,11 @@ jobs:
       smoke_only: true
 
   live_usb:
-    needs: changes
-    if: needs.changes.outputs.live_usb == 'true'
+    # Do not spend ~75 runner-minutes building images after fast Python
+    # validation fails. Draft, Ready, main and manual runs use the same full
+    # dual clean-build gate; a failed/skipped prerequisite fails CI / Required.
+    needs: [changes, tests]
+    if: needs.changes.outputs.live_usb == 'true' && needs.tests.result == 'success'
     uses: ./.github/workflows/live-usb-build.yml
 
   btc_core:
