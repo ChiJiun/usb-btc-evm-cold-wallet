@@ -1,15 +1,6 @@
 name: MetaMask Snap POC
 
 on:
-  pull_request:
-    paths:
-      - "metamask-snap/**"
-      - ".github/workflows/metamask-snap.yml"
-  push:
-    branches: [main]
-    paths:
-      - "metamask-snap/**"
-      - ".github/workflows/metamask-snap.yml"
   workflow_dispatch:
 
 permissions:
