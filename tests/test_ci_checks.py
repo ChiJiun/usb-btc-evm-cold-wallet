@@ -141,6 +141,19 @@ def required_env(**overrides):
         "DEPENDENCY_REVIEW": "skipped",
     }
     env.update(overrides)
+    # Previous tests model the original all-platform CODE scope. Explicit
+    # workload flags are necessary so omitted scope outputs fail closed.
+    for scope in ("QR_REQUIRED", "NATIVE_REQUIRED", "WINDOWS_REQUIRED"):
+        env.setdefault(scope, "true" if env.get("CODE") == "true" else "false")
+    for scope, result in (
+        ("LIVE_USB_SMOKE_REQUIRED", "LIVE_USB_SMOKE"),
+        ("LIVE_USB_REQUIRED", "LIVE_USB"),
+        ("BTC_CORE_REQUIRED", "BTC_CORE"),
+        ("BTC_FUZZ_REQUIRED", "BTC_FUZZ"),
+        ("VFAT_REQUIRED", "VFAT"),
+    ):
+        env.setdefault(scope, "false")
+        env.setdefault(result, "skipped")
     if "SNAP_VERIFY" not in overrides:
         env["SNAP_VERIFY"] = "success" if env.get("SNAP") == "true" else "skipped"
     if "NATIVE_QR" not in overrides:
@@ -501,3 +514,256 @@ def test_only_pull_request_runs_are_superseded_and_required_stays_fail_closed():
     assert any("WINDOWS_PORTABLE" in error for error in ci_checks.gate_errors(env))
     env["WINDOWS_PORTABLE"] = "success"
     assert ci_checks.gate_errors(env) == []
+
+
+def test_workload_classifier_tracks_exact_offline_installer_allowlist():
+    from scripts.build_offline_wheel import ALLOWED_OFFLINE_MODULES, ONLINE_MODULES
+    from scripts.ci_workloads import (
+        OFFLINE_MODULES, ONLINE_MODULES as CI_ONLINE, classify_workloads,
+    )
+    assert OFFLINE_MODULES == ALLOWED_OFFLINE_MODULES
+    assert CI_ONLINE == ONLINE_MODULES
+    for name in OFFLINE_MODULES:
+        assert classify_workloads(["src/usb_cold_wallet/" + name]).live_usb
+    for name in ONLINE_MODULES:
+        selected = classify_workloads(["src/usb_cold_wallet/" + name])
+        assert selected.windows
+        assert not selected.live_usb
+    assert not classify_workloads([
+        "src/usb_cold_wallet/companion_static/index.html",
+    ]).live_usb
+
+
+@pytest.mark.parametrize(("path", "expected"), [
+    ("src/usb_cold_wallet/btc.py", ("live_usb", "btc_core", "btc_fuzz", "qr")),
+    ("src/usb_cold_wallet/gui.py", ("live_usb", "windows", "vfat")),
+    ("src/usb_cold_wallet/cross_boot.py", ("live_usb", "windows")),
+    ("scripts/ci_checks.py", ("live_usb_smoke", "qr", "native_qr", "windows", "snap", "btc_core", "btc_fuzz", "vfat")),
+    ("scripts/ci_workloads.py", ("live_usb_smoke", "qr", "native_qr", "windows", "snap", "btc_core", "btc_fuzz", "vfat")),
+    ("scripts/install_target_python.py", ("live_usb",)),
+    ("buildroot-external/board/usb-wallet/linux.config", ("live_usb",)),
+    ("infra/wheelhouse.sha256", ("live_usb",)),
+    ("pyproject.toml", ("live_usb", "windows", "qr", "native_qr")),
+    ("src/usb_cold_wallet/companion_web.py", ("windows",)),
+    ("src/usb_cold_wallet/companion_crossboot.py", ("windows",)),
+    ("scripts/windows_companion.py", ("windows",)),
+    ("src/usb_cold_wallet/companion_static/companion.js", ("windows",)),
+    ("qr-transport/src/typed_registry.mjs", ("qr",)),
+    ("qr-metamask/src/main.js", ("native_qr",)),
+    ("metamask-snap/src/protocol.ts", ("snap",)),
+    ("scripts/verify_usb_vfat_atomic.py", ("vfat",)),
+    ("tools/generate_core_bip84_psbt_e2e.py", ("btc_core",)),
+    ("tools/fuzz_btc_psbt.py", ("btc_fuzz",)),
+    (".github/workflows/ci.yml", ("live_usb_smoke", "qr", "windows")),
+    (".github/workflows/live-usb-build.yml", ("live_usb_smoke",)),
+    ("src/usb_cold_wallet/new_secret_module.py", ("live_usb", "windows")),
+    ("scripts/unrecognized.sh", ("live_usb", "windows")),
+    ("review_only/parser.py", ("qr", "native_qr", "windows", "snap")),
+    (".github/workflows/unknown.yml", ("live_usb", "windows")),
+])
+def test_workload_positive_scope(path, expected):
+    from scripts.ci_workloads import classify_workloads
+    chosen = classify_workloads([path])
+    for key in expected:
+        assert getattr(chosen, key), (path, key)
+
+
+@pytest.mark.parametrize("path", [
+    "docs/CI_SECURITY.md",
+    "scripts/ci_checks.py",
+    "scripts/ci_workloads.py",
+    "README.md",
+    "README.en.md",
+    "tests/test_boot_media.py",
+    "tests/test_live_appliance_runtime.py",
+    "tests/test_ci_checks.py",
+    "tests/test_companion_ui.mjs",
+    "scripts/verify_release_assets.py",
+    "scripts/smoke_windows_companion.py",
+    "qr-transport/tests/ur_transport.test.mjs",
+    "qr-metamask/src/adapter.mjs",
+    "metamask-snap/src/index.ts",
+    "src/usb_cold_wallet/companion_core.py",
+    "src/usb_cold_wallet/companion_crossboot.py",
+    "requirements/ci.lock",
+    "review_only/parser.py",
+])
+def test_unrelated_change_does_not_rebuild_offline_image(path):
+    from scripts.ci_workloads import classify_workloads
+    assert not classify_workloads([path]).live_usb
+
+
+def test_ci_wiring_uses_real_live_usb_smoke_without_expensive_build():
+    from pathlib import Path
+    from scripts.ci_workloads import classify_workloads
+    root = Path(__file__).resolve().parents[1]
+    ci = (root / ".github/workflows/ci.yml").read_text()
+    live = (root / ".github/workflows/live-usb-build.yml").read_text()
+    for path in (".github/workflows/ci.yml", "scripts/ci_checks.py",
+                 "scripts/ci_workloads.py"):
+        workloads = classify_workloads([path])
+        assert workloads.live_usb_smoke
+        assert not workloads.live_usb
+    assert "  live_usb_smoke:" in ci
+    assert "      smoke_only: true" in ci
+    assert "LIVE_USB_SMOKE: ${{ needs.live_usb_smoke.result }}" in ci
+    assert "  contract-smoke:" in live
+    assert "    if: inputs.smoke_only != true" in live
+    # Smoke and full build must never cancel one another via shared concurrency.
+    assert "inputs.smoke_only && 'smoke' || 'full'" in live
+
+
+
+
+def test_live_workflow_trigger_only_checks_actual_job_body(monkeypatch):
+    """An event-only edit may skip the image; any executable edit may not."""
+    from scripts import ci_checks
+
+    base = """name: Live USB image verification
+
+on:
+  pull_request:
+    paths:
+      - "buildroot-external/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-reproduce:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo build
+"""
+    smoke = (
+        '  contract-smoke:\n'
+        '    if: inputs.smoke_only == true\n'
+        '    runs-on: ubuntu-24.04\n'
+        '    timeout-minutes: 5\n'
+        '    steps:\n'
+        '      - name: Verify real reusable workflow invocation\n'
+        '        run: |\n'
+        '          set -euo pipefail\n'
+        '          test "${{ inputs.smoke_only }}" = "true"\n'
+        '          echo "Live USB reusable workflow_call contract executed"\n'
+        '\n'
+    )
+    candidate = base.replace(
+        'on:\n  pull_request:\n    paths:\n      - "buildroot-external/**"\n  workflow_dispatch:\n',
+        'on:\n  workflow_call:\n    inputs:\n      smoke_only:\n        type: boolean\n        required: false\n        default: false\n  workflow_dispatch:\n',
+    ).replace(
+        '  build-and-reproduce:\n',
+        smoke + '  build-and-reproduce:\n    if: inputs.smoke_only != true\n',
+    )
+    assert candidate != base
+
+    def check(current, expected):
+        def fake_output(args, **kwargs):
+            return (base if args[2].startswith('a' * 40 + ':') else current).encode()
+        monkeypatch.setattr(ci_checks.subprocess, 'check_output', fake_output)
+        assert ci_checks.live_workflow_trigger_only('a' * 40) is expected
+
+    check(candidate, True)
+    for changed in (
+        candidate.replace('echo build', 'echo malicious-build'),
+        candidate.replace('contents: read', 'contents: write'),
+        candidate.replace('runs-on: ubuntu-24.04', 'runs-on: ubuntu-latest'),
+        candidate.replace('if: inputs.smoke_only != true', 'if: always()'),
+        candidate.replace('test "${{ inputs.smoke_only }}" = "true"', 'true'),
+        candidate + '\n  unsafe-job:\n    runs-on: ubuntu-latest\n',
+    ):
+        check(changed, False)
+
+    def git_error(*args, **kwargs):
+        raise subprocess.CalledProcessError(128, 'git show')
+    monkeypatch.setattr(ci_checks.subprocess, 'check_output', git_error)
+    assert ci_checks.live_workflow_trigger_only('a' * 40) is False
+
+
+def test_live_workflow_body_change_forces_full_build(monkeypatch):
+    from scripts import ci_checks
+
+    def fake_output(args, **kwargs):
+        if args[1] == 'diff':
+            return b'.github/workflows/live-usb-build.yml\0'
+        return (b'on:\n  workflow_dispatch:\n\njobs:\n  build:\n    steps:\n      - run: echo old\n'
+                if args[2].startswith('a' * 40 + ':')
+                else b'on:\n  workflow_dispatch:\n\njobs:\n  build:\n    steps:\n      - run: echo changed\n')
+    monkeypatch.setattr(ci_checks.subprocess, 'run', lambda *a, **kw: None)
+    monkeypatch.setattr(ci_checks.subprocess, 'check_output', fake_output)
+    scope, workloads = ci_checks.select_scopes('pull_request', pr_base_sha='a' * 40)
+    assert scope.code
+    assert workloads.live_usb
+    assert workloads.live_usb_smoke
+
+
+def test_multiple_paths_union_and_unknown_fail_closed():
+    from scripts.ci_workloads import FULL, classify_workloads
+    chosen = classify_workloads([
+        "src/usb_cold_wallet/companion_web.py",
+        "src/usb_cold_wallet/btc.py",
+    ])
+    assert chosen.windows and chosen.live_usb and chosen.btc_core
+    assert classify_workloads(["unclassified/new-tool.rs"]) == FULL
+
+
+def test_required_gate_rejects_skipping_necessary_live_and_specialized_jobs():
+    for required, result in (
+        ("LIVE_USB_REQUIRED", "LIVE_USB"),
+        ("BTC_CORE_REQUIRED", "BTC_CORE"),
+        ("BTC_FUZZ_REQUIRED", "BTC_FUZZ"),
+        ("VFAT_REQUIRED", "VFAT"),
+    ):
+        env = required_env(
+            CODE="true", TESTS="success", REPRODUCIBLE_BUILD="success",
+            QR_TRANSPORT="success", **{required: "true"}
+        )
+        assert any(result in error for error in ci_checks.gate_errors(env))
+        env[result] = "success"
+        assert ci_checks.gate_errors(env) == []
+        env[result] = "cancelled"
+        assert any(result in error for error in ci_checks.gate_errors(env))
+
+
+def test_full_live_usb_is_called_and_gated_with_no_path_filtered_bypass():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    live = (root / ".github/workflows/live-usb-build.yml").read_text(encoding="utf-8")
+    required = ci.split("\n  required:", 1)[1]
+    assert "  live_usb:" in ci
+    assert "uses: ./.github/workflows/live-usb-build.yml" in ci
+    assert "      - live_usb" in required
+    assert "LIVE_USB_REQUIRED: ${{ needs.changes.outputs.live_usb }}" in required
+    assert "LIVE_USB: ${{ needs.live_usb.result }}" in required
+    assert "workflow_call:" in live
+    assert "  pull_request:" not in live
+    for job in ("btc_core", "btc_fuzz", "vfat", "windows_portable"):
+        assert "      - " + job in required
+
+@pytest.mark.parametrize(("pr", "changed", "must_run"), [
+    # Path-only classification cannot inspect a workflow's actual diff.
+    # A trigger-only change uses the real workflow_call smoke; body edits
+    # are upgraded to the full image gate by select_scopes().
+    (68, [".github/workflows/live-usb-build.yml",
+          "docs/PHYSICAL_TWO_USB_TESTNET_CHECKLIST.md"], ("live_usb_smoke",)),
+    (72, [".github/workflows/release.yml",
+          "scripts/verify_release_assets.py",
+          "tests/test_release_verification.py"], ("live_usb",)),
+    (75, ["src/usb_cold_wallet/companion_crossboot.py",
+          "src/usb_cold_wallet/cross_boot_public.py",
+          "src/usb_cold_wallet/gui.py",
+          "src/usb_cold_wallet/transaction_state.py",
+          ".github/workflows/btc-core-e2e.yml"], ("live_usb", "windows", "btc_core", "vfat")),
+    (76, ["buildroot-external/board/usb-wallet/genimage.cfg",
+          "scripts/verify_single_usb_loopback.sh",
+          "src/usb_cold_wallet/appliance.py",
+          "src/usb_cold_wallet/gui.py",
+          ".github/workflows/ci.yml"], ("live_usb", "windows", "qr", "native_qr", "btc_core", "vfat")),
+])
+def test_open_pull_request_security_workload_regressions(pr, changed, must_run):
+    from scripts.ci_workloads import classify_workloads
+    selected = classify_workloads(changed)
+    for name in must_run:
+        assert getattr(selected, name), f"PR #{pr} must not skip {name}"

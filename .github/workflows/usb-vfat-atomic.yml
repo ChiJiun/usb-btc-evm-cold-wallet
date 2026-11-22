@@ -1,12 +1,7 @@
 name: USB FAT32 atomic export verification
 
 on:
-  pull_request:
-    paths:
-      - 'src/usb_cold_wallet/vault.py'
-      - 'src/usb_cold_wallet/gui.py'
-      - 'scripts/verify_usb_vfat_atomic.py'
-      - '.github/workflows/usb-vfat-atomic.yml'
+  workflow_call:
   workflow_dispatch:
 
 permissions:
