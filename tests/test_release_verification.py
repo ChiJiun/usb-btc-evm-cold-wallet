@@ -374,9 +374,12 @@ def test_release_workflow_has_pinned_actions_and_separated_permissions():
     assert "pull_request:" not in workflow
     assert "permissions: {}" in workflow
     assert 'default: false' in workflow
-    assert 'test "$GITHUB_REF" = "refs/tags/$TAG"' in workflow
-    assert 'test "$GITHUB_SHA" = "$SOURCE_SHA"' in workflow
+    assert 'test "$GITHUB_REF" = "refs/heads/main"' in workflow
+    assert 'test "$GITHUB_SHA" = "$SOURCE_SHA"' not in workflow
     assert workflow.count('ref: ${{ github.sha }}') >= 3
+    assert "expected_tag_object_sha" in workflow
+    assert "verify_source" in workflow
+    assert "--snapshot" in workflow
 
     use_lines = [line.strip() for line in workflow.splitlines() if "uses:" in line]
     assert use_lines
@@ -404,7 +407,7 @@ def test_release_workflow_has_pinned_actions_and_separated_permissions():
 
     assert "contents: write" in publish
     assert "needs: gate" in publish
-    assert "startsWith(github.ref, 'refs/tags/')" in publish
+    assert "github.ref == 'refs/heads/main'" in publish
     assert "needs.gate.result == 'success'" in publish
     assert "--clobber" not in publish
     assert 'test "$RUN1" = "$RUN2"' in build
@@ -412,3 +415,5 @@ def test_release_workflow_has_pinned_actions_and_separated_permissions():
     assert 'build-host-packages.txt' in build
     assert 'release/build-host-packages.txt' in publish
     assert 'gh issue view 48' in publish
+    assert "expected_tag_object_sha" in publish
+    assert "verify_source" in publish
