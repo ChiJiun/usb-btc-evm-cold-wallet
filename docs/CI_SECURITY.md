@@ -22,7 +22,8 @@
 | BTC Core／Fuzz／VFAT 測試工具 | 各自的真實整合工作 |
 | `tests/**` 單純新增或修改測試 | Python pytest，加上相關的互通/外部 Oracle；測試檔不會被打包進 Live USB，不重建映像 |
 | `requirements/**`、`pyproject.toml` | 依賴稽核與受影響平台／打包驗證；若另修改冷端程式則完整 Live USB |
-| `Makefile`、`ci.yml`、CI 分類器、`live-usb-build.yml` | 全套必要安全檢查與完整 Live USB |
+| `Makefile`、`ci.yml`、`live-usb-build.yml` | 全套必要安全檢查與完整 Live USB |
+| `scripts/ci_checks.py`、`scripts/ci_workloads.py` | Python 分類器與 fail-closed Gate 負向測試，以及其他平台整合檢查；不重建未變更的 Live USB 映像 |
 | 不認識的可執行程式／Workflow 路徑 | 全部驗證，不自動略過 |
 
 Python 3.12/3.13 測試、可重現 wheel 建置仍依
