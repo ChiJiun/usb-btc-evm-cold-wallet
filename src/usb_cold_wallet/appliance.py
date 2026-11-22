@@ -16,6 +16,8 @@ VAULT_DEVICE_FILE = Path("/run/usb-wallet/vault-device")
 SAFE_MOUNT_OPTIONS = "rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077"
 SYS_BLOCK = Path("/sys/class/block")
 DEV_ROOT = Path("/dev")
+SERIAL = Path("/dev/ttyS0")
+FRAMEBUFFER_DEMO = Path("/usr/libexec/usb-wallet-framebuffer-demo")
 
 
 def _mount_info(path: Path) -> tuple[str, str, set[str]] | None:
@@ -33,6 +35,15 @@ def _mount_info(path: Path) -> tuple[str, str, set[str]] | None:
 
 def _mounted(path: Path) -> bool:
     return _mount_info(path) is not None
+
+
+def _serial_marker(message: str) -> None:
+    """Emit only fixed public readiness markers for QEMU acceptance automation."""
+    try:
+        with SERIAL.open("a", encoding="ascii", buffering=1) as stream:
+            stream.write(message + "\n")
+    except OSError:
+        pass
 
 
 def _block_parent(device: str) -> str | None:
@@ -243,6 +254,17 @@ def _addresses() -> None:
     _run_cli(["addresses", "--count", "5"])
 
 
+def _framebuffer_demo() -> None:
+    """Run only the fixed public-vector display POC; it cannot sign."""
+    if not FRAMEBUFFER_DEMO.is_file():
+        print("Experimental framebuffer demo is unavailable.")
+        return
+    if _security_locked(security_status()):
+        print("LOCKDOWN: runtime audit failed; framebuffer demo cancelled.")
+        return
+    subprocess.run([sys.executable, str(FRAMEBUFFER_DEMO)], check=False)
+
+
 def _initialize_policy() -> None:
     """Explicitly create the encrypted policy; the hash must be kept separately."""
     if not VAULT.is_file():
@@ -334,6 +356,8 @@ def main() -> int:
         print("5) Re-scan TX_TRANSFER USB")
         print("6) Power off")
         print("7) Initialize encrypted offline signing policy (record SHA256 on paper)")
+        print("8) EXPERIMENTAL framebuffer review demo (public vector; never signs)")
+        _serial_marker("USB_WALLET_CONSOLE_READY")
         choice = input("> ").strip()
         if choice == "1":
             _new_wallet()
@@ -348,6 +372,8 @@ def main() -> int:
             print("TX_TRANSFER mounted." if mount_transfer() else "TX_TRANSFER not found or unsafe.")
         elif choice == "7":
             _initialize_policy()
+        elif choice == "8":
+            _framebuffer_demo()
         elif choice == "6":
             unmount_transfer()
             subprocess.run(["poweroff"], check=False)
