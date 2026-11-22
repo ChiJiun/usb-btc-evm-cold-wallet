@@ -14,6 +14,9 @@ from scripts.verify_release_assets import (
     RELEASE_WORKFLOW,
     REPOSITORY,
     ReleaseVerificationError,
+    SLSA_BUILDER_ID,
+    SLSA_PREDICATE_TYPE,
+    build_slsa_predicate,
     parse_sha256sums,
     require_successful_jobs,
     verify_candidate_artifacts,
@@ -79,6 +82,8 @@ class FakeGitHub:
         self.draft = False
         self.tagger_email = "0311gino@gmail.com"
         self.tag_object_sha = TAG_OBJECT_SHA
+        self.provenance_external_overrides: dict[str, object] = {}
+        self.provenance_builder_id = SLSA_BUILDER_ID
 
     def __call__(self, args: list[str]) -> str:
         self.calls.append(args)
@@ -142,10 +147,28 @@ class FakeGitHub:
             elif name in payloads:
                 (target_dir / name).write_bytes(payloads[name])
             return ""
+        if args[:2] == ["attestation", "verify"]:
+            metadata = json.loads(_metadata_bytes().decode("utf-8"))
+            predicate = build_slsa_predicate(metadata, WORKFLOW_SHA)
+            predicate["buildDefinition"]["externalParameters"].update(
+                self.provenance_external_overrides
+            )
+            predicate["runDetails"]["builder"]["id"] = self.provenance_builder_id
+            return json.dumps(
+                [
+                    {
+                        "verificationResult": {
+                            "statement": {
+                                "predicateType": SLSA_PREDICATE_TYPE,
+                                "predicate": predicate,
+                            }
+                        }
+                    }
+                ]
+            )
         if args[:2] in (
             ["release", "verify"],
             ["release", "verify-asset"],
-            ["attestation", "verify"],
         ):
             return ""
         raise AssertionError(f"Unexpected GitHub CLI call: {args}")
@@ -185,6 +208,47 @@ def test_good_release_verifies_pinned_tag_and_build_provenance():
     assert attest[attest.index("--predicate-type") + 1] == "https://slsa.dev/provenance/v1"
     assert sum(a[:2] == ["release", "verify-asset"] for a in fake.calls) == 5
     assert sum(a[:2] == ["attestation", "verify"] for a in fake.calls) == 5
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sourceSha", "d" * 40),
+        ("tag", "v9.9.9"),
+        ("tagObjectSha", "e" * 40),
+        ("workflowSha", "f" * 40),
+        ("candidateRunId", "99999"),
+        ("candidateRunAttempt", "2"),
+    ],
+)
+def test_slsa_provenance_must_bind_exact_release_source_and_run(tmp_path, field, value):
+    fake = FakeGitHub()
+    fake.provenance_external_overrides[field] = value
+    _write_local_release(tmp_path)
+    with pytest.raises(ReleaseVerificationError, match="SLSA provenance does not bind"):
+        verify_local_artifacts(
+            TAG,
+            COMMIT,
+            ASSET,
+            tmp_path,
+            workflow_sha=WORKFLOW_SHA,
+            run=fake,
+        )
+
+
+def test_slsa_provenance_must_use_trusted_finalizer_builder(tmp_path):
+    fake = FakeGitHub()
+    fake.provenance_builder_id = "https://example.invalid/evil-builder"
+    _write_local_release(tmp_path)
+    with pytest.raises(ReleaseVerificationError, match="SLSA provenance does not bind"):
+        verify_local_artifacts(
+            TAG,
+            COMMIT,
+            ASSET,
+            tmp_path,
+            workflow_sha=WORKFLOW_SHA,
+            run=fake,
+        )
 
 
 def test_source_only_accepts_signed_annotated_tag_bound_to_exact_commit():
@@ -680,6 +744,9 @@ def test_release_workflows_pin_actions_and_isolate_privileges():
     assert "expected_run_attempt" in finalizer
     assert "id-token: write" in finalizer
     assert "attestations: write" in finalizer
+    assert "build_slsa_predicate" in finalizer
+    assert finalizer.count("predicate-type: https://slsa.dev/provenance/v1") == 2
+    assert finalizer.count("predicate-path:") == 2
     assert "contents: write" in finalizer
     assert "needs.preflight.outputs.publish_requested == 'true'" in finalizer
     assert 'for issue in 24 43' in finalizer
