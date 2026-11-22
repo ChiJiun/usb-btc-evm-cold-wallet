@@ -340,6 +340,87 @@ def verify_repository_release_controls(*, run: Run = _gh) -> None:
         )
 
 
+
+def select_candidate_artifact(
+    run_id: int | str,
+    run_attempt: int | str,
+    expected_head_sha: str,
+    *,
+    run: Run = _gh,
+) -> dict:
+    """Select one immutable, run-bound artifact across every API page."""
+    run_id, run_attempt = str(run_id), str(run_attempt)
+    if not run_id.isdigit() or not run_attempt.isdigit():
+        raise ReleaseVerificationError("Candidate artifact run identity must be numeric")
+    if not re.fullmatch(r"[a-f0-9]{40}", expected_head_sha):
+        raise ReleaseVerificationError("Candidate artifact head SHA is malformed")
+
+    all_artifacts: list[dict] = []
+    total_count: int | None = None
+    for page in range(1, 101):
+        data = _json(
+            run,
+            [
+                "api",
+                f"repos/{REPOSITORY}/actions/runs/{run_id}/artifacts"
+                f"?per_page=100&page={page}",
+            ],
+        )
+        count = data.get("total_count")
+        batch = data.get("artifacts")
+        if (
+            type(count) is not int
+            or count < 0
+            or count > 10000
+            or not isinstance(batch, list)
+            or len(batch) > 100
+            or any(not isinstance(item, dict) for item in batch)
+        ):
+            raise ReleaseVerificationError("Candidate artifact pagination is malformed")
+        if total_count is None:
+            total_count = count
+        elif count != total_count:
+            raise ReleaseVerificationError("Candidate artifact list changed during pagination")
+        all_artifacts.extend(batch)
+        if len(batch) < 100:
+            break
+    else:
+        raise ReleaseVerificationError("Candidate artifact pagination limit exceeded")
+    if len(all_artifacts) != total_count:
+        raise ReleaseVerificationError("Candidate artifact listing is incomplete")
+
+    pattern = re.compile(
+        r"release-candidate-v[0-9]+\.[0-9]+\.[0-9]+"
+        r"(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?-[a-f0-9]{40}"
+        rf"-run{re.escape(run_id)}-attempt{re.escape(run_attempt)}"
+    )
+    matches = [
+        item for item in all_artifacts
+        if item.get("expired") is False
+        and isinstance(item.get("name"), str)
+        and pattern.fullmatch(item["name"])
+    ]
+    if len(matches) != 1:
+        raise ReleaseVerificationError(
+            f"Expected exactly one current-attempt candidate artifact, got {len(matches)}"
+        )
+    item = matches[0]
+    workflow_run = item.get("workflow_run")
+    artifact_id = item.get("id")
+    digest = item.get("digest")
+    if (
+        type(artifact_id) is not int
+        or artifact_id <= 0
+        or not isinstance(digest, str)
+        or re.fullmatch(r"sha256:[a-f0-9]{64}", digest) is None
+        or not isinstance(workflow_run, dict)
+        or workflow_run.get("id") != int(run_id)
+        or workflow_run.get("head_sha") != expected_head_sha
+    ):
+        raise ReleaseVerificationError("Candidate artifact id, digest, or source is untrusted")
+    return {"name": item["name"], "id": artifact_id, "digest": digest}
+
+
 def verify_workflow_run_identity(
     run_id: int | str,
     expected_head_sha: str,

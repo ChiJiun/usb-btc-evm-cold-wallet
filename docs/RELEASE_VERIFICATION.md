@@ -29,9 +29,9 @@ Candidate 的 signed annotated tag 必須精確指向 input source SHA；GitHub 
 3. 對兩次 raw image 的 SHA-256 再做顯式相等檢查，將共同 digest 寫入 `release-metadata.json`；使用該 Buildroot 版本所固定的 host `xz`，以 `-6 --threads=1 --check=crc64 --no-sparse` 壓縮兩次並 byte-for-byte 比對。
 4. 由最後 Buildroot target root filesystem 產生 SPDX JSON SBOM；metadata 明確固定 `sbom_scope=buildroot-target-rootfs`，不宣稱這份 SPDX 已完整盤點 EFI partition／kernel。另記錄 `efi_partition_sha256` 與 `kernel_sha256`，完整 raw image 則由 `raw_image_sha256` 綁定。保存 `build-host-packages.txt`、`release-metadata.json` 與 `SHA256SUMS`；manifest 精確涵蓋最後壓縮 image、SBOM、metadata、host dependency evidence。
 5. Candidate workflow 將這批 bytes 上傳成名稱綁定 `run_id` / `run_attempt` 的 Actions artifact，並先做無特權的本機 digest／metadata／tag-object 驗證。
-6. Default-branch `release-finalize.yml` 由 `workflow_run` 啟動；preflight 重新驗證前置 run 身分、protected main SHA、repository rulesets、唯一 artifact 名稱、signed tag、source SHA、tag object、manifest、SPDX 與 metadata。main 已前進或 artifact/run 不一致即 fail closed。
+6. Default-branch `release-finalize.yml` 由 `workflow_run` 啟動；preflight 重新驗證前置 run 身分、protected main SHA、repository rulesets、完整分頁查核唯一 artifact、固定其不可變 ID 與 GitHub SHA-256 digest、signed tag、source SHA、tag object、manifest、SPDX 與 metadata。main 已前進或 artifact/run 不一致即 fail closed。
 7. Finalizer 先由 trusted metadata 產生 deterministic SLSA v1 predicate，再對 image、SBOM、metadata、host dependency evidence 與 `SHA256SUMS` 建立由 `release-finalize.yml` protected-main SHA 簽發的 provenance；predicate 明確包含 signed source SHA/tag/tag-object、candidate run/attempt 與固定 Buildroot input。另對 image 建立 SPDX SBOM attestation。verify 逐一驗證 subject digest、signer identity，並解析 attestation JSON 要求 predicate 與預期內容完全一致。
-8. Privileged gate 把 preflight / attest / verify 的 `skipped`、`cancelled`、`failure` 全部視為失敗。publish 只下載同一已驗證 artifact，並在 `gh release create` 前再次確認 current main、前置 workflow run、repository controls、authorized signer、source SHA 與固定 tag object SHA。任何 main/tag/run/artifact 替換都 fail closed。
+8. Privileged gate 把 preflight / attest / verify 的 `skipped`、`cancelled`、`failure` 全部視為失敗。publish 僅以 preflight 固定的 artifact ID 重新下載，且每次由釘選的 `actions/download-artifact` 在 `digest-mismatch: error` 下驗證 GitHub Artifact SHA-256；並在 `gh release create` 前再次確認 current main、前置 workflow run、repository controls、authorized signer、source SHA 與固定 tag object SHA。任何 main/tag/run/artifact 替換都 fail closed。
 
 ## 發行等級與可宣稱範圍
 

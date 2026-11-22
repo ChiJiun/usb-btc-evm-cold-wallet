@@ -24,6 +24,7 @@ from scripts.verify_release_assets import (
     verify_release,
     verify_repository_release_controls,
     verify_source,
+    select_candidate_artifact,
     verify_workflow_run_identity,
 )
 
@@ -819,3 +820,90 @@ def test_release_verifier_entrypoints_reuse_fail_closed_python_verifier():
         assert "--asset" in text
         assert "http://" not in text
         assert "https://" not in text
+
+
+def _candidate_artifact(*, name=None, artifact_id=91, digest=None, run_id=12345, head_sha=WORKFLOW_SHA):
+    return {
+        "name": name or f"release-candidate-{TAG}-{COMMIT}-run12345-attempt1",
+        "id": artifact_id,
+        "digest": digest if digest is not None else "sha256:" + "f" * 64,
+        "expired": False,
+        "workflow_run": {"id": run_id, "head_sha": head_sha},
+    }
+
+
+def test_candidate_artifact_selection_pins_immutable_id_and_digest():
+    def api(args):
+        assert args[1].endswith("artifacts?per_page=100&page=1")
+        return json.dumps({"total_count": 1, "artifacts": [_candidate_artifact()]})
+
+    selected = select_candidate_artifact(12345, 1, WORKFLOW_SHA, run=api)
+    assert selected["id"] == 91
+    assert selected["digest"] == "sha256:" + "f" * 64
+
+
+def test_candidate_artifact_selection_checks_later_pages_for_duplicates():
+    first = [_candidate_artifact()] + [
+        {"name": f"unrelated-{i}", "id": i + 100, "expired": False}
+        for i in range(99)
+    ]
+    duplicate = _candidate_artifact(artifact_id=92)
+    pages = [first, [duplicate]]
+
+    def api(args):
+        page = int(args[1].split("page=")[-1])
+        return json.dumps({"total_count": 101, "artifacts": pages[page - 1]})
+
+    with pytest.raises(ReleaseVerificationError, match="exactly one"):
+        select_candidate_artifact(12345, 1, WORKFLOW_SHA, run=api)
+
+
+@pytest.mark.parametrize(
+    ("change", "value"),
+    [
+        ("digest", "sha256:" + "g" * 64),
+        ("id", 0),
+        ("expired", True),
+        ("workflow_run", {"id": 999, "head_sha": WORKFLOW_SHA}),
+        ("workflow_run", {"id": 12345, "head_sha": "a" * 40}),
+    ],
+)
+def test_candidate_artifact_identity_mutations_fail_closed(change, value):
+    artifact = _candidate_artifact()
+    artifact[change] = value
+
+    def api(_args):
+        return json.dumps({"total_count": 1, "artifacts": [artifact]})
+
+    with pytest.raises(ReleaseVerificationError):
+        select_candidate_artifact(12345, 1, WORKFLOW_SHA, run=api)
+
+
+@pytest.mark.parametrize("total", [0, 2, -1, "1"])
+def test_incomplete_or_invalid_candidate_artifact_listing_is_rejected(total):
+    def api(_args):
+        return json.dumps({"total_count": total, "artifacts": [_candidate_artifact()]})
+
+    with pytest.raises(ReleaseVerificationError):
+        select_candidate_artifact(12345, 1, WORKFLOW_SHA, run=api)
+
+
+def test_candidate_artifact_pagination_fails_if_count_changes():
+    pages = [[{"name": f"unrelated-{i}"} for i in range(100)], []]
+
+    def api(args):
+        page = int(args[1].split("page=")[-1])
+        return json.dumps({"total_count": 101 if page == 1 else 100, "artifacts": pages[page - 1]})
+
+    with pytest.raises(ReleaseVerificationError, match="changed during pagination"):
+        select_candidate_artifact(12345, 1, WORKFLOW_SHA, run=api)
+
+
+def test_finalizer_uses_pinned_artifact_ids_and_strict_download_digests():
+    finalizer = Path(".github/workflows/release-finalize.yml").read_text(encoding="utf-8")
+    assert finalizer.count("uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333") == 4
+    assert finalizer.count("artifact-ids:") == 4
+    assert finalizer.count("merge-multiple: true") == 4
+    assert finalizer.count("digest-mismatch: error") == 4
+    assert "gh run download" not in finalizer
+    assert "select_candidate_artifact(" in finalizer
