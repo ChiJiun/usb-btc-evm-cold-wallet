@@ -237,15 +237,40 @@ jobs:
           )
           PY
 
+      - name: Write trusted SLSA predicate with exact release source
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from scripts.verify_release_assets import build_slsa_predicate
+
+          metadata = json.loads(
+              Path("release/release-metadata.json").read_text(encoding="utf-8")
+          )
+          predicate = build_slsa_predicate(metadata, os.environ["WORKFLOW_SHA"])
+          output = Path(os.environ["RUNNER_TEMP"]) / "release-slsa-predicate.json"
+          output.write_text(
+              json.dumps(predicate, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
       - name: Create SLSA build provenance for checksum subjects
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: release/SHA256SUMS
+          predicate-type: https://slsa.dev/provenance/v1
+          predicate-path: ${{ runner.temp }}/release-slsa-predicate.json
 
       - name: Create build provenance for the checksum manifest itself
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: release/SHA256SUMS
+          predicate-type: https://slsa.dev/provenance/v1
+          predicate-path: ${{ runner.temp }}/release-slsa-predicate.json
 
       - name: Attach SPDX SBOM attestation to the final compressed image
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
