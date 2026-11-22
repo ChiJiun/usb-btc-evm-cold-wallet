@@ -1,0 +1,415 @@
+name: Release provenance finalize
+
+on:
+  workflow_run:
+    workflows: ["Release provenance candidate"]
+    types: [completed]
+
+# This workflow is loaded from the default branch by workflow_run.
+# Keep all privileges here; the manually dispatched candidate workflow is read-only.
+permissions: {}
+
+concurrency:
+  group: release-finalize-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Authenticate protected-main candidate
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.artifact.outputs.artifact_name }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      source_sha: ${{ steps.metadata.outputs.source_sha }}
+      asset: ${{ steps.metadata.outputs.asset }}
+      tag_object_sha: ${{ steps.metadata.outputs.tag_object_sha }}
+      workflow_sha: ${{ steps.metadata.outputs.workflow_sha }}
+      publish_requested: ${{ steps.metadata.outputs.publish_requested }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+      TRIGGER_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      TRIGGER_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      TRIGGER_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      TRIGGER_EVENT: ${{ github.event.workflow_run.event }}
+      TRIGGER_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+    steps:
+      - name: Require exact protected-main workflow commit
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$TRIGGER_HEAD_BRANCH" = "main"
+          test "$TRIGGER_EVENT" = "workflow_dispatch"
+          test "$TRIGGER_CONCLUSION" = "success"
+          case "$GITHUB_SHA" in *[!0-9a-f]*|'') exit 1 ;; esac
+          case "$TRIGGER_HEAD_SHA" in *[!0-9a-f]*|'') exit 1 ;; esac
+          test "${#GITHUB_SHA}" -eq 40
+          test "${#TRIGGER_HEAD_SHA}" -eq 40
+          # Fail closed if main moved while the long candidate build was running.
+          # This keeps candidate, finalizer definition, and attestation signer on one commit.
+          test "$GITHUB_SHA" = "$TRIGGER_HEAD_SHA"
+
+      - name: Check out trusted finalizer verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Revalidate workflow-run identity and repository controls
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from scripts.verify_release_assets import (
+              verify_repository_release_controls,
+              verify_workflow_run_identity,
+          )
+
+          verify_workflow_run_identity(
+              os.environ["TRIGGER_RUN_ID"],
+              os.environ["TRIGGER_HEAD_SHA"],
+              expected_run_attempt=os.environ["TRIGGER_RUN_ATTEMPT"],
+          )
+          verify_repository_release_controls()
+          PY
+
+      - name: Locate exactly one immutable candidate artifact from this run attempt
+        id: artifact
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          run_id = os.environ["TRIGGER_RUN_ID"]
+          attempt = os.environ["TRIGGER_RUN_ATTEMPT"]
+          raw = subprocess.run(
+              ["gh", "api", f"repos/{repo}/actions/runs/{run_id}/artifacts"],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout
+          data = json.loads(raw)
+          artifacts = data.get("artifacts")
+          if not isinstance(artifacts, list):
+              raise SystemExit("artifact list is malformed")
+          pattern = re.compile(
+              rf"release-candidate-v[0-9]+\.[0-9]+\.[0-9]+"
+              rf"(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?-[a-f0-9]{{40}}"
+              rf"-run{re.escape(run_id)}-attempt{re.escape(attempt)}"
+          )
+          matches = [
+              item for item in artifacts
+              if isinstance(item, dict)
+              and item.get("expired") is False
+              and isinstance(item.get("name"), str)
+              and pattern.fullmatch(item["name"])
+          ]
+          if len(matches) != 1:
+              raise SystemExit(f"expected exactly one current-attempt candidate artifact, got {len(matches)}")
+          name = matches[0]["name"]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"artifact_name={name}\n")
+          PY
+
+      - name: Download candidate without executing its contents
+        env:
+          ARTIFACT_NAME: ${{ steps.artifact.outputs.artifact_name }}
+        run: |
+          set -euo pipefail
+          gh run download "$TRIGGER_RUN_ID"             --repo "$GITHUB_REPOSITORY"             --name "$ARTIFACT_NAME"             --dir release
+
+      - name: Verify candidate identity, bytes, metadata, and signed tag
+        id: metadata
+        env:
+          ARTIFACT_NAME: ${{ steps.artifact.outputs.artifact_name }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from scripts.verify_release_assets import verify_candidate_artifacts
+
+          path = Path("release/release-metadata.json")
+          metadata = json.loads(path.read_text(encoding="utf-8"))
+          tag = metadata.get("tag")
+          source_sha = metadata.get("source_sha")
+          asset = metadata.get("asset")
+          tag_object_sha = metadata.get("tag_object_sha")
+          workflow_sha = metadata.get("workflow_sha")
+          publish_requested = metadata.get("publish_requested")
+
+          expected_name = (
+              f"release-candidate-{tag}-{source_sha}"
+              f"-run{os.environ['TRIGGER_RUN_ID']}"
+              f"-attempt{os.environ['TRIGGER_RUN_ATTEMPT']}"
+          )
+          if os.environ["ARTIFACT_NAME"] != expected_name:
+              raise SystemExit("candidate artifact name does not match attested metadata")
+          if workflow_sha != os.environ["GITHUB_SHA"]:
+              raise SystemExit("candidate workflow SHA is not the trusted finalizer commit")
+          if not isinstance(publish_requested, bool):
+              raise SystemExit("publish_requested must be boolean")
+
+          verify_candidate_artifacts(
+              tag,
+              source_sha,
+              asset,
+              "release",
+              workflow_sha=workflow_sha,
+              expected_tag_object_sha=tag_object_sha,
+              expected_run_id=os.environ["TRIGGER_RUN_ID"],
+              expected_run_attempt=os.environ["TRIGGER_RUN_ATTEMPT"],
+          )
+
+          outputs = {
+              "tag": tag,
+              "source_sha": source_sha,
+              "asset": asset,
+              "tag_object_sha": tag_object_sha,
+              "workflow_sha": workflow_sha,
+              "publish_requested": "true" if publish_requested else "false",
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              for key, value in outputs.items():
+                  handle.write(f"{key}={value}\n")
+          PY
+
+  attest:
+    name: Attest exact final bytes from trusted finalizer
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+      TRIGGER_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      ARTIFACT_NAME: ${{ needs.preflight.outputs.artifact_name }}
+      TAG: ${{ needs.preflight.outputs.tag }}
+      SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+      ASSET: ${{ needs.preflight.outputs.asset }}
+      TAG_OBJECT_SHA: ${{ needs.preflight.outputs.tag_object_sha }}
+      WORKFLOW_SHA: ${{ needs.preflight.outputs.workflow_sha }}
+    steps:
+      - name: Check out trusted attestation logic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download exact preflight-approved artifact
+        run: |
+          set -euo pipefail
+          gh run download "$TRIGGER_RUN_ID"             --repo "$GITHUB_REPOSITORY"             --name "$ARTIFACT_NAME"             --dir release
+
+      - name: Recheck candidate before minting attestations
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from scripts.verify_release_assets import verify_candidate_artifacts
+
+          verify_candidate_artifacts(
+              os.environ["TAG"],
+              os.environ["SOURCE_SHA"],
+              os.environ["ASSET"],
+              "release",
+              workflow_sha=os.environ["WORKFLOW_SHA"],
+              expected_tag_object_sha=os.environ["TAG_OBJECT_SHA"],
+              expected_run_id=os.environ["TRIGGER_RUN_ID"],
+              expected_run_attempt=os.environ["TRIGGER_RUN_ATTEMPT"],
+          )
+          PY
+
+      - name: Create SLSA build provenance for checksum subjects
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: release/SHA256SUMS
+
+      - name: Create build provenance for the checksum manifest itself
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release/SHA256SUMS
+
+      - name: Attach SPDX SBOM attestation to the final compressed image
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release/${{ env.ASSET }}
+          sbom-path: release/SBOM.spdx.json
+
+  verify:
+    name: Verify trusted-finalizer attestations
+    needs:
+      - preflight
+      - attest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+      ARTIFACT_NAME: ${{ needs.preflight.outputs.artifact_name }}
+      TAG: ${{ needs.preflight.outputs.tag }}
+      SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+      ASSET: ${{ needs.preflight.outputs.asset }}
+      TAG_OBJECT_SHA: ${{ needs.preflight.outputs.tag_object_sha }}
+      WORKFLOW_SHA: ${{ needs.preflight.outputs.workflow_sha }}
+    steps:
+      - name: Check out trusted verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download exact attested candidate
+        run: |
+          set -euo pipefail
+          gh run download "$TRIGGER_RUN_ID"             --repo "$GITHUB_REPOSITORY"             --name "$ARTIFACT_NAME"             --dir release
+
+      - name: Verify tag, metadata, every subject digest, and provenance signer
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_release_assets.py             --tag "$TAG" --commit "$SOURCE_SHA" --asset "$ASSET" --local-dir release             --workflow-sha "$WORKFLOW_SHA" --expected-tag-object-sha "$TAG_OBJECT_SHA"
+
+  gate:
+    name: Required trusted finalizer gate
+    if: always()
+    needs:
+      - preflight
+      - attest
+      - verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Fail closed on failed, cancelled, or skipped privileged jobs
+        env:
+          PREFLIGHT: ${{ needs.preflight.result }}
+          ATTEST: ${{ needs.attest.result }}
+          VERIFY: ${{ needs.verify.result }}
+        run: |
+          set -euo pipefail
+          test "$PREFLIGHT" = "success"
+          test "$ATTEST" = "success"
+          test "$VERIFY" = "success"
+
+  publish:
+    name: Publish only previously verified bytes
+    needs:
+      - preflight
+      - gate
+    if: needs.gate.result == 'success' && needs.preflight.outputs.publish_requested == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: write
+      issues: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+      TRIGGER_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      ARTIFACT_NAME: ${{ needs.preflight.outputs.artifact_name }}
+      TAG: ${{ needs.preflight.outputs.tag }}
+      SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
+      ASSET: ${{ needs.preflight.outputs.asset }}
+      EXPECTED_TAG_OBJECT_SHA: ${{ needs.preflight.outputs.tag_object_sha }}
+      WORKFLOW_SHA: ${{ needs.preflight.outputs.workflow_sha }}
+    steps:
+      - name: Check out trusted publish verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download only the verified candidate artifact
+        run: |
+          set -euo pipefail
+          gh run download "$TRIGGER_RUN_ID"             --repo "$GITHUB_REPOSITORY"             --name "$ARTIFACT_NAME"             --dir release
+
+      - name: Reverify attestations and final bytes without executing candidate contents
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_release_assets.py             --tag "$TAG" --commit "$SOURCE_SHA" --asset "$ASSET" --local-dir release             --workflow-sha "$WORKFLOW_SHA"             --expected-tag-object-sha "$EXPECTED_TAG_OBJECT_SHA"
+
+      - name: Require hardware and product release gates to be closed
+        run: |
+          set -euo pipefail
+          for issue in 24 43; do
+            state="$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
+            if [[ "$state" != "CLOSED" ]]; then
+              echo "::error::Issue #$issue is still $state; release remains blocked"
+              exit 1
+            fi
+          done
+          case "$TAG" in
+            *-*) ;;
+            *)
+              state="$(gh issue view 48 --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
+              if [[ "$state" != "CLOSED" ]]; then
+                echo "::error::Issue #48 is still $state; stable/mainnet release remains blocked"
+                exit 1
+              fi
+              ;;
+          esac
+
+      - name: Refuse replacement of an existing Release
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists; assets are never overwritten"
+            exit 1
+          fi
+
+      - name: Revalidate protected main, workflow run, repository controls, and tag immediately before publish
+        run: |
+          set -euo pipefail
+          current_main="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          test "$current_main" = "$GITHUB_SHA"
+          test "$WORKFLOW_SHA" = "$GITHUB_SHA"
+          current_tag_object_sha="$(python3 - <<'PY'
+          import os
+          from scripts.verify_release_assets import (
+              verify_repository_release_controls,
+              verify_source,
+              verify_workflow_run_identity,
+          )
+
+          verify_workflow_run_identity(
+              os.environ["TRIGGER_RUN_ID"],
+              os.environ["WORKFLOW_SHA"],
+              expected_run_attempt=os.environ["TRIGGER_RUN_ATTEMPT"],
+          )
+          verify_repository_release_controls()
+          print(verify_source(
+              os.environ["TAG"],
+              os.environ["SOURCE_SHA"],
+              expected_tag_object_sha=os.environ["EXPECTED_TAG_OBJECT_SHA"],
+          ))
+          PY
+          )"
+          test "$current_tag_object_sha" = "$EXPECTED_TAG_OBJECT_SHA"
+
+          extra=()
+          case "$TAG" in *-*) extra+=(--prerelease) ;; esac
+          gh release create "$TAG"             "release/$ASSET"             release/SHA256SUMS             release/SBOM.spdx.json             release/release-metadata.json             release/build-host-packages.txt             --repo "$GITHUB_REPOSITORY"             --verify-tag             --title "$TAG"             --notes "Release provenance candidate. Do not claim production safety without the #24/#43 acceptance evidence."             "${extra[@]}"
