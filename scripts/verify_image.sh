@@ -2,7 +2,7 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-OUT="$ROOT/build/output"
+OUT="${BUILD_OUTPUT_DIR:-$ROOT/build/output}"
 IMAGE="$OUT/images/usb-cold-wallet.img"
 # Audit the exact kernel configuration that produced the shipped bzImage.
 # Reject missing or ambiguous Linux build directories instead of accepting
