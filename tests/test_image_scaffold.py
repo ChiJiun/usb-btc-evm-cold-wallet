@@ -83,7 +83,11 @@ def test_image_has_single_usb_boot_vault_and_transfer_partitions():
     assert 'partition-type-uuid = L' in text
     assert 'partition-uuid = "42f6f5d4-9310-5ac3-b5d4-1540cbe7d6b4"' in text
     assert "size = 512M" in text
-    assert "read-only = true" in text
+    boot_config = text.split("partition boot {", 1)[1].split("}", 1)[0]
+    assert "read-only = true" in boot_config
+    # genimage's GPT bootable flag adds attribute bit 2. The ESP must carry
+    # exactly the UEFI read-only attribute (bit 60), with no legacy bit 2.
+    assert "bootable = true" not in boot_config
 
 
 def test_uefi_smoke_uses_matched_flash_firmware_and_serial_audit():
