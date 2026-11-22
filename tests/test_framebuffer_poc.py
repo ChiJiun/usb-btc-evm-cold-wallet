@@ -232,3 +232,52 @@ def test_vt_graphics_and_switch_lock_controls_remain_required():
     assert fb.KD_GRAPHICS == 1
     assert fb.KD_TEXT == 0
     assert fb.VT_LOCKSWITCH != fb.VT_UNLOCKSWITCH
+
+
+def test_framebuffer_idle_timeout_clears_all_acknowledgements():
+    clock = [0.0]
+    ctrl = fb.ReviewController(_plan(), audit=lambda: True, clock=lambda: clock[0])
+    assert ctrl.action("ENTER") is False
+    assert ctrl.seen == {0}
+    clock[0] = 599.0
+    assert ctrl.action("") is False
+    clock[0] = 600.0
+    assert ctrl.action("ENTER") is False
+    assert ctrl.locked is True
+    assert ctrl.lock_reason == "idle_timeout"
+    assert ctrl.seen == set()
+    clock[0] = 601.0
+    assert ctrl.action("ENTER") is False
+
+
+def test_framebuffer_ignored_keys_cannot_extend_idle_deadline():
+    clock = [0.0]
+    ctrl = fb.ReviewController(_plan(), audit=lambda: True, clock=lambda: clock[0])
+    clock[0] = 599.0
+    assert ctrl.action("UNKNOWN") is False
+    clock[0] = 600.0
+    assert ctrl.action("ENTER") is False
+    assert ctrl.lock_reason == "idle_timeout"
+
+
+def test_framebuffer_clock_rollback_and_nonfinite_clock_fail_closed():
+    clock = [100.0]
+    ctrl = fb.ReviewController(_plan(), audit=lambda: True, clock=lambda: clock[0])
+    ctrl.action("ENTER")
+    clock[0] = 99.0
+    assert ctrl.action("ENTER") is False
+    assert ctrl.lock_reason == "clock_reversed"
+    assert ctrl.seen == set()
+
+    clock[0] = 100.0
+    ctrl = fb.ReviewController(_plan(), audit=lambda: True, clock=lambda: clock[0])
+    clock[0] = float("nan")
+    assert ctrl.action("ENTER") is False
+    assert ctrl.lock_reason == "clock_failed"
+    assert ctrl.seen == set()
+
+
+def test_framebuffer_idle_timeout_rejects_unsafe_configuration():
+    for value in (0, 601, True, 600.0):
+        with pytest.raises(ValueError, match="idle timeout"):
+            fb.ReviewController(_plan(), audit=lambda: True, idle_seconds=value)
