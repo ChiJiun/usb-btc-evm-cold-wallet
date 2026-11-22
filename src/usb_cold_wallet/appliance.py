@@ -47,7 +47,10 @@ def _serial_marker(message: str) -> None:
         pass
     finally:
         if fd is not None:
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _block_parent(device: str) -> str | None:
