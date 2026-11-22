@@ -71,6 +71,20 @@ jobs:
           sh scripts/check_host.sh
           df -h .
 
+      # Only download inputs are cached. Never cache build/output, compilers,
+      # rootfs, image files or verification evidence: the two clean builds
+      # must still compile independently on every relevant HEAD.
+      # Restore is untrusted input: Buildroot enforces source hashes and the
+      # fetch scripts verify Buildroot's signed release and every wheel hash.
+      - name: Restore verified source downloads
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4
+        with:
+          path: |
+            build/dl
+            build/cache
+            build/wheelhouse
+          key: live-usb-downloads-v1-${{ runner.os }}-${{ hashFiles('infra/buildroot.env', 'infra/buildroot-release-key.asc', 'infra/embit.env', 'infra/wheelhouse.sha256', 'infra/wheelhouse-requirements.txt', 'buildroot-external/configs/usb_wallet_x86_64_defconfig', 'buildroot-external/package/**', 'scripts/fetch_buildroot.sh', 'scripts/fetch_wheelhouse.sh', 'scripts/fetch_sources.sh') }}
+
       - name: Prepare authenticated offline sources
         run: sh scripts/fetch_sources.sh
 
