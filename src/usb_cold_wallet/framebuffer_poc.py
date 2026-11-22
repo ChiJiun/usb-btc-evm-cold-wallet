@@ -73,12 +73,17 @@ def _validate_plan(plan: ReviewPlan) -> None:
         for value in (page.key,):
             if type(value) is not str:
                 raise TypeError("ReviewPlan contains non-text display metadata")
+            if any(ord(ch) < 32 or ord(ch) > 126 for ch in value):
+                raise ValueError("ReviewPlan contains non-ASCII display metadata")
             total += len(value)
         for field in page.fields:
             if type(field) is not ReviewField:
                 raise TypeError("ReviewPlan contains non-canonical field objects")
-            if not all(type(value) is str for value in (field.key, field.value, field.source)):
+            values = (field.key, field.value, field.source)
+            if not all(type(value) is str for value in values):
                 raise TypeError("ReviewPlan contains non-text display fields")
+            if any(any(ord(ch) < 32 or ord(ch) > 126 for ch in value) for value in values):
+                raise ValueError("ReviewPlan contains characters this font cannot represent exactly")
             normalized = (field.key + " " + field.source).lower()
             if any(marker in normalized for marker in _SECRET_FIELD_MARKERS):
                 raise ValueError("Secret-bearing fields must never enter framebuffer review")
