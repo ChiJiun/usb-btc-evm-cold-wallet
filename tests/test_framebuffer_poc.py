@@ -111,6 +111,17 @@ def test_invalid_page_and_geometry_rejected():
         fb.Surface(100, 100, _font())
 
 
+def test_unrepresentable_review_text_fails_closed():
+    plan = _plan()
+    pages = list(plan.pages)
+    pages[0] = ReviewPage(
+        pages[0].key,
+        pages[0].fields + (ReviewField("memo", "pay\nnow", "payload.memo"),),
+    )
+    with pytest.raises(ValueError, match="cannot represent exactly"):
+        fb.render_review(fb.Surface(640, 480, _font()), replace(plan, pages=tuple(pages)), 0)
+
+
 def test_psf2_font_is_exact_bounded_direct_index_format(tmp_path: Path):
     font = tmp_path / "font.psf"
     font.write_bytes(b"no")
