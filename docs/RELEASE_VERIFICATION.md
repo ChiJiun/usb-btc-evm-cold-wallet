@@ -8,7 +8,7 @@
 
 真正有特權的 `.github/workflows/release-finalize.yml` 只由 `workflow_run` 啟動，workflow definition 由 repository default branch 取得。Finalizer 只接受成功完成、event=`workflow_dispatch`、head branch=`main`、workflow path=`.github/workflows/release.yml`、repository/head repository 均為本 repository 的前置 run，並要求觸發 run 的 head SHA 與 finalizer 當下的 protected-main `GITHUB_SHA` 完全相同。此外，Workflow Run API 的 `actor` 與 `triggering_actor` 都必須命中受保護 verifier 內的 Release Actor allowlist；具一般 write 權限但未列入 allowlist 的 collaborator 不能替合法 signed tag 要求發布。main 若在長時間 Buildroot 建置期間前進，finalizer 直接 fail closed，必須從新 main 重新產生 candidate。
 
-Candidate 的 signed annotated tag 必須精確指向 input source SHA；GitHub 必須回報 GPG tag `verified=true` / `reason=valid`，tagger email 必須命中受保護 verifier 內的 release identity allowlist。Validate 固定 annotated tag object SHA；finalizer 在 attestation 前與 publish 前都重新比對。SLSA provenance 的 signer workflow / source identity 綁定 **`release-finalize.yml` 的 protected-main SHA**；實際 release source SHA/tag 則由 signed tag、metadata 與 manifest 獨立綁定。
+Candidate 的 signed annotated tag 必須精確指向 input source SHA；GitHub 必須回報 GPG tag `verified=true` / `reason=valid`，tagger email 必須命中受保護 verifier 內的 release identity allowlist。Validate 固定 annotated tag object SHA；finalizer 在 attestation 前與 publish 前都重新比對。Attestation 的 signer certificate 綁定 **`release-finalize.yml` 的 protected-main SHA**；同一個 trusted finalizer 再產生 SLSA v1 custom predicate，把 signed release `source_sha`、tag、tag object SHA、candidate run/attempt、Buildroot SHA、runner/toolchain evidence 寫入 `buildDefinition` / `resolvedDependencies`。獨立 verifier 以 `gh attestation verify --format json` 驗證 signer 後，再對 predicate 做 exact policy comparison；因此 provenance 同時驗證「誰簽」與「實際建置哪個 signed source」。
 
 權限分離如下：
 
@@ -30,7 +30,7 @@ Candidate 的 signed annotated tag 必須精確指向 input source SHA；GitHub 
 4. 由最後 root filesystem 產生 SPDX JSON SBOM；保存 `build-host-packages.txt`、`release-metadata.json` 與 `SHA256SUMS`。manifest 精確涵蓋最後 image、SBOM、metadata、host dependency evidence。
 5. Candidate workflow 將這批 bytes 上傳成名稱綁定 `run_id` / `run_attempt` 的 Actions artifact，並先做無特權的本機 digest／metadata／tag-object 驗證。
 6. Default-branch `release-finalize.yml` 由 `workflow_run` 啟動；preflight 重新驗證前置 run 身分、protected main SHA、repository rulesets、唯一 artifact 名稱、signed tag、source SHA、tag object、manifest、SPDX 與 metadata。main 已前進或 artifact/run 不一致即 fail closed。
-7. Finalizer attest 對 image、SBOM、metadata、host dependency evidence 建立由 `release-finalize.yml` protected-main SHA 簽發的 SLSA Build Provenance，另對 `SHA256SUMS` 建立 provenance、對 image 建立 SBOM attestation；verify 再逐一驗證 subject digest 與 signer identity。
+7. Finalizer 先由 trusted metadata 產生 deterministic SLSA v1 predicate，再對 image、SBOM、metadata、host dependency evidence 與 `SHA256SUMS` 建立由 `release-finalize.yml` protected-main SHA 簽發的 provenance；predicate 明確包含 signed source SHA/tag/tag-object、candidate run/attempt 與固定 Buildroot input。另對 image 建立 SPDX SBOM attestation。verify 逐一驗證 subject digest、signer identity，並解析 attestation JSON 要求 predicate 與預期內容完全一致。
 8. Privileged gate 把 preflight / attest / verify 的 `skipped`、`cancelled`、`failure` 全部視為失敗。publish 只下載同一已驗證 artifact，並在 `gh release create` 前再次確認 current main、前置 workflow run、repository controls、authorized signer、source SHA 與固定 tag object SHA。任何 main/tag/run/artifact 替換都 fail closed。
 
 ## 發行等級與可宣稱範圍
@@ -57,7 +57,7 @@ python3 scripts/verify_release_assets.py \
   --asset usb-cold-wallet-v0.1.0-beta.1.img.xz
 ~~~
 
-驗證器固定 repository，不接受 URL；它從 GitHub Release 下載 `SHA256SUMS`、指定 image、SPDX SBOM、release metadata 與 host dependency evidence，要求 manifest 精確覆蓋全部 payload 並逐一重算 SHA-256，再對每個檔案要求 Immutable Release asset integrity，以及由 `.github/workflows/release-finalize.yml` 在指定 protected-main SHA 簽發的 SLSA Build Provenance。release source tag/SHA 則另外由 signed annotated tag 與 metadata 驗證；任一缺失或不一致均 nonzero exit。
+驗證器固定 repository，不接受 URL；它從 GitHub Release 下載 `SHA256SUMS`、指定 image、SPDX SBOM、release metadata 與 host dependency evidence，要求 manifest 精確覆蓋全部 payload 並逐一重算 SHA-256，再對每個檔案要求 Immutable Release asset integrity，以及由 `.github/workflows/release-finalize.yml` 在指定 protected-main SHA 簽發的 SLSA Build Provenance。它會解析已驗證 attestation 的 JSON statement，要求 SLSA predicate 中的 signed source SHA/tag/tag object/candidate run/Buildroot input 與 release metadata、外部指定 workflow SHA 完全一致；任一缺失或不一致均 nonzero exit。
 
 `SHA256SUMS` 只能證明 bytes 與 manifest 一致；其本身仍需 GitHub 的 Release integrity / asset verification。signed tag、Immutable Release、Build Provenance 各自提供不同保證，不能互相替代。
 
