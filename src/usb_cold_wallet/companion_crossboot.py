@@ -423,14 +423,17 @@ class CrossBootManager:
         reservation = self.broadcast_reservation(session, btc_session)
         if (type(observed) is not dict or observed.get("asset") != reservation["asset"]
                 or observed.get("txid") != reservation["txid"]
-                or observed.get("result") not in {"pending", "confirmed", "reverted"}):
-            raise ValueError("Chain reconciliation did not prove the reserved transaction exists")
-        request, owner, _asset = self._request_from_any(session, btc_session)
-        self._store().broadcasted(request, reservation["txid"])
-        owner.pending["stage"] = "broadcasted"
-        owner.pending["result"] = observed["result"]
-        self._cleanup_files(request["requestId"])
-        return self.status(session, btc_session)
+                or observed.get("result") not in {"pending", "confirmed", "reverted"}
+                or observed.get("untrusted_rpc") is not True):
+            raise ValueError("Chain status lookup did not match the reserved transaction")
+        # Public RPC/Esplora status is advisory: a hostile endpoint can claim that
+        # an arbitrary txid is pending/confirmed.  Never consume the durable
+        # BROADCAST_REQUESTED reservation or delete its signed exchange files
+        # based only on that unauthenticated observation.  A future transition
+        # requires independently authenticated chain evidence.
+        raise ValueError(
+            "Untrusted chain status is advisory only; BROADCAST_REQUESTED remains fail closed"
+        )
 
     def mark_broadcasted(self, session, btc_session, txid: str) -> None:
         request, _owner, _asset = self._request_from_any(session, btc_session)
