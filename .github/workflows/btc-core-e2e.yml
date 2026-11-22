@@ -1,12 +1,8 @@
 name: Bitcoin Core independent BIP84 PSBT E2E
 
 on:
+  workflow_call:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'src/usb_cold_wallet/btc.py'
-      - 'tools/generate_core_bip84_psbt_e2e.py'
-      - '.github/workflows/btc-core-e2e.yml'
 
 permissions:
   contents: read
