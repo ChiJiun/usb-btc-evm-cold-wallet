@@ -233,30 +233,47 @@ def test_buildroot_device_manager_preserves_offline_kernel_policy():
     assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_(MDEV|EUDEV)=y" in verifier
 
 
-def test_buildroot_includes_existing_offline_tk_gui_runtime():
+def test_no_network_runtime_uses_socket_free_vt_fbcon_session():
     config = (ROOT / "buildroot-external/configs/usb_wallet_x86_64_defconfig").read_text()
+    kernel = (ROOT / "buildroot-external/board/usb-wallet/linux.config").read_text()
     external = (ROOT / "buildroot-external/external.mk").read_text()
     postbuild = (ROOT / "buildroot-external/board/usb-wallet/post-build.sh").read_text()
     launcher = (
         ROOT
         / "buildroot-external/board/usb-wallet/rootfs-overlay/usr/bin/usb-wallet-gui-session"
     ).read_text()
+
+    assert "# CONFIG_NET is not set" in kernel
     for symbol in (
+        "CONFIG_VT=y",
+        "CONFIG_FRAMEBUFFER_CONSOLE=y",
+        "CONFIG_DRM_SIMPLEDRM=y",
+    ):
+        assert symbol in kernel
+    for forbidden in (
         "BR2_PACKAGE_XORG7=y",
         "BR2_PACKAGE_XSERVER_XORG_SERVER=y",
         "BR2_PACKAGE_XSERVER_XORG_SERVER_KDRIVE=y",
         "BR2_PACKAGE_XAPP_XINIT=y",
         "BR2_PACKAGE_TK=y",
     ):
-        assert symbol in config
-    assert "filter-out --disable-tk" in external
-    assert "PYTHON3_DEPENDENCIES += tk" in external
-    assert "usb-wallet-gui-session" in postbuild
+        assert forbidden not in config
+    assert "--enable-tk" not in external
+    assert "PYTHON3_DEPENDENCIES += tk" not in external
+    assert "X11 runtime present while CONFIG_NET=n" in postbuild
     assert "_tkinter" in postbuild
-    assert "Xfbdev :0 -nolisten tcp" in launcher
-    assert "usb-cold-wallet-gui --lang zh-TW" in launcher
-    # A mounted TX_TRANSFER is mandatory before the locked GUI can import a
-    # cross-boot request. Failure falls back to the audited console.
-    assert "from usb_cold_wallet.appliance import mount_transfer" in launcher
-    assert launcher.index("mount_transfer") < launcher.index("/usr/bin/xinit /usr/bin/usb-cold-wallet-gui")
+    assert "/usr/bin/xinit" not in launcher
+    assert "Xfbdev" not in launcher
     assert "exec /usr/bin/usb-wallet-console" in launcher
+    assert "test -c /dev/tty1" in launcher
+
+
+def test_media_identifier_checks_primary_and_backup_gpt():
+    helper = (ROOT / "buildroot-external/board/usb-wallet/identify_media.py").read_text()
+    verifier = (ROOT / "scripts/verify_image.py").read_text()
+    for text in (helper, verifier):
+        assert "primary/backup GPT" in text
+        assert "GPT_TABLE_SECTORS" in text
+        assert "entries_crc" in text
+    assert "primary/backup GPT partition tables differ" in helper
+    assert "primary/backup GPT partition tables differ" in verifier
