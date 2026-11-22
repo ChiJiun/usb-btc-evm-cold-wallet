@@ -14,7 +14,9 @@ def _boot_checks(path: Path):
                 "PASS: network stack absent",
                 "PASS: no active swap",
                 "PASS: root filesystem is RAM-backed (rootfs)",
+                "PASS: boot partition is not mounted in cold runtime",
                 "PASS: COLD_VAULT mounted as vfat",
+                "PASS: COLD_VAULT restrictive mount options verified",
                 "PASS: no unexpected writable persistent filesystem mounted",
             ]
         )
