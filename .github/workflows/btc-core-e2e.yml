@@ -1,0 +1,59 @@
+name: Bitcoin Core independent BIP84 PSBT E2E
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/usb_cold_wallet/btc.py'
+      - 'tools/generate_core_bip84_psbt_e2e.py'
+      - '.github/workflows/btc-core-e2e.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  core_psbt_e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install pinned dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements/ci.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+      - name: Start disposable Bitcoin Core regtest
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull bitcoin/bitcoin@sha256:ca69e5a5e316cdde3334b277caff687dd07b8c322f208063aa29a976132fca34
+          docker image inspect bitcoin/bitcoin@sha256:ca69e5a5e316cdde3334b277caff687dd07b8c322f208063aa29a976132fca34 --format '{{json .RepoDigests}}' | tee bitcoin-core-image-digests.json
+          docker run -d --rm --name btc-issue2-core bitcoin/bitcoin@sha256:ca69e5a5e316cdde3334b277caff687dd07b8c322f208063aa29a976132fca34 -regtest -server -txindex=1 -fallbackfee=0.00001
+          for i in $(seq 1 60); do
+            if docker exec --user bitcoin btc-issue2-core bitcoin-cli -regtest -datadir=/home/bitcoin/.bitcoin getblockchaininfo >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs btc-issue2-core
+          exit 1
+      - name: Core unsigned PSBT / offline sign / Core finalize and TXID
+        run: |
+          python tools/generate_core_bip84_psbt_e2e.py
+      - name: Collect diagnostic logs on failure
+        if: failure()
+        run: docker logs btc-issue2-core || true
+      - name: Upload Core-origin fixture and image provenance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: btc-core-bip84-e2e
+          path: |
+            btc-core-e2e-result.json
+            bitcoin-core-image-digests.json
+          if-no-files-found: ignore
+          retention-days: 30

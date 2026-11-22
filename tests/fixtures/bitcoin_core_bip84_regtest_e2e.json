@@ -1,0 +1,22 @@
+{
+  "core_version": "/Satoshi:30.4.0/",
+  "core_image_digest": "sha256:ca69e5a5e316cdde3334b277caff687dd07b8c322f208063aa29a976132fca34",
+  "provenance": "Bitcoin Core 30.4 regtest RPC generatetoaddress/createpsbt; embit only enriches UTXO and BIP32 metadata; Core RPC finalizepsbt/decoderawtransaction is independent oracle",
+  "source_run": "https://github.com/ChiJiun/usb-btc-evm-cold-wallet/actions/runs/44927145029",
+  "source_artifact": "https://github.com/ChiJiun/usb-btc-evm-cold-wallet/actions/runs/44927145029/artifacts/14716610986",
+  "core_prev_txid": "67d30b3f656293975fa40cac09f2f3e259a14dde6413341d079b6d4616b5d007",
+  "core_txid": "65eb7d659ec5d6fc701a0c4ca3e5187c0dc9094b004649c98853bb03136aaf75",
+  "core_wtxid": "9aecd7dfcb1f80ec0d5f4780368b1eccb704aede84031e76c45c865a35713f79",
+  "core_block_hash": "546adb141762fb842c3445bc766bd41ae834d31669ac6707e7ecde6677453ba8",
+  "core_unsigned_psbt_base64": "cHNidP8BAHECAAAAAQfQtRZGbZsHHTQTZN5NoVni8/IJrAykX5eTYmU/C9NnAAAAAAD/////AmDqAAAAAAAAFgAUb6AWUAo8anN+uyYOLdyni6kjRVi4AwUqAQAAABYAFC80qhzwClOwVaKRoDp9RfCmmItSAAAAAAAAAAA=",
+  "enriched_psbt_base64": "cHNidP8BAHECAAAAAQfQtRZGbZsHHTQTZN5NoVni8/IJrAykX5eTYmU/C9NnAAAAAAD/////AmDqAAAAAAAAFgAUb6AWUAo8anN+uyYOLdyni6kjRVi4AwUqAQAAABYAFC80qhzwClOwVaKRoDp9RfCmmItSAAAAAAABAKcCAAAAAAEBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////AlEA/v///wIA8gUqAQAAABYAFNDEo+8J6Ze26Z45flGP4+QaEYyhAAAAAAAAAAAmaiSqIant4vYcP3HR3v0/qZnfo2lTdVxpBol5mWK0i+vYNpdOjPkBIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEBHwDyBSoBAAAAFgAU0MSj7wnpl7bpnjl+UY/j5BoRjKEiBgLnqyU3tdSelwMJquBunknzbOHJ/rvUTsjg0cygtPnDGRhzxdoKVAAAgAEAAIAAAACAAAAAAAAAAAAAAAA=",
+  "signed_psbt_base64": "cHNidP8BAHECAAAAAQfQtRZGbZsHHTQTZN5NoVni8/IJrAykX5eTYmU/C9NnAAAAAAD/////AmDqAAAAAAAAFgAUb6AWUAo8anN+uyYOLdyni6kjRVi4AwUqAQAAABYAFC80qhzwClOwVaKRoDp9RfCmmItSAAAAAAABAKcCAAAAAAEBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////AlEA/v///wIA8gUqAQAAABYAFNDEo+8J6Ze26Z45flGP4+QaEYyhAAAAAAAAAAAmaiSqIant4vYcP3HR3v0/qZnfo2lTdVxpBol5mWK0i+vYNpdOjPkBIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEBHwDyBSoBAAAAFgAU0MSj7wnpl7bpnjl+UY/j5BoRjKEiAgLnqyU3tdSelwMJquBunknzbOHJ/rvUTsjg0cygtPnDGUcwRAIgPki0lxIg53RR5TdZpL2kFn5TNudPXxEr2L9fQmLgMbkCIHFn2do4ZlzneA7fRBW5kFcQHPPV9Gjvgna7thLlaYMAASIGAuerJTe11J6XAwmq4G6eSfNs4cn+u9ROyODRzKC0+cMZGHPF2gpUAACAAQAAgAAAAIAAAAAAAAAAAAAAAA==",
+  "core_finalized_tx_hex": "0200000000010107d0b516466d9b071d341364de4da159e2f3f209ac0ca45f979362653f0bd3670000000000ffffffff0260ea0000000000001600146fa016500a3c6a737ebb260e2ddca78ba9234558b803052a010000001600142f34aa1cf00a53b055a291a03a7d45f0a6988b520247304402203e48b4971220e77451e53759a4bda4167e5336e74f5f112bd8bf5f4262e031b902207167d9da38665ce7780edf4415b99057101cf3d5f468ef8276bbb612e5698300012102e7ab2537b5d49e970309aae06e9e49f36ce1c9febbd44ec8e0d1cca0b4f9c31900000000",
+  "psbt_sha256": "24573a87dc2dac3611e9d076dd4fbe9491e1e0ba7f069c8d5ce681fe18b95aab",
+  "recipient_testnet": "tb1qd7spv5q28348xl4myc8zmh983w5jx32cjhkn97",
+  "recipient_sats": 60000,
+  "change_sats": 4999939000,
+  "fee_sats": 1000,
+  "public_bip39_mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "derivation": "m/84h/1h/0h/0/0"
+}
