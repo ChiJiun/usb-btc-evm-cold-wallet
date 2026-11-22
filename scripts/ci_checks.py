@@ -150,7 +150,7 @@ def live_workflow_trigger_only(base: str) -> bool:
             '      - name: Verify real reusable workflow invocation\n'
             '        run: |\n'
             '          set -euo pipefail\n'
-            '          test "${{ inputs.smoke_only }}" = "true"\n'
+            '          test "\${{ inputs.smoke_only }}" = "true"\n'
             '          echo "Live USB reusable workflow_call contract executed"\n'
             '\n'
         )
@@ -160,7 +160,7 @@ def live_workflow_trigger_only(base: str) -> bool:
             if current_body.count(smoke) != 1:
                 return False
             current_body = current_body.replace(smoke, "", 1)
-        build_guard = "  build-and-reproduce:\\n    if: inputs.smoke_only != true\n"
+        build_guard = "  build-and-reproduce:\n    if: inputs.smoke_only != true\n"
         if build_guard in current_body:
             current_body = current_body.replace(build_guard, "  build-and-reproduce:\n", 1)
         return current_body == previous_body
