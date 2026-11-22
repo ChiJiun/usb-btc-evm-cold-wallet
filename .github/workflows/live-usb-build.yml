@@ -178,11 +178,13 @@ jobs:
       # Publish only after both clean builds match AND the generated image
       # actually booted through OVMF with the startup security audit passing.
       # No artifact is created on failed/cancelled/incomplete verification.
+      # Raw image is the audited output; test-only .xz uses a reproducible
+      # moderate compression preset to avoid -9e's excessive CPU cost.
       - name: Package and verify exact image artifact
         env:
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           ARTIFACT_DIR: build/verified-artifact
-          XZ_PARAMS: "--threads=1 --check=crc64 -9e"
+          XZ_PARAMS: "--threads=1 --check=crc64 -6"
         run: |
           set -eu
           image="build/output/images/usb-cold-wallet.img"
