@@ -39,6 +39,7 @@ jobs:
       native_qr: ${{ steps.scope.outputs.native_qr }}
       windows: ${{ steps.scope.outputs.windows }}
       live_usb: ${{ steps.scope.outputs.live_usb }}
+      live_usb_smoke: ${{ steps.scope.outputs.live_usb_smoke }}
       btc_core: ${{ steps.scope.outputs.btc_core }}
       btc_fuzz: ${{ steps.scope.outputs.btc_fuzz }}
       vfat: ${{ steps.scope.outputs.vfat }}
@@ -335,6 +336,13 @@ jobs:
 
   # Called from the same required job graph. An unrelated PR skips the
   # heavyweight image build, but an expected failure/missing run blocks merge.
+  live_usb_smoke:
+    needs: changes
+    if: needs.changes.outputs.live_usb_smoke == 'true'
+    uses: ./.github/workflows/live-usb-build.yml
+    with:
+      smoke_only: true
+
   live_usb:
     needs: changes
     if: needs.changes.outputs.live_usb == 'true'
@@ -477,6 +485,7 @@ jobs:
       - metamask_snap
       - windows_portable
       - live_usb
+      - live_usb_smoke
       - btc_core
       - btc_fuzz
       - vfat
@@ -506,6 +515,8 @@ jobs:
           NATIVE_REQUIRED: ${{ needs.changes.outputs.native_qr }}
           WINDOWS_REQUIRED: ${{ needs.changes.outputs.windows }}
           LIVE_USB_REQUIRED: ${{ needs.changes.outputs.live_usb }}
+          LIVE_USB_SMOKE_REQUIRED: ${{ needs.changes.outputs.live_usb_smoke }}
+          LIVE_USB_SMOKE: ${{ needs.live_usb_smoke.result }}
           BTC_CORE_REQUIRED: ${{ needs.changes.outputs.btc_core }}
           BTC_FUZZ_REQUIRED: ${{ needs.changes.outputs.btc_fuzz }}
           VFAT_REQUIRED: ${{ needs.changes.outputs.vfat }}
