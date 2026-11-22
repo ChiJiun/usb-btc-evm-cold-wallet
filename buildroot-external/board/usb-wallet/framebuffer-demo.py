@@ -30,7 +30,10 @@ def _serial(message: str) -> None:
         pass
     finally:
         if fd is not None:
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _audit() -> bool:
