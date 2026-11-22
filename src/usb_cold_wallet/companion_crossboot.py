@@ -144,39 +144,19 @@ def _package_request(kind: str, payload, *, request_id: str, account: str,
     )
 
 
-def _windows_volume_label(root: str) -> str:
-    kernel = ctypes.windll.kernel32
-    label = ctypes.create_unicode_buffer(261)
-    fsname = ctypes.create_unicode_buffer(261)
-    serial = ctypes.c_ulong()
-    max_component = ctypes.c_ulong()
-    flags = ctypes.c_ulong()
-    ok = kernel.GetVolumeInformationW(
-        ctypes.c_wchar_p(root), label, len(label), ctypes.byref(serial),
-        ctypes.byref(max_component), ctypes.byref(flags), fsname, len(fsname)
-    )
-    return label.value if ok else ""
-
-
 def discover_windows_exchange_root() -> Path:
+    """Fail closed until the merged single-USB GPT/layout contract is shared here.
+
+    Volume labels and DRIVE_REMOVABLE/DRIVE_FIXED are presentation metadata,
+    not device identity. PR #76 owns the authoritative disk/partition contract;
+    automatic discovery must remain disabled rather than accept a spoofable
+    TX_TRANSFER label before that contract is merged and consumed.
+    """
     if os.name != "nt":
         raise ValueError("Automatic TX_TRANSFER discovery requires Windows")
-    kernel = ctypes.windll.kernel32
-    mask = kernel.GetLogicalDrives()
-    if not mask:
-        raise ValueError("Windows drive enumeration failed")
-    matches = []
-    for index in range(26):
-        if not mask & (1 << index):
-            continue
-        root = f"{chr(65 + index)}:\\"
-        if kernel.GetDriveTypeW(ctypes.c_wchar_p(root)) not in (2, 3):
-            continue
-        if _windows_volume_label(root) == LABEL:
-            matches.append(Path(root))
-    if len(matches) != 1:
-        raise ValueError("TX_TRANSFER unavailable or ambiguous; exactly one labelled volume is required")
-    return matches[0]
+    raise ValueError(
+        "Automatic TX_TRANSFER discovery is disabled until validated GPT/layout identity is integrated"
+    )
 
 
 class CrossBootManager:
