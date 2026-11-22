@@ -33,6 +33,12 @@ MAX_MANIFEST_BYTES = 128 * 1024
 REQUIRED_STAGED_FILES = ("SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt")
 DEFAULT_AUTHORIZED_RELEASE_TAGGER_EMAILS = frozenset({"0311gino@gmail.com"})
 DEFAULT_AUTHORIZED_RELEASE_ACTORS = frozenset({"ChiJiun"})
+SLSA_PREDICATE_TYPE = "https://slsa.dev/provenance/v1"
+SLSA_BUILD_TYPE = (
+    f"https://github.com/{REPOSITORY}/blob/main/docs/RELEASE_VERIFICATION.md"
+    "#release-build-attestation"
+)
+SLSA_BUILDER_ID = f"https://github.com/{REPOSITORY}/actions/workflows/release-finalize.yml"
 Run = Callable[[list[str]], str]
 
 
@@ -384,6 +390,105 @@ def verify_workflow_run_identity(
     return data
 
 
+def build_slsa_predicate(metadata: Mapping[str, object], workflow_sha: str) -> dict:
+    """Build the exact SLSA v1 predicate signed by the trusted finalizer."""
+    if not SHA_RE.fullmatch(workflow_sha):
+        raise ReleaseVerificationError("Trusted workflow SHA must be a full 40-character SHA")
+    workflow_sha = workflow_sha.lower()
+
+    required = {
+        "repository",
+        "tag",
+        "source_sha",
+        "tag_object_sha",
+        "workflow_sha",
+        "asset",
+        "buildroot_version",
+        "buildroot_sha256",
+        "node_version",
+        "xz_version",
+        "apt_snapshot",
+        "runner_image_os",
+        "runner_image_version",
+        "compression",
+        "workflow_run_id",
+        "workflow_run_attempt",
+        "publish_requested",
+    }
+    if not isinstance(metadata, Mapping) or not required.issubset(metadata):
+        raise ReleaseVerificationError("Release metadata cannot produce SLSA provenance")
+    if metadata.get("repository") != REPOSITORY or metadata.get("workflow_sha") != workflow_sha:
+        raise ReleaseVerificationError("Release metadata does not match trusted provenance identity")
+
+    tag = metadata.get("tag")
+    source_sha = metadata.get("source_sha")
+    tag_object_sha = metadata.get("tag_object_sha")
+    asset = metadata.get("asset")
+    if (
+        not isinstance(tag, str)
+        or TAG_RE.fullmatch(tag) is None
+        or not isinstance(source_sha, str)
+        or SHA_RE.fullmatch(source_sha) is None
+        or not isinstance(tag_object_sha, str)
+        or SHA_RE.fullmatch(tag_object_sha) is None
+        or not isinstance(asset, str)
+        or ASSET_RE.fullmatch(asset) is None
+    ):
+        raise ReleaseVerificationError("Release metadata has invalid provenance identity")
+
+    external = {
+        "repository": REPOSITORY,
+        "tag": tag,
+        "sourceSha": source_sha.lower(),
+        "tagObjectSha": tag_object_sha.lower(),
+        "workflowSha": workflow_sha,
+        "candidateWorkflow": ".github/workflows/release.yml",
+        "candidateRunId": metadata["workflow_run_id"],
+        "candidateRunAttempt": metadata["workflow_run_attempt"],
+        "asset": asset,
+        "publishRequested": metadata["publish_requested"],
+        "aptSnapshot": metadata["apt_snapshot"],
+        "nodeVersion": metadata["node_version"],
+        "xzVersion": metadata["xz_version"],
+        "compression": metadata["compression"],
+    }
+    internal = {
+        "trustedFinalizerWorkflowSha": workflow_sha,
+        "runnerImageOS": metadata["runner_image_os"],
+        "runnerImageVersion": metadata["runner_image_version"],
+    }
+    dependencies = [
+        {
+            "uri": f"git+https://github.com/{REPOSITORY}.git@refs/tags/{tag}",
+            "digest": {"gitCommit": source_sha.lower()},
+        },
+        {
+            "uri": f"git+https://github.com/{REPOSITORY}.git@refs/heads/main",
+            "digest": {"gitCommit": workflow_sha},
+        },
+        {
+            "uri": (
+                "https://buildroot.org/downloads/"
+                f"buildroot-{metadata['buildroot_version']}.tar.xz"
+            ),
+            "digest": {"sha256": metadata["buildroot_sha256"]},
+        },
+    ]
+    return {
+        "buildDefinition": {
+            "buildType": SLSA_BUILD_TYPE,
+            "externalParameters": external,
+            "internalParameters": internal,
+            "resolvedDependencies": dependencies,
+        },
+        "runDetails": {
+            "builder": {
+                "id": SLSA_BUILDER_ID,
+            }
+        },
+    }
+
+
 def _attest_args(image: Path, workflow_sha: str) -> list[str]:
     if not SHA_RE.fullmatch(workflow_sha):
         raise ReleaseVerificationError("Trusted workflow SHA must be a full 40-character SHA")
@@ -403,8 +508,10 @@ def _attest_args(image: Path, workflow_sha: str) -> list[str]:
         "--signer-digest",
         workflow_sha,
         "--predicate-type",
-        "https://slsa.dev/provenance/v1",
+        SLSA_PREDICATE_TYPE,
         "--deny-self-hosted-runners",
+        "--format",
+        "json",
     ]
 
 
@@ -480,10 +587,38 @@ def _verify_spdx(path: Path) -> None:
 
 
 def _verify_build_provenance(
-    run: Run, directory: Path, names: list[str], workflow_sha: str
+    run: Run,
+    directory: Path,
+    names: list[str],
+    workflow_sha: str,
+    metadata: Mapping[str, object],
 ) -> None:
+    expected_predicate = build_slsa_predicate(metadata, workflow_sha)
     for name in names:
-        run(_attest_args(_safe_file(directory, name), workflow_sha))
+        raw = run(_attest_args(_safe_file(directory, name), workflow_sha))
+        try:
+            results = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise ReleaseVerificationError("Invalid attestation verification JSON") from exc
+        if not isinstance(results, list) or not results:
+            raise ReleaseVerificationError("No verified SLSA provenance returned")
+        matched = False
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            verification = result.get("verificationResult")
+            statement = verification.get("statement") if isinstance(verification, dict) else None
+            if (
+                isinstance(statement, dict)
+                and statement.get("predicateType") == SLSA_PREDICATE_TYPE
+                and statement.get("predicate") == expected_predicate
+            ):
+                matched = True
+                break
+        if not matched:
+            raise ReleaseVerificationError(
+                f"SLSA provenance does not bind the expected release source: {name}"
+            )
 
 
 def verify_candidate_artifacts(
@@ -575,11 +710,17 @@ def verify_local_artifacts(
         expected_tag_object_sha=expected_tag_object_sha,
     )
     root = Path(directory)
+    metadata_path = _safe_file(root, "release-metadata.json")
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ReleaseVerificationError("Invalid release-metadata.json") from exc
     _verify_build_provenance(
         run,
         root,
         ["SHA256SUMS", asset, *REQUIRED_STAGED_FILES],
         workflow_sha,
+        metadata,
     )
     return digest
 
@@ -681,7 +822,19 @@ def verify_release(
                     REPOSITORY,
                 ]
             )
-        _verify_build_provenance(run, directory, release_files, workflow_sha)
+                try:
+            metadata = json.loads(
+                _safe_file(directory, "release-metadata.json").read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ReleaseVerificationError("Invalid release-metadata.json") from exc
+        _verify_build_provenance(
+            run,
+            directory,
+            release_files,
+            workflow_sha,
+            metadata,
+        )
     return actual
 
 
