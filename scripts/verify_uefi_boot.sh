@@ -78,8 +78,28 @@ while [ "$count" -lt 120 ]; do
         tail -70 "$TMP/serial.log" >&2 || true
         exit 1
     fi
-    if grep -q 'USB_WALLET_UEFI_AUDIT_OK' "$TMP/serial.log" 2>/dev/null; then
-        echo "PASS: OVMF booted generated USB GPT image and guest startup audit succeeded"
+    if grep -q 'USB_WALLET_UEFI_AUDIT_OK' "$TMP/serial.log" 2>/dev/null \
+       && grep -q 'USB_WALLET_CONSOLE_READY' "$TMP/serial.log" 2>/dev/null; then
+        # Require the guest's bounded audit evidence, not only a success marker.
+        for evidence in \
+            'PASS: unique single-USB boot, vault and transfer layout verified' \
+            'PASS: boot USB sysfs ancestry and disk sequence pinned' \
+            'PASS: single-USB TX_TRANSFER partition bound to verified boot parent' \
+            'PASS: boot partition is not mounted in cold runtime' \
+            'PASS: COLD_VAULT mounted from verified PARTUUID device as vfat' \
+            'PASS: COLD_VAULT restrictive mount options verified' \
+            'PASS: /proc/net absent' \
+            'PASS: no active swap' \
+            'PASS: root filesystem is RAM-backed' \
+            'PASS: no unexpected writable persistent filesystem mounted' \
+            'PASS: offline startup audit complete'; do
+            if ! grep -Fq "$evidence" "$TMP/serial.log"; then
+                echo "ERROR: guest audit marker present but required evidence is missing: $evidence" >&2
+                tail -100 "$TMP/serial.log" >&2 || true
+                exit 1
+            fi
+        done
+        echo "PASS: OVMF booted generated USB GPT image, guest security audit passed, and audited console reached its menu"
         exit 0
     fi
     if ! kill -0 "$PID" 2>/dev/null; then
