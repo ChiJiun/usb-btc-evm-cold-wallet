@@ -11,6 +11,11 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
+if __package__:
+    from .ci_workloads import FULL as FULL_WORKLOADS, NONE as NONE_WORKLOADS, classify_workloads
+else:
+    from ci_workloads import FULL as FULL_WORKLOADS, NONE as NONE_WORKLOADS, classify_workloads
+
 
 @dataclass(frozen=True)
 class Scope:
@@ -109,22 +114,22 @@ def classify_paths(paths: list[str]) -> Scope:
     )
 
 
-def select_scope(
+def select_scopes(
     event: str, pr_base_sha: str = "", push_before_sha: str = ""
-) -> Scope:
+):
     if event == "schedule":
         # Daily main-branch scan, even when no dependency files have changed.
-        return SCHEDULED
+        return SCHEDULED, NONE_WORKLOADS
     if event == "workflow_dispatch":
-        return FULL
+        return FULL, FULL_WORKLOADS
     if event not in {"pull_request", "push"}:
         print(f"::warning::Unknown event {event!r}; running full validation")
-        return FULL
+        return FULL, FULL_WORKLOADS
 
     base = pr_base_sha if event == "pull_request" else push_before_sha
     if not re.fullmatch(r"[0-9a-fA-F]{40}", base or "") or int(base, 16) == 0:
         print("::warning::Invalid comparison commit; running full validation")
-        return FULL
+        return FULL, FULL_WORKLOADS
 
     try:
         subprocess.run(
@@ -142,11 +147,11 @@ def select_scope(
         )
     except (OSError, subprocess.CalledProcessError):
         print("::warning::Git comparison failed; running full validation")
-        return FULL
+        return FULL, FULL_WORKLOADS
 
     if not raw:
         print("::warning::No changed files found; running full validation")
-        return FULL
+        return FULL, FULL_WORKLOADS
 
     paths = [
         part.decode("utf-8", errors="surrogateescape")
@@ -155,7 +160,12 @@ def select_scope(
     ]
     for path in paths:
         print(f"Changed: {path!r}")
-    return classify_paths(paths)
+    return classify_paths(paths), classify_workloads(paths)
+
+
+def select_scope(event: str, pr_base_sha: str = "", push_before_sha: str = "") -> Scope:
+    """Legacy classification retained for public API and its regression tests."""
+    return select_scopes(event, pr_base_sha, push_before_sha)[0]
 
 
 def gate_errors(env: dict[str, str]) -> list[str]:
@@ -195,15 +205,30 @@ def gate_errors(env: dict[str, str]) -> list[str]:
     require("AUDIT", "success" if deps == "true" else "skipped")
     require("NODE_AUDIT", "success" if node == "true" else "skipped")
     # Executable QR/bridge changes MUST run the actual JS + Python interop job.
-    require("QR_TRANSPORT", "success" if code == "true" else "skipped")
+    # Workload selection is independent of the coarse CODE gate.
+    require("QR_TRANSPORT", "success" if env.get("QR_REQUIRED") == "true" else "skipped")
     # Native MetaMask QR browser, Keyring, and Python-signer interop are mandatory
     # whenever executable code is changed, never a silently skippable CI job.
-    require("NATIVE_QR", "success" if code == "true" else "skipped")
+    require("NATIVE_QR", "success" if env.get("NATIVE_REQUIRED") == "true" else "skipped")
     # An optional Snap must pass real SES, browser and Python interop tests.
     # A separate workflow cannot satisfy the required aggregate gate.
     require("SNAP_VERIFY", "success" if snap == "true" else "skipped")
     # Real Windows EXE smoke is required for cross-platform code changes.
-    require("WINDOWS_PORTABLE", "success" if code == "true" else "skipped")
+    require("WINDOWS_PORTABLE", "success" if env.get("WINDOWS_REQUIRED") == "true" else "skipped")
+    for selected, result in (
+        ("LIVE_USB_REQUIRED", "LIVE_USB"),
+        ("BTC_CORE_REQUIRED", "BTC_CORE"),
+        ("BTC_FUZZ_REQUIRED", "BTC_FUZZ"),
+        ("VFAT_REQUIRED", "VFAT"),
+    ):
+        require(result, "success" if env.get(selected) == "true" else "skipped")
+    for flag in ("QR_REQUIRED", "NATIVE_REQUIRED", "WINDOWS_REQUIRED",
+                 "LIVE_USB_REQUIRED", "BTC_CORE_REQUIRED", "BTC_FUZZ_REQUIRED",
+                 "VFAT_REQUIRED"):
+        if env.get(flag) not in {"true", "false"}:
+            errors.append(f"Invalid workload scope {flag}: {env.get(flag)!r}")
+        if env.get(flag) == "true" and code != "true":
+            errors.append(f"{flag} requires CODE scope")
 
     require(
         "WHEEL_SMOKE",
@@ -231,7 +256,7 @@ def main() -> int:
         print("All required CI results match selected scope")
         return 0
 
-    scope = select_scope(
+    scope, workloads = select_scopes(
         os.environ.get("EVENT_NAME", ""),
         os.environ.get("PR_BASE_SHA", ""),
         os.environ.get("PUSH_BEFORE_SHA", ""),
@@ -245,8 +270,15 @@ def main() -> int:
         output.write(f"deps={str(scope.deps).lower()}\n")
         output.write(f"metadata={str(scope.metadata).lower()}\n")
         output.write(f"node={str(scope.node).lower()}\n")
-        output.write(f"snap={str(scope.snap).lower()}\n")
-    print(f"CI scope: code={scope.code}, deps={scope.deps}, metadata={scope.metadata}, node={scope.node}, snap={scope.snap}")
+        output.write(f"snap={str(scope.snap or workloads.snap).lower()}\n")
+        for key, value in (
+            ("qr", workloads.qr), ("native_qr", workloads.native_qr),
+            ("windows", workloads.windows), ("live_usb", workloads.live_usb),
+            ("btc_core", workloads.btc_core), ("btc_fuzz", workloads.btc_fuzz),
+            ("vfat", workloads.vfat),
+        ):
+            output.write(f"{key}={str(value).lower()}\n")
+    print(f"CI scope: {scope}; workloads: {workloads}")
     return 0
 
 
