@@ -2,6 +2,7 @@
 from dataclasses import replace
 from pathlib import Path
 import ast
+import hashlib
 import struct
 
 import pytest
@@ -9,7 +10,8 @@ import pytest
 import usb_cold_wallet.framebuffer_poc as fb
 from usb_cold_wallet.exchange import package
 from usb_cold_wallet.keys import root_from_mnemonic
-from usb_cold_wallet.review import ReviewField, ReviewPage, build_review_plan
+from usb_cold_wallet.review import (ReviewField, ReviewPage, build_review_plan,
+                                    _canonical, _review_document)
 
 
 PUBLIC_TEST_MNEMONIC = "abandon " * 11 + "about"
@@ -37,13 +39,34 @@ def _plan():
     return build_review_plan(package("evm-request", tx), root, "evm-request")
 
 
+def _rebind_pages(plan, pages):
+    pages = tuple(pages)
+    reviewed = (pages[0], *pages[2:])
+    digest = hashlib.sha256(
+        _canonical(_review_document(plan.kind, plan.request_digest, reviewed))
+    ).hexdigest()
+    integrity = ReviewPage(
+        "integrity",
+        (
+            ReviewField("request_digest", plan.request_digest, "verified exchange envelope.sha256"),
+            ReviewField("review_digest", digest, "SHA-256(canonical offline reviewed fields)"),
+        ),
+    )
+    return replace(
+        plan,
+        review_digest=digest,
+        pages=(pages[0], integrity, *pages[2:]),
+        challenge=f"SIGN {plan.kind.upper()} {plan.recipient[-8:]} {digest[:8]}",
+    )
+
+
 def test_renderer_accepts_real_backend_review_plan_and_never_elides_long_fields():
     display = fb.Surface(640, 480, _font())
     plan = _plan()
     long_field = ReviewField("calldata", "X" * 5000, "payload.data")
     pages = list(plan.pages)
     pages[-1] = ReviewPage(pages[-1].key, pages[-1].fields + (long_field,))
-    plan = replace(plan, pages=tuple(pages))
+    plan = _rebind_pages(plan, pages)
 
     count = fb.render_review(display, plan, len(plan.pages) - 1)
     assert count > (display.height - 160) // 19
@@ -99,8 +122,9 @@ def test_secret_bearing_review_fields_are_rejected():
         pages[0].key,
         pages[0].fields + (ReviewField("wallet_passphrase", "do-not-display", "vault passphrase"),),
     )
+    plan = _rebind_pages(plan, pages)
     with pytest.raises(ValueError, match="Secret-bearing"):
-        fb.render_review(fb.Surface(640, 480, _font()), replace(plan, pages=tuple(pages)), 0)
+        fb.render_review(fb.Surface(640, 480, _font()), plan, 0)
 
 
 def test_invalid_page_and_geometry_rejected():
@@ -118,8 +142,36 @@ def test_unrepresentable_review_text_fails_closed():
         pages[0].key,
         pages[0].fields + (ReviewField("memo", "pay\nnow", "payload.memo"),),
     )
+    plan = _rebind_pages(plan, pages)
     with pytest.raises(ValueError, match="cannot represent exactly"):
-        fb.render_review(fb.Surface(640, 480, _font()), replace(plan, pages=tuple(pages)), 0)
+        fb.render_review(fb.Surface(640, 480, _font()), plan, 0)
+
+
+def test_tampered_review_pages_are_rejected_before_render():
+    plan = _plan()
+    pages = list(plan.pages)
+    original = pages[-1]
+    pages[-1] = ReviewPage(
+        original.key,
+        original.fields + (ReviewField("recipient", EVM_RECIPIENT[:-1] + "0", "tampered"),),
+    )
+    tampered = replace(plan, pages=tuple(pages))
+    with pytest.raises(ValueError, match="do not match review digest"):
+        fb.render_review(fb.Surface(640, 480, _font()), tampered, len(pages) - 1)
+
+
+def test_tampered_integrity_page_is_rejected():
+    plan = _plan()
+    pages = list(plan.pages)
+    pages[1] = ReviewPage(
+        "integrity",
+        (
+            ReviewField("request_digest", plan.request_digest, "verified exchange envelope.sha256"),
+            ReviewField("review_digest", "0" * 64, "SHA-256(canonical offline reviewed fields)"),
+        ),
+    )
+    with pytest.raises(ValueError, match="integrity page is inconsistent"):
+        fb.render_review(fb.Surface(640, 480, _font()), replace(plan, pages=tuple(pages)), 1)
 
 
 def test_psf2_font_is_exact_bounded_direct_index_format(tmp_path: Path):
