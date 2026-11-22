@@ -6,25 +6,19 @@ export HISTFILE=/dev/null
 export TMPDIR=/tmp
 umask 077
 
-# Never bypass the boot/runtime audit. On a failed boot, remain in the text
-# appliance so the operator can read LOCKDOWN diagnostics and power off.
+# This session intentionally uses the kernel VT/fbcon path. X11/Tk cannot run
+# with CONFIG_NET=n because AF_UNIX is unavailable. The existing appliance
+# reuses the reviewed signer/runtime-audit code and exposes no general shell.
 if [ -e /run/usb-wallet/lockdown ]; then
     exec /usr/bin/usb-wallet-console
 fi
 
-# The GUI imports requests from /mnt/transfer. Mount only the transfer
-# partition selected by the existing boot-verified appliance policy first;
-# starting a GUI over an unmounted directory would silently hide requests.
-# On a legacy two-USB setup, the console remains available for late insertion.
-if ! /usr/bin/python3 -c 'from usb_cold_wallet.appliance import mount_transfer; raise SystemExit(0 if mount_transfer() else 1)'; then
+# Prefer a real framebuffer-backed VT when firmware exposes one. QEMU may use
+# simpledrm/fbcon; a missing /dev/fb0 is not itself a security failure because
+# the VT can still be rendered by DRM console helpers.
+test -c /dev/tty1 || {
+    echo "LOCKDOWN: tty1 unavailable" >&2
     exec /usr/bin/usb-wallet-console
-fi
+}
 
-# KDrive/TinyX has no TCP listener and uses the kernel framebuffer/input stack.
-# The GUI itself runs runtime_audit() after TX_TRANSFER is mounted.
-if [ -x /usr/bin/xinit ] && [ -x /usr/bin/Xfbdev ] && [ -x /usr/bin/usb-cold-wallet-gui ]; then
-    /usr/bin/xinit /usr/bin/usb-cold-wallet-gui --lang zh-TW --         /usr/bin/Xfbdev :0 -nolisten tcp -noreset
-fi
-
-# Fail safely to the existing appliance rather than exposing a shell.
 exec /usr/bin/usb-wallet-console
