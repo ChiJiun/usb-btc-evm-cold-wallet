@@ -25,14 +25,14 @@ if (-not $Python) {
     throw "python3/python is required"
 }
 
-$Args = @(
+$VerifierArgs = @(
     $Verifier,
     "--tag", $Tag,
     "--commit", $SourceSha,
     "--workflow-sha", $WorkflowSha,
     "--asset", $Asset
 )
-& $Python.Source @Args
+& $Python.Source @VerifierArgs
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
