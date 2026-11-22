@@ -1,28 +1,7 @@
 name: Live USB image verification
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/live-usb-build.yml"
-      - "buildroot-external/**"
-      - "infra/**"
-      - "scripts/**"
-      - "src/**"
-      # Unit-test-only changes are exercised by CI / Required. Rebuild the
-      # image when tests covering boot, image construction, or cold runtime
-      # verification change; runtime/source/build inputs remain broad.
-      - "tests/test_live_usb*"
-      - "tests/test_buildroot*"
-      - "tests/test_uefi*"
-      - "tests/test_appliance*"
-      - "tests/test_runtime_mount*"
-      - "tests/test_offline*"
-      - "tests/test_usb*"
-      - "tests/test_reproducib*"
-      - "tests/test_image*"
-      - "tests/test_release*"
-      - "Makefile"
-      - "pyproject.toml"
+  workflow_call:
   workflow_dispatch:
 
 permissions:
