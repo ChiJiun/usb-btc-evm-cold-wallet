@@ -87,14 +87,20 @@ def test_fat_label_detection_checks_signature_and_exact_name(tmp_path):
     assert appliance._fat_label(volume) == "NEVER_TRUST"
 
 
-def test_sysfs_transfer_search_ignores_non_sd_partitions(monkeypatch, tmp_path):
+def test_sysfs_transfer_search_requires_usb_ancestry_and_sd_partition(monkeypatch, tmp_path):
     sys_block = tmp_path / "sys"
     dev_root = tmp_path / "dev"
     sys_block.mkdir()
     dev_root.mkdir()
-    for name in ("sda1", "sdb1", "nvme0n1p1"):
-        entry = sys_block / name
-        entry.mkdir()
+    for name, usb in (
+        ("sda1", True), ("sdb1", True), ("sdc1", False), ("nvme0n1p1", True),
+    ):
+        ancestry = (
+            "usb1/1-1/1-1:1.0" if usb else "ata1/host0"
+        )
+        entry = tmp_path / "devices" / ancestry / "block" / name
+        entry.mkdir(parents=True)
+        (sys_block / name).symlink_to(entry, target_is_directory=True)
         (entry / "partition").write_text("1\n", encoding="ascii")
         sector = bytearray(512)
         sector[11:13] = b"\x00\x02"
@@ -102,12 +108,14 @@ def test_sysfs_transfer_search_ignores_non_sd_partitions(monkeypatch, tmp_path):
         sector[82:90] = b"FAT32   "
         sector[510:512] = b"\x55\xaa"
         (dev_root / name).write_bytes(sector)
-    # If two matching sd* partitions appear, the higher layer rejects both.
     monkeypatch.setattr(appliance, "SYS_BLOCK", sys_block)
     monkeypatch.setattr(appliance, "DEV_ROOT", dev_root)
     assert sorted(appliance._transfer_candidates()) == [
         str(dev_root / "sda1"), str(dev_root / "sdb1")
     ]
+    assert appliance._usb_mass_storage(sys_block / "sda1") is True
+    assert appliance._usb_mass_storage(sys_block / "sdc1") is False
+
 
 
 def test_transfer_mount_rejects_wrong_existing_source(monkeypatch, tmp_path):

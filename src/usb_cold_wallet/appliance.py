@@ -57,6 +57,20 @@ def _block_parent(device: str) -> str | None:
     return parent
 
 
+def _usb_mass_storage(entry: Path) -> bool:
+    """Require kernel sysfs USB ancestry, not merely a spoofable FAT label."""
+    try:
+        resolved = entry.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    parts = resolved.parts
+    return any(
+        re.fullmatch(r"usb[0-9]+", parts[i])
+        and re.fullmatch(r"[0-9]+-[0-9]+(?:\.[0-9]+)*", parts[i + 1])
+        for i in range(len(parts) - 1)
+    )
+
+
 def _fat_label(partition: Path) -> str | None:
     """Recognize FAT12/16/32 with 512-byte sectors without util-linux.
 
@@ -91,6 +105,8 @@ def _transfer_candidates() -> list[str]:
             continue
         device = DEV_ROOT / entry.name
         if device.is_symlink():
+            continue
+        if not _usb_mass_storage(entry):
             continue
         if _fat_label(device) == "TX_TRANSFER":
             matches.append(str(device))
