@@ -36,9 +36,9 @@ Python 3.12/3.13 測試、可重現 wheel 建置仍依
 
 ### CI 效能最佳化（#87；[詳細實測稽核](CI_PERFORMANCE_AUDIT.md)）
 
-在受影響的 PR HEAD 上完整 Live USB 仍必須通過 **兩次獨立 Clean Build、SHA-256 比對、QEMU/OVMF 安全開機驗證**。CI 先要求 Python 3.12/3.13 測試成功才啟動昂貴建置；若測試失敗，`live_usb` 跳過，但 `CI / Required` 仍拒絕合併。
+Draft PR 每次只執行 **一次 Clean Build、映像 SHA-256 驗證與 QEMU/OVMF 安全開機**；Draft 無法合併。Ready PR 的最新 HEAD 必須通過 **兩次獨立 Clean Build、SHA-256 比對與 QEMU/OVMF**。CI 先要求 Python 3.12/3.13 測試成功才啟動昂貴建置；若測試失敗，`live_usb` 跳過，但 `CI / Required` 仍拒絕合併。
 
-兩次完整 Buildroot 建置在獨立 GitHub-hosted Runner 上 **並行** 執行，彼此不共用編譯輸出。各自完成靜態映像稽核與 `usb-cold-wallet.img`/`bzImage` SHA-256。只有兩邊成功，後段 Job 才能比對兩份雜湊、驗證實際下載的映像與 kernel、執行 QEMU/OVMF，最後產生 testnet-only Artifact。
+Ready PR、main Push 與手動完整驗證的兩次 Buildroot 建置在獨立 GitHub-hosted Runner 上 **並行** 執行，彼此不共用編譯輸出。各自完成靜態映像稽核與 `usb-cold-wallet.img`/`bzImage` SHA-256。只有兩邊成功，後段 Job 才能比對兩份雜湊、驗證實際下載的映像與 kernel、執行 QEMU/OVMF，最後產生 testnet-only Artifact。Draft PR 只比對當次映像實際位元組，Artifact 標示 `DRAFT-SINGLE-BUILD-NOT-REPRODUCIBILITY-VERIFIED`；轉為 Ready 會重新觸發完整驗證。
 
 兩個建置 Job 只快取 `build/dl`、`build/cache`、`build/wheelhouse`。仍逐次驗證 Buildroot 的發行簽章、來源 SHA-256 與 Wheelhouse SHA-256；`build/output`、rootfs、映像、編譯器輸出與通過紀錄**不快取**。測試用 xz 壓縮採固定 `-6`，保留完整性及解壓縮逐位元組比對。正式 Release Clean Build、簽章與 Provenance 門檻不受此最佳化取代。
 
