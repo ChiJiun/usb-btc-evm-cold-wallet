@@ -30,7 +30,23 @@ def _fat(label: str, *, fat32: bool = False) -> bytes:
     return bytes(sector)
 
 
-def _disk(
+def _header(*, current_lba, backup_lba, first_usable, last_usable, disk_uuid, entries_lba, entries_crc):
+    header = bytearray(512)
+    header[:8] = b"EFI PART"
+    struct.pack_into("<I", header, 8, 0x00010000)
+    struct.pack_into("<I", header, 12, 92)
+    struct.pack_into("<QQQQ", header, 24, current_lba, backup_lba, first_usable, last_usable)
+    header[56:72] = disk_uuid.bytes_le
+    struct.pack_into(
+        "<QIII", header, 72, entries_lba,
+        media.GPT_ENTRY_COUNT, media.GPT_ENTRY_SIZE, entries_crc,
+    )
+    struct.pack_into("<I", header, 16, zlib.crc32(header[:92]))
+    return bytes(header)
+
+
+def _write_disk(
+    path: Path,
     disk_uuid=media.DISK_UUID,
     boot_uuid=media.BOOT_UUID,
     vault_uuid=media.VAULT_UUID,
@@ -38,8 +54,9 @@ def _disk(
     transfer_attrs=0,
     include_transfer=True,
     extra_partition=False,
-) -> bytes:
-    entries = bytearray(128 * 128)
+    gap_entry=False,
+) -> None:
+    entries = bytearray(media.GPT_ENTRY_COUNT * media.GPT_ENTRY_SIZE)
     start = 2048
     specs = [
         (media.EFI_TYPE, boot_uuid, media.READ_ONLY, media.BOOT_SECTORS),
@@ -53,26 +70,43 @@ def _disk(
     if extra_partition:
         specs.append((media.DATA_TYPE, uuid.uuid4(), 0, 128))
     for number, (kind, uid, attrs, sectors) in enumerate(specs):
+        slot = number + (1 if gap_entry and number >= 2 else 0)
         end = start + sectors - 1
-        offset = number * 128
+        offset = slot * media.GPT_ENTRY_SIZE
         entries[offset:offset + 16] = kind.bytes_le
         entries[offset + 16:offset + 32] = uid.bytes_le
         struct.pack_into("<QQQ", entries, offset + 32, start, end, attrs)
         start = end + 1
 
-    header = bytearray(512)
-    header[:8] = b"EFI PART"
-    struct.pack_into("<I", header, 8, 0x00010000)
-    struct.pack_into("<I", header, 12, 92)
-    struct.pack_into("<QQ", header, 24, 1, start + 2048)
-    struct.pack_into("<QQ", header, 40, 2048, start + 1024)
-    header[56:72] = disk_uuid.bytes_le
-    struct.pack_into("<QIII", header, 72, 2, 128, 128, zlib.crc32(entries))
-    struct.pack_into("<I", header, 16, zlib.crc32(header[:92]))
+    table_crc = zlib.crc32(entries)
+    last_lba = start + 2048
+    backup_table_lba = last_lba - media.GPT_TABLE_SECTORS
+    first_usable = 2 + media.GPT_TABLE_SECTORS
+    last_usable = backup_table_lba - 1
+    primary = _header(
+        current_lba=1, backup_lba=last_lba,
+        first_usable=first_usable, last_usable=last_usable,
+        disk_uuid=disk_uuid, entries_lba=2, entries_crc=table_crc,
+    )
+    backup = _header(
+        current_lba=last_lba, backup_lba=1,
+        first_usable=first_usable, last_usable=last_usable,
+        disk_uuid=disk_uuid, entries_lba=backup_table_lba, entries_crc=table_crc,
+    )
     mbr = bytearray(512)
-    mbr[450] = 0xEE  # GPT protective MBR entry, no hybrid partition table
+    mbr[450] = 0xEE
+    struct.pack_into("<I", mbr, 454, 1)
+    struct.pack_into("<I", mbr, 458, min(last_lba, 0xFFFFFFFF))
     mbr[510:512] = b"\x55\xaa"
-    return bytes(mbr + header + entries)
+    with path.open("wb") as handle:
+        handle.write(mbr)
+        handle.write(primary)
+        handle.write(entries)
+        handle.seek(backup_table_lba * 512)
+        handle.write(entries)
+        handle.seek(last_lba * 512)
+        handle.write(backup)
+        handle.truncate((last_lba + 1) * 512)
 
 
 def _create(
@@ -89,22 +123,19 @@ def _create(
     transfer_label="TX_TRANSFER",
     include_transfer=True,
     extra_partition=False,
+    gap_entry=False,
     usb=True,
 ) -> None:
     sys_block.mkdir(parents=True, exist_ok=True)
     location = (
-        sys_block.parent
-        / "devices"
-        / "pci0000:00"
+        sys_block.parent / "devices" / "pci0000:00"
         / ("usb1/1-1/1-1:1.0" if usb else "ata1/host0")
-        / "host0/target0:0:0/0:0:0:0/block"
-        / name
+        / "host0/target0:0:0/0:0:0:0/block" / name
     )
     (location / "queue").mkdir(parents=True)
     (sys_block / name).symlink_to(location, target_is_directory=True)
     (location / "queue/logical_block_size").write_text("512\n")
 
-    count = 3 if include_transfer else 2
     cursor = 2048
     sectors_by_number = [media.BOOT_SECTORS, media.VAULT_SECTORS]
     if include_transfer:
@@ -119,21 +150,32 @@ def _create(
         (sys_block / f"{name}{index}").symlink_to(partition, target_is_directory=True)
 
     dev.mkdir(exist_ok=True)
-    (dev / name).write_bytes(
-        _disk(
-            disk_uuid=disk_uuid,
-            boot_uuid=boot_uuid,
-            transfer_uuid=transfer_uuid,
-            transfer_attrs=transfer_attrs,
-            include_transfer=include_transfer,
-            extra_partition=extra_partition,
-        )
+    _write_disk(
+        dev / name,
+        disk_uuid=disk_uuid,
+        boot_uuid=boot_uuid,
+        transfer_uuid=transfer_uuid,
+        transfer_attrs=transfer_attrs,
+        include_transfer=include_transfer,
+        extra_partition=extra_partition,
+        gap_entry=gap_entry,
     )
     (dev / f"{name}1").write_bytes(_fat(boot_label))
     (dev / f"{name}2").write_bytes(_fat(vault_label))
     if include_transfer:
         (dev / f"{name}3").write_bytes(_fat(transfer_label, fat32=True))
 
+
+def _flip(path: Path, offset: int) -> None:
+    with path.open("r+b") as handle:
+        handle.seek(offset)
+        value = handle.read(1)
+        handle.seek(offset)
+        handle.write(bytes([value[0] ^ 1]))
+
+
+def _last_lba(path: Path) -> int:
+    return path.stat().st_size // 512 - 1
 
 def test_single_verified_three_partition_usb(tmp_path):
     sys_block, dev = tmp_path / "sys", tmp_path / "dev"
@@ -208,22 +250,33 @@ def test_corruption_and_unexpected_media_fail_closed(tmp_path, mutation):
         kwargs["extra_partition"] = True
     _create(sys_block, dev, **kwargs)
 
+    disk = dev / "sda"
     if mutation == "bad_gpt_header_crc":
-        data = bytearray((dev / "sda").read_bytes())
-        data[512 + 8] ^= 1
-        (dev / "sda").write_bytes(data)
+        _flip(disk, 512 + 8)
     elif mutation == "bad_gpt_entries_crc":
-        data = bytearray((dev / "sda").read_bytes())
-        data[1024 + 32] ^= 1
-        (dev / "sda").write_bytes(data)
+        _flip(disk, 1024 + 32)
+    elif mutation == "bad_backup_header_crc":
+        _flip(disk, _last_lba(disk) * 512 + 8)
+    elif mutation == "bad_backup_entries_crc":
+        _flip(disk, (_last_lba(disk) - media.GPT_TABLE_SECTORS) * 512 + 32)
+    elif mutation == "backup_geometry_mismatch":
+        last = _last_lba(disk)
+        with disk.open("r+b") as handle:
+            handle.seek(last * 512)
+            header = bytearray(handle.read(512))
+            struct.pack_into("<Q", header, 72, last - media.GPT_TABLE_SECTORS - 1)
+            struct.pack_into("<I", header, 16, 0)
+            struct.pack_into("<I", header, 16, zlib.crc32(header[:92]))
+            handle.seek(last * 512)
+            handle.write(header)
     elif mutation == "transfer_fat16":
         (dev / "sda3").write_bytes(_fat("TX_TRANSFER"))
     elif mutation == "missing_partition":
         (sys_block / "sda3").unlink()
     elif mutation == "hybrid_mbr":
-        data = bytearray((dev / "sda").read_bytes())
-        data[462 + 4] = 0x07  # additional Windows/MBR partition
-        (dev / "sda").write_bytes(data)
+        with disk.open("r+b") as handle:
+            handle.seek(462 + 4)
+            handle.write(b"\\x07")
     elif mutation == "wrong_sector_size":
         (sys_block / "sda/queue/logical_block_size").write_text("4096\n")
     elif mutation == "kernel_start_mismatch":
