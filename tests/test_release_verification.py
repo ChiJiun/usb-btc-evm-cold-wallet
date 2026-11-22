@@ -781,3 +781,16 @@ def test_release_workflows_pin_actions_and_isolate_privileges():
     assert RELEASE_FINALIZE_WORKFLOW.endswith("/.github/workflows/release-finalize.yml")
     assert RELEASE_WORKFLOW == RELEASE_FINALIZE_WORKFLOW
 
+
+
+def test_release_verifier_entrypoints_reuse_fail_closed_python_verifier():
+    shell = Path("scripts/verify_release.sh").read_text(encoding="utf-8")
+    powershell = Path("scripts/verify_release.ps1").read_text(encoding="utf-8")
+    for text in (shell, powershell):
+        assert "verify_release_assets.py" in text
+        assert "--tag" in text
+        assert "--commit" in text
+        assert "--workflow-sha" in text
+        assert "--asset" in text
+        assert "http://" not in text
+        assert "https://" not in text
