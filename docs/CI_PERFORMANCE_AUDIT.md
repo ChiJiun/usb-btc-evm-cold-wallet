@@ -55,3 +55,30 @@
 4. **不要用修文件反覆觸發完整 Buildroot**：將同一輪已確認的 CI 修正、測試與文件一次提交；若連續失敗，先取該次最新 HEAD 的失敗 Job Logs，定位單一根因後再推送。
 5. **驗證以最新 HEAD 為準**：記錄 Commit SHA、Run URL、各 Job 結果、總 wall-clock 與 runner-minutes；只在實測後宣稱效能改善。對 GitHub API 無法列舉的歷史 Runs，不宣稱已完成全量稽核。
 
+
+## #88 目標架構與最終驗收標準
+
+採用「**依檔案與依賴選擇必要工作 → 快速失敗 → 依驗收階段升級**」的分流。優先改善等待時間、Runner 分鐘數與錯誤定位，同時保留安全完整性。
+
+| 階段／變更 | 必要驗證 | 不應浪費的工作 |
+| --- | --- | --- |
+| 文件、AGENTS、Issue 模板 | Scope、Secret scan、Required Gate；README 發行中繼資料變更需 Wheel smoke | 不重建未受影響的 Buildroot／Windows／Node |
+| Python／測試／CLI | Python 3.12／3.13、Wheel、受影響整合測試、Required Gate | 無冷端映像輸入變更時不重建 Live USB |
+| Windows／Node／QR／Snap | 對應 Node、Windows、瀏覽器與跨語言測試；依賴改動加 Audit | 不因單純 UI／前端修改重建離線映像 |
+| CI／Scope／Required Gate | Python 回歸、實際 reusable workflow smoke、所有相關 Gate 的正負向測試 | 僅 CI 呼叫／Scope 變更不重編未變動的映像 |
+| Buildroot／Kernel／冷端 Runtime／映像 | Python 先 PASS；Draft 一次乾淨 Build＋raw SHA＋QEMU；Ready 最新 HEAD 雙獨立乾淨 Build、SHA 比對、QEMU、映像封裝 | Draft 不執行第二次 Build、不壓縮或發布最終映像 |
+| main／正式 Release | 完整必要 CI；Release 額外要求簽章、來源 SHA、Provenance、獨立重建與 Publish Gate | 不以 Draft 的 PASS 取代 Release 驗收 |
+
+**分流例外必須保守**：未知路徑、比較 SHA 失效、刪除／重新命名、模組 Allowlist 異動、Build Script／Workflow 真正建置邏輯變更，應觸發相應的完整安全驗證；不能僅因副檔名或測試名稱而豁免。受影響 Job 的 failed、cancelled、skipped 或缺席不能被 Required Gate 誤認為成功。
+
+### #88 可合併的證據門檻
+
+1. **最新 HEAD** 的 Python 3.12／3.13、相關整合測試與 `CI / Required` 全部成功；若 HEAD 再變更，重新驗證。
+2. 對分類器提供代表性正反案例：純文件、README、Windows、QR、冷端、Buildroot、Workflow body、未知路徑、刪除／改名、無效 SHA；逐一確認 Job 被選中或略過的結果正確。
+3. 實際驗證 Draft 只有一個 Clean Build、完成 raw SHA 與 QEMU；Draft 不產生標示為雙重可重現的正式 Artifact。
+4. **必須另有 Ready PR 的實際事件證據**：同一最新 HEAD 觸發兩個獨立 Runner，SHA 完全一致，驗證選中的實際 raw image，QEMU 成功後才封裝。不能以靜態讀 YAML 或 Draft 的成功代替。
+5. 核對 Required Checks／Ruleset：Draft 轉 Ready、PR 更新、main Push 不得利用舊的成功狀態跳過應執行的 Gate。
+6. 記錄實測 wall-clock、Runner 分鐘數、cache hit/miss、排隊時間與失敗成本；效能宣稱必須有可比的 before／after，不把估算當實測。
+7. 由獨立 Review 檢查完整 Diff、CI Logs 與安全邊界；未解除的實體 USB／GUI 驗收不得被描述為 CI 已完成。
+
+**完成判定**：上述證據全部齊備才標為 Done；缺 Ready 雙建置、Ruleset 或實測資料時，明確標為 BLOCKED／NOT VERIFIED。禁止為追求綠燈而降低安全 Gate。
