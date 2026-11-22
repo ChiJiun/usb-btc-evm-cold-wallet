@@ -240,7 +240,10 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                         )
                     result = session.broadcast()
                     if crossboot is not None and crossboot.available and result.get("stage") == "broadcasted":
-                        crossboot.mark_broadcasted(session, btc_session, result["tx_hash"])
+                        # A matching RPC acknowledgement is not authenticated
+                        # chain evidence. Preserve the durable broadcast reservation.
+                        session.pending["stage"] = "broadcast_unknown"
+                        result = session.pending_view()
                 elif self.path == "/api/status":
                     if data:
                         raise ValueError("Status query does not accept overrides")
@@ -298,7 +301,10 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                             )
                         result = btc_session.broadcast()
                         if crossboot is not None and crossboot.available and result.get("stage") == "broadcasted":
-                            crossboot.mark_broadcasted(session, btc_session, result["txid"])
+                            # An Esplora acknowledgement may be fabricated.
+                            # Keep the reserved txid and exchange evidence.
+                            btc_session.pending["stage"] = "broadcast_unknown"
+                            result = btc_session.pending_view()
                     else:
                         result = btc_session.check_status()
                 else:

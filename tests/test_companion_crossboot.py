@@ -355,7 +355,7 @@ def test_http_cancel_records_failed_and_removes_active_exchange(tmp_path):
         _stop(server, worker)
 
 
-def test_restart_auto_imports_verified_response_and_never_double_broadcasts(tmp_path):
+def test_matching_rpc_ack_preserves_reservation_and_never_double_broadcasts(tmp_path):
     rpc = FakeRpc()
     manager, server, session, token, worker = _run_server(rpc, tmp_path)
     code, _ = _http(server, token, "POST", "/api/import",
@@ -380,18 +380,26 @@ def test_restart_auto_imports_verified_response_and_never_double_broadcasts(tmp_
         assert session2.pending["stage"] == "verified"
         assert rpc.sent == []
         code, result = _http(server2, token2, "POST", "/api/broadcast", {})
-        assert code == 200 and result["stage"] == "broadcasted"
+        assert code == 200 and result["stage"] == "broadcast_unknown"
         assert len(rpc.sent) == 1
-        assert PendingRequestStore(manager2.state_root).get(request_id).state == "BROADCASTED"
+        assert PendingRequestStore(manager2.state_root).get(request_id).state == "BROADCAST_REQUESTED"
+        assert manager2._request_path(request_id).is_file()
+        assert manager2._response_path(request_id).is_file()
+        with pytest.raises(ValueError, match="Authenticated chain evidence"):
+            manager2.mark_broadcasted(session2, None, result["tx_hash"])
     finally:
         _stop(server2, worker2)
 
-    _manager3, server3, session3, token3, worker3 = _run_server(rpc, tmp_path)
+    manager3, server3, session3, token3, worker3 = _run_server(rpc, tmp_path)
     try:
-        assert session3.pending is None
+        assert session3.pending is not None
+        assert session3.pending["stage"] == "broadcast_unknown"
         code, _ = _http(server3, token3, "POST", "/api/broadcast", {})
         assert code == 400
         assert len(rpc.sent) == 1
+        assert PendingRequestStore(manager3.state_root).get(request_id).state == "BROADCAST_REQUESTED"
+        assert manager3._request_path(request_id).is_file()
+        assert manager3._response_path(request_id).is_file()
     finally:
         _stop(server3, worker3)
 
@@ -442,6 +450,54 @@ def test_unknown_broadcast_recovers_status_only_after_restart(tmp_path):
         assert manager3._response_path(request_id).is_file()
     finally:
         _stop(server3, worker3)
+
+
+def test_btc_matching_esplora_ack_keeps_reserved_txid_across_restart(tmp_path):
+    api = FakeBtcEsplora()
+    manager = CrossBootManager(tmp_path)
+    evm, btc, rpc = fresh_sessions(btc_api=api)
+    prepared = btc.prepare(BTC_TARGET, "0.0005")
+    request_id = prepared["pending"]["request_id"]
+    manager.export_current(evm, btc)
+    request = load_request(manager, request_id)
+    checked = verify_v2_request(
+        request, expected_account=WATCH["bitcoin"]["master_fingerprint"],
+        allow_no_trusted_clock=True,
+    )
+    signed = sign_btc_psbt(
+        ROOT, request["payload"], BTC_TARGET, 50_000, checked["intent"]["fee"], 0
+    )
+    response = package_v2_response(
+        request, signed, expected_account=WATCH["bitcoin"]["master_fingerprint"],
+        allow_no_trusted_clock=True,
+    )
+    write_response(manager, request_id, response)
+
+    server, _session, token = create_server(rpc, 0, api, manager)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        code, result = _http(server, token, "POST", "/api/btc/broadcast", {})
+        assert code == 200 and result["stage"] == "broadcast_unknown"
+        assert len(api.sent) == 1
+        snap = PendingRequestStore(manager.state_root).get(request_id)
+        assert snap.state == "BROADCAST_REQUESTED"
+        assert snap.metadata["txid"] == result["txid"]
+        assert manager._request_path(request_id).is_file()
+        assert manager._response_path(request_id).is_file()
+    finally:
+        _stop(server, worker)
+
+    server2, _session2, token2 = create_server(rpc, 0, api, manager)
+    worker2 = threading.Thread(target=server2.serve_forever, daemon=True)
+    worker2.start()
+    try:
+        code, _ = _http(server2, token2, "POST", "/api/btc/broadcast", {})
+        assert code == 400
+        assert len(api.sent) == 1
+        assert PendingRequestStore(manager.state_root).get(request_id).state == "BROADCAST_REQUESTED"
+    finally:
+        _stop(server2, worker2)
 
 
 def _prepared_imported_evm(tmp_path):
@@ -495,7 +551,10 @@ def test_deleted_broadcasted_state_with_restored_old_exchange_fails_closed(tmp_p
     response_bytes = manager._response_path(request_id).read_bytes()
     txid = online.pending["tx_hash"]
     manager.mark_broadcast_requested(online, btc, txid)
-    manager.mark_broadcasted(online, btc, txid)
+    # Simulate an old finalized journal snapshot without using the blocked
+    # production reconciliation API (authenticated chain proof is unavailable).
+    manager._store().broadcasted(load_request(manager, request_id), txid)
+    manager._cleanup_files(request_id)
     _delete_online_journal(manager)
     manager.exchange.mkdir(parents=True, exist_ok=True)
     manager._request_path(request_id).write_bytes(request_bytes)

@@ -436,13 +436,10 @@ class CrossBootManager:
         )
 
     def mark_broadcasted(self, session, btc_session, txid: str) -> None:
-        request, _owner, _asset = self._request_from_any(session, btc_session)
-        snap = self._store().get(request["requestId"])
-        if (snap is None or snap.state != "BROADCAST_REQUESTED"
-                or snap.metadata.get("txid") != txid):
-            raise ValueError("Broadcast result lacks the durable pre-broadcast reservation")
-        self._store().broadcasted(request, txid)
-        self._cleanup_files(request["requestId"])
+        """No unauthenticated remote acknowledgement may finalize state."""
+        raise ValueError(
+            "Authenticated chain evidence required before finalizing broadcast"
+        )
 
     def mark_failed(self, session, btc_session, reason: str) -> None:
         try:
