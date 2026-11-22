@@ -114,6 +114,36 @@ def classify_paths(paths: list[str]) -> Scope:
     )
 
 
+def live_workflow_trigger_only(base: str) -> bool:
+    """Only top-level event wiring may bypass the expensive image rebuild.
+
+    Any change to permissions, concurrency, jobs, shell steps, or build inputs
+    requires the real two-clean-build/QEMU gate. Git errors fail closed.
+    """
+    path = ".github/workflows/live-usb-build.yml"
+
+    def without_events(content: str) -> str:
+        lines = content.splitlines(keepends=True)
+        start = next((i for i, line in enumerate(lines) if line.rstrip() == "on:"), None)
+        if start is None:
+            raise ValueError("missing workflow events")
+        end = next((i for i in range(start + 1, len(lines))
+                    if lines[i].strip() and not lines[i].startswith((" ", "#", "\\t"))),
+                   len(lines))
+        return "".join(lines[:start] + lines[end:])
+
+    try:
+        previous = subprocess.check_output(
+            ["git", "show", f"{base}:{path}"], stderr=subprocess.DEVNULL
+        ).decode("utf-8")
+        current = subprocess.check_output(
+            ["git", "show", f"HEAD:{path}"], stderr=subprocess.DEVNULL
+        ).decode("utf-8")
+        return without_events(previous) == without_events(current)
+    except (OSError, UnicodeError, ValueError, subprocess.CalledProcessError):
+        return False
+
+
 def select_scopes(
     event: str, pr_base_sha: str = "", push_before_sha: str = ""
 ):
@@ -160,7 +190,13 @@ def select_scopes(
     ]
     for path in paths:
         print(f"Changed: {path!r}")
-    return classify_paths(paths), classify_workloads(paths)
+    workloads = classify_workloads(paths)
+    if ".github/workflows/live-usb-build.yml" in paths and not live_workflow_trigger_only(base):
+        # Trigger-only changes use real workflow_call smoke. Any actual
+        # Buildroot job/body change MUST perform full image verification.
+        from dataclasses import replace
+        workloads = replace(workloads, live_usb=True)
+    return classify_paths(paths), workloads
 
 
 def select_scope(event: str, pr_base_sha: str = "", push_before_sha: str = "") -> Scope:
@@ -216,6 +252,7 @@ def gate_errors(env: dict[str, str]) -> list[str]:
     # Real Windows EXE smoke is required for cross-platform code changes.
     require("WINDOWS_PORTABLE", "success" if env.get("WINDOWS_REQUIRED") == "true" else "skipped")
     for selected, result in (
+        ("LIVE_USB_SMOKE_REQUIRED", "LIVE_USB_SMOKE"),
         ("LIVE_USB_REQUIRED", "LIVE_USB"),
         ("BTC_CORE_REQUIRED", "BTC_CORE"),
         ("BTC_FUZZ_REQUIRED", "BTC_FUZZ"),
@@ -223,7 +260,7 @@ def gate_errors(env: dict[str, str]) -> list[str]:
     ):
         require(result, "success" if env.get(selected) == "true" else "skipped")
     for flag in ("QR_REQUIRED", "NATIVE_REQUIRED", "WINDOWS_REQUIRED",
-                 "LIVE_USB_REQUIRED", "BTC_CORE_REQUIRED", "BTC_FUZZ_REQUIRED",
+                 "LIVE_USB_SMOKE_REQUIRED", "LIVE_USB_REQUIRED", "BTC_CORE_REQUIRED", "BTC_FUZZ_REQUIRED",
                  "VFAT_REQUIRED"):
         if env.get(flag) not in {"true", "false"}:
             errors.append(f"Invalid workload scope {flag}: {env.get(flag)!r}")
@@ -275,7 +312,7 @@ def main() -> int:
             ("qr", workloads.qr), ("native_qr", workloads.native_qr),
             ("windows", workloads.windows), ("live_usb", workloads.live_usb),
             ("btc_core", workloads.btc_core), ("btc_fuzz", workloads.btc_fuzz),
-            ("vfat", workloads.vfat),
+            ("vfat", workloads.vfat), ("live_usb_smoke", workloads.live_usb_smoke),
         ):
             output.write(f"{key}={str(value).lower()}\n")
     print(f"CI scope: {scope}; workloads: {workloads}")
