@@ -76,6 +76,36 @@ def test_child_cli_audit_refuses_unsafe_environment_before_vault_access(monkeypa
     assert cli.main(["--vault", str(tmp_path / "missing.vault"), "addresses"]) == 1
 
 
+def test_cli_never_calls_signer_without_exact_attended_confirmation(monkeypatch, tmp_path):
+    monkeypatch.delenv("USB_WALLET_APPLIANCE", raising=False)
+    reviewed = {
+        "recipient": "0x000000000000000000000000000000000000dEaD",
+        "value_wei": 1,
+    }
+    monkeypatch.setattr(cli, "read_exchange", lambda *a: {"fake": True})
+    monkeypatch.setattr(cli, "review_evm_transaction", lambda *a: reviewed)
+    monkeypatch.setattr(cli, "_signing_policy_snapshot", lambda *a: b"trusted snapshot")
+    monkeypatch.setattr(cli, "_wallet_root", lambda *a: object())
+    monkeypatch.setattr(cli, "_password", lambda *a: "test")
+    monkeypatch.setattr(cli, "load_policy_snapshot", lambda *a: {})
+    monkeypatch.setattr(cli, "_display_policy_and_confirm", lambda *a, **k: None)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "WRONG CONFIRMATION")
+    monkeypatch.setattr(
+        cli,
+        "sign_evm",
+        lambda *a: pytest.fail("signer must not run before exact typed confirmation"),
+    )
+    result = cli.main([
+        "--vault", str(tmp_path / "fake.vault"), "sign-evm",
+        "--request", str(tmp_path / "req.json"),
+        "--to", reviewed["recipient"], "--wei", "1",
+        "--out", str(tmp_path / "signed.json"),
+        "--expected-policy-sha256", "a" * 64,
+    ])
+    assert result == 1
+    assert not (tmp_path / "signed.json").exists()
+
+
 def test_cli_rechecks_before_and_after_signing_and_never_writes_on_failed_audit(monkeypatch, tmp_path):
     monkeypatch.setenv("USB_WALLET_APPLIANCE", "1")
     calls = []
