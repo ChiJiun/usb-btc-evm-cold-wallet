@@ -264,6 +264,29 @@ def test_vault_load_rejects_symlink_even_to_valid_encrypted_vault(private_dir):
         vault.load_vault(symlink, PASSWORD)
 
 
+def test_vault_load_rejects_fifo_without_blocking(private_dir):
+    """A hostile non-regular Vault path must fail promptly, before opening blocks."""
+    import subprocess
+    import sys
+
+    fifo = private_dir / "blocking-fifo.vault"
+    os.mkfifo(fifo, 0o600)
+    probe = (
+        "import sys\\n"
+        "from usb_cold_wallet.vault import load_vault\\n"
+        "try:\\n"
+        "    load_vault(sys.argv[1], 'public-unused-passphrase')\\n"
+        "except ValueError:\\n"
+        "    sys.exit(0)\\n"
+        "sys.exit(2)\\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe, str(fifo)],
+        capture_output=True, text=True, check=False, timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_vault_load_rejects_oversized_file_before_json_parse(private_dir):
     path = private_dir / "oversized.vault"
     path.write_bytes(b"{" + b" " * 4096 + b"}")

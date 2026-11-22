@@ -20,6 +20,7 @@ open mounted USB devices. Included exercises:
 | Wrong checksum, mnemonic, BIP39 passphrase, Bitcoin network, BIP84 account/index or independently recorded address | Refuse restore; no final vault created |
 | Lost disposable vault, restored from public words | Recover exactly; newly encrypted bytes differ; repeated restore never overwrites |
 | Wrong vault encryption password, invalid format/version, malformed or duplicate JSON metadata, non-finite or boolean header values, one-bit ciphertext/salt/nonce tampering, truncated/oversized JSON, symlink or missing Vault | Refuse load; never silently return another wallet |
+| Hostile FIFO substituted for Vault path | Reject the non-regular file without blocking on open; keep the original Vault untouched |
 | Simulated file `fsync` failure before publish or nonprivate directory | No partial final vault; retry works after injected failure removed; unsafe directory rejected before staging |
 | Staging filename replaced by another inode | Injected rename definitely occurs; writer raises, published attacker entry cannot decrypt (same-UID race remains outside trust model) |
 | Whole historical authenticated Vault snapshot restored | **Accepted by decryption**: negative evidence that AEAD alone cannot detect replay |

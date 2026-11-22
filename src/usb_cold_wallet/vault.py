@@ -220,7 +220,7 @@ def _reject_wallet_constant(value: str):
 def load_vault(path: Path, passphrase: str) -> str:
     path = Path(path)
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except FileNotFoundError as exc:
         raise ValueError("Vault file not found") from exc
     try:
