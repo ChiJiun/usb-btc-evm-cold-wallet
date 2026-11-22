@@ -75,18 +75,6 @@ jobs:
       - name: Verify actual framebuffer GUI pixels and keyboard intents in OVMF guest
         run: sh scripts/verify_framebuffer_qemu.sh
 
-      - name: Upload framebuffer QEMU evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: framebuffer-qemu-evidence
-          path: |
-            build/reproducibility/framebuffer-gui.ppm
-            build/reproducibility/framebuffer-metrics.txt
-            build/reproducibility/framebuffer-actions.log
-          if-no-files-found: warn
-          retention-days: 7
-
       # Publish only after both clean builds match AND the generated image
       # actually booted through OVMF with the startup security audit passing.
       # No artifact is created on failed/cancelled/incomplete verification.
@@ -127,6 +115,10 @@ jobs:
 
           actual="$(git rev-parse HEAD)"
           test "$actual" = "$EXPECTED_HEAD_SHA"
+          if [ -f build/reproducibility/framebuffer-metrics.txt ]; then
+            echo "compressed_image_bytes=$(wc -c < "$ARTIFACT_DIR/usb-cold-wallet.img.xz" | tr -d ' ')" \
+              >> build/reproducibility/framebuffer-metrics.txt
+          fi
           {
             echo "classification=TESTNET ONLY / NOT A RELEASE"
             echo "repository=${{ github.repository }}"
@@ -151,6 +143,18 @@ jobs:
           test -n "$expected"
           test "$expected" = "$(awk '{print $1}' "$ARTIFACT_DIR/usb-cold-wallet.img.sha256")"
           test "$expected" = "$(sed -n 's/^image_sha256=//p' "$ARTIFACT_DIR/ARTIFACT-MANIFEST.txt")"
+
+      - name: Upload framebuffer QEMU evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: framebuffer-qemu-evidence
+          path: |
+            build/reproducibility/framebuffer-gui.ppm
+            build/reproducibility/framebuffer-metrics.txt
+            build/reproducibility/framebuffer-actions.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload verified testnet-only boot image (NOT A RELEASE)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
