@@ -34,10 +34,7 @@ REQUIRED_STAGED_FILES = ("SBOM.spdx.json", "release-metadata.json", "build-host-
 DEFAULT_AUTHORIZED_RELEASE_TAGGER_EMAILS = frozenset({"0311gino@gmail.com"})
 DEFAULT_AUTHORIZED_RELEASE_ACTORS = frozenset({"ChiJiun"})
 SLSA_PREDICATE_TYPE = "https://slsa.dev/provenance/v1"
-SLSA_BUILD_TYPE = (
-    f"https://github.com/{REPOSITORY}/blob/main/docs/RELEASE_VERIFICATION.md"
-    "#release-build-attestation"
-)
+SLSA_BUILD_TYPE_PREFIX = f"https://github.com/{REPOSITORY}/blob/"
 SLSA_BUILDER_ID = f"https://github.com/{REPOSITORY}/actions/workflows/release-finalize.yml"
 Run = Callable[[list[str]], str]
 
@@ -481,7 +478,10 @@ def build_slsa_predicate(metadata: Mapping[str, object], workflow_sha: str) -> d
     ]
     return {
         "buildDefinition": {
-            "buildType": SLSA_BUILD_TYPE,
+            "buildType": (
+                f"{SLSA_BUILD_TYPE_PREFIX}{workflow_sha}/docs/RELEASE_VERIFICATION.md"
+                "#release-build-attestation"
+            ),
             "externalParameters": external,
             "internalParameters": internal,
             "resolvedDependencies": dependencies,
