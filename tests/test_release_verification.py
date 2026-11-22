@@ -21,6 +21,8 @@ from scripts.verify_release_assets import (
 
 TAG = "v0.1.0-beta.1"
 COMMIT = "a" * 40
+WORKFLOW_SHA = "c" * 40
+TAG_OBJECT_SHA = "b" * 40
 ASSET = f"usb-cold-wallet-{TAG}.img.xz"
 BINARY = b"fake image bytes, not a real wallet image"
 DIGEST = hashlib.sha256(BINARY).hexdigest()
@@ -37,6 +39,7 @@ def _metadata_bytes(*, tag: str = TAG, commit: str = COMMIT, asset: str = ASSET)
             "repository": REPOSITORY,
             "tag": tag,
             "source_sha": commit,
+            "workflow_sha": WORKFLOW_SHA,
             "workflow": ".github/workflows/release.yml",
             "asset": asset,
             "buildroot_version": "2026.08.2",
@@ -46,6 +49,10 @@ def _metadata_bytes(*, tag: str = TAG, commit: str = COMMIT, asset: str = ASSET)
             "compression": "xz -6 --threads=1 --check=crc64 --no-sparse",
             "raw_image_sha256": "2" * 64,
             "reproducibility_runs": 2,
+            "tag_object_sha": TAG_OBJECT_SHA,
+            "apt_snapshot": "20261121T000000Z",
+            "runner_image_os": "ubuntu24",
+            "runner_image_version": "20261116.1",
             "workflow_run_id": "12345",
             "workflow_run_attempt": "1",
         },
@@ -63,6 +70,8 @@ class FakeGitHub:
         self.fail_command: tuple[str, ...] | None = None
         self.lightweight = False
         self.draft = False
+        self.signer_login = "ChiJiun"
+        self.tag_object_sha = TAG_OBJECT_SHA
 
     def __call__(self, args: list[str]) -> str:
         self.calls.append(args)
@@ -70,8 +79,8 @@ class FakeGitHub:
             raise ReleaseVerificationError("simulated verification command failure")
         if args[:2] == ["api", f"repos/{REPOSITORY}/git/ref/tags/{TAG}"]:
             kind = "commit" if self.lightweight else "tag"
-            return json.dumps({"object": {"type": kind, "sha": "b" * 40}})
-        if args[:2] == ["api", f"repos/{REPOSITORY}/git/tags/{'b' * 40}"]:
+            return json.dumps({"object": {"type": kind, "sha": self.tag_object_sha}})
+        if args[:2] == ["api", f"repos/{REPOSITORY}/git/tags/{self.tag_object_sha}"]:
             return json.dumps(
                 {
                     "tag": TAG,
@@ -79,6 +88,8 @@ class FakeGitHub:
                     "object": {"type": "commit", "sha": self.object_commit},
                 }
             )
+        if args[:2] == ["api", "graphql"]:
+            return json.dumps({"data": {"repository": {"object": {"oid": self.tag_object_sha, "signature": {"isValid": self.tag_verified, "state": "VALID" if self.tag_verified else "INVALID", "signer": {"login": self.signer_login}, "wasSignedByGitHub": False}}}}})
         if args[:2] == ["release", "view"]:
             return json.dumps({"tagName": TAG, "isDraft": self.draft})
         if args[:2] == ["release", "download"]:
