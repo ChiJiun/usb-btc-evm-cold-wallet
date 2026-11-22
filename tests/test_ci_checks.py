@@ -866,6 +866,25 @@ def _workflow_text(name: str) -> str:
     return (Path(__file__).resolve().parents[1] / ".github/workflows" / name).read_text(encoding="utf-8")
 
 
+def _job(workflow: str, name: str) -> str:
+    """Return one top-level job block (stdlib only; PyYAML is not a CI dependency)."""
+    body = "\n" + workflow.split("\njobs:\n", 1)[1]
+    block = body.split("\n  " + name + ":\n", 1)[1]
+    end = [i for i, line in enumerate(block.split("\n"))
+           if line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":")]
+    lines = block.split("\n")
+    return "\n".join(lines[:end[0]] if end else lines)
+
+
+def _steps(job: str) -> dict[str, str]:
+    steps = {}
+    for chunk in job.split("\n      - ")[1:]:
+        first = chunk.split("\n", 1)[0]
+        if first.startswith("name: "):
+            steps[first[len("name: "):].strip()] = chunk
+    return steps
+
+
 def test_draft_and_ready_run_identical_full_gate_without_ready_rerun():
     """Required success must always mean full dual-build verification of the SHA.
 
@@ -873,47 +892,53 @@ def test_draft_and_ready_run_identical_full_gate_without_ready_rerun():
     forces a second ~40 min run when a draft is marked Ready, and lets a draft
     run report Required success without image verification.
     """
-    import yaml
+    ci = _workflow_text("ci.yml")
+    live = _workflow_text("live-usb-build.yml")
+    assert "draft" not in ci.split("\njobs:\n", 1)[1]
+    assert "github.event.pull_request.draft" not in live
+    assert "DRAFT-SINGLE-BUILD" not in live
 
-    ci_text = _workflow_text("ci.yml")
-    live_text = _workflow_text("live-usb-build.yml")
-    assert "draft" not in ci_text.split("\njobs:\n", 1)[1]
-    assert "github.event.pull_request.draft" not in live_text
-    assert "DRAFT-SINGLE-BUILD" not in live_text
+    triggers = ci.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+    pr = triggers.split("\n  pull_request:\n", 1)[1].split("\n  workflow_dispatch:", 1)[0]
+    assert pr.strip() == "types: [opened, synchronize, reopened]"
+    assert "ready_for_review" not in triggers and "converted_to_draft" not in triggers
+    assert "  push:\n    branches: [main]\n" in triggers
+    assert "\n  workflow_dispatch:\n" in triggers and "\n  schedule:\n" in triggers
 
-    ci = yaml.safe_load(ci_text)
-    triggers = ci[True] if True in ci else ci["on"]  # PyYAML parses `on:` as True
-    assert triggers["pull_request"]["types"] == ["opened", "synchronize", "reopened"]
-    assert set(triggers) >= {"push", "pull_request", "workflow_dispatch", "schedule"}
-    assert triggers["push"]["branches"] == ["main"]
-
-    live = yaml.safe_load(live_text)
-    builds = live["jobs"]["clean-builds"]
-    assert builds["strategy"]["matrix"]["run"] == [1, 2]
-    assert builds["strategy"]["fail-fast"] is True
-    verify = live["jobs"]["verify-and-publish"]
-    assert verify["needs"] == "clean-builds"
-    gated = [
+    builds = _job(live, "clean-builds")
+    assert "    strategy:\n      fail-fast: true\n      matrix:\n        run: [1, 2]\n" in builds
+    verify = _job(live, "verify-and-publish")
+    assert "    needs: clean-builds\n" in verify
+    steps = _steps(verify)
+    for name in (
         "Compare two independent SHA-256 manifests and actual image bytes",
         "Boot generated USB image using UEFI OVMF/QEMU (TCG)",
         "Package and verify exact image artifact",
         "Upload verified testnet-only boot image (NOT A RELEASE)",
-    ]
-    steps = {step.get("name"): step for step in verify["steps"]}
-    for name in gated:
+    ):
         assert name in steps, name
-        assert "if" not in steps[name], name  # no event-dependent bypass
+        assert "\n        if:" not in steps[name], name  # no event-dependent bypass
+
+
+def test_step_helpers_detect_conditional_bypass():
+    sample = ("on: x\njobs:\n  verify-and-publish:\n    steps:\n"
+              "      - name: Boot\n        if: github.event_name != 'pull_request'\n        run: x\n"
+              "      - name: Next\n        run: y\n  other:\n    steps: []\n")
+    steps = _steps(_job(sample, "verify-and-publish"))
+    assert set(steps) == {"Boot", "Next"}
+    assert "\n        if:" in steps["Boot"]
+    assert "\n        if:" not in steps["Next"]
 
 
 def test_live_usb_concurrency_only_supersedes_pull_requests():
     """A later merge must never cancel an earlier main image gate (false red main)."""
-    import yaml
-
     for name in ("ci.yml", "live-usb-build.yml"):
-        conc = yaml.safe_load(_workflow_text(name))["concurrency"]
-        assert "github.run_id" in conc["group"], name
-        assert "github.ref" not in conc["group"], name
-        assert conc["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}", name
+        text = _workflow_text(name)
+        conc = text.split("\nconcurrency:\n", 1)[1].split("\n\n", 1)[0]
+        group = [l for l in conc.split("\n") if l.strip().startswith("group:")]
+        assert len(group) == 1, name
+        assert "github.run_id" in group[0] and "github.ref" not in group[0], name
+        assert "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in conc, name
 
 
 def test_live_usb_selected_gate_is_scope_only_and_fail_closed():
