@@ -629,3 +629,26 @@ def test_full_live_usb_is_called_and_gated_with_no_path_filtered_bypass():
     assert "  pull_request:" not in live
     for job in ("btc_core", "btc_fuzz", "vfat", "windows_portable"):
         assert "      - " + job in required
+
+@pytest.mark.parametrize(("pr", "changed", "must_run"), [
+    (68, [".github/workflows/live-usb-build.yml",
+          "docs/PHYSICAL_TWO_USB_TESTNET_CHECKLIST.md"], ("live_usb",)),
+    (72, [".github/workflows/release.yml",
+          "scripts/verify_release_assets.py",
+          "tests/test_release_verification.py"], ("live_usb",)),
+    (75, ["src/usb_cold_wallet/companion_crossboot.py",
+          "src/usb_cold_wallet/cross_boot_public.py",
+          "src/usb_cold_wallet/gui.py",
+          "src/usb_cold_wallet/transaction_state.py",
+          ".github/workflows/btc-core-e2e.yml"], ("live_usb", "windows", "btc_core", "vfat")),
+    (76, ["buildroot-external/board/usb-wallet/genimage.cfg",
+          "scripts/verify_single_usb_loopback.sh",
+          "src/usb_cold_wallet/appliance.py",
+          "src/usb_cold_wallet/gui.py",
+          ".github/workflows/ci.yml"], ("live_usb", "windows", "qr", "native_qr", "btc_core", "vfat")),
+])
+def test_open_pull_request_security_workload_regressions(pr, changed, must_run):
+    from scripts.ci_workloads import classify_workloads
+    selected = classify_workloads(changed)
+    for name in must_run:
+        assert getattr(selected, name), f"PR #{pr} must not skip {name}"
