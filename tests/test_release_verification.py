@@ -270,6 +270,8 @@ def _ruleset_run(
     main_approvals=1,
     last_push=True,
     checks=("CI / Required",),
+    strict_checks=True,
+    check_integration_id=15368,
     include_tag=True,
     tag_rules=("update", "deletion"),
     main_rules=("deletion", "non_fast_forward"),
@@ -304,7 +306,14 @@ def _ruleset_run(
             {
                 "type": "required_status_checks",
                 "parameters": {
-                    "required_status_checks": [{"context": name} for name in checks],
+                    "strict_required_status_checks_policy": strict_checks,
+                    "required_status_checks": [
+                        {
+                            "context": name,
+                            "integration_id": check_integration_id,
+                        }
+                        for name in checks
+                    ],
                 },
             },
             *[{"type": name} for name in main_rules],
@@ -346,6 +355,8 @@ def test_repository_release_controls_require_protected_main_and_release_tags():
         {"main_approvals": 0},
         {"last_push": False},
         {"checks": ()},
+        {"strict_checks": False},
+        {"check_integration_id": None},
         {"include_tag": False},
         {"main_rules": ("deletion",)},
         {"main_rules": ("non_fast_forward",)},
