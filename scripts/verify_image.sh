@@ -51,8 +51,72 @@ grep -q '^# CONFIG_NET is not set$' "$KCONFIG" || {
 	grep -E '^(CONFIG_NET=|# CONFIG_NET is not set$)' "$ROOT/buildroot-external/board/usb-wallet/linux.config" >&2 || true
 	exit 1
 }
-grep -q '^CONFIG_USB_STORAGE=y$' "$KCONFIG"
-grep -q '^CONFIG_VFAT_FS=y$' "$KCONFIG"
+grep -q '^CONFIG_USB_STORAGE=yif grep -Eq '^CONFIG_(ATA|BLK_DEV_NVME|NVME_CORE|MMC|VIRTIO_BLK)=y$' "$KCONFIG"; then
+	echo "ERROR: internal/non-USB block storage driver unexpectedly enabled" >&2
+	exit 1
+fi
+
+test -x "$OUT/target/usr/bin/usb-wallet-console"
+test -x "$OUT/target/usr/bin/usb-cold-wallet"
+for tool in ip ifconfig route ping wget nc netcat udhcpc telnet; do
+	for dir in bin sbin usr/bin usr/sbin; do
+		test ! -e "$OUT/target/$dir/$tool" || {
+			echo "ERROR: networking tool exists in target: $dir/$tool" >&2
+			exit 1
+		}
+	done
+done
+
+python3 "$ROOT/scripts/verify_image.py" "$IMAGE"
+
+# GitHub-hosted Ubuntu runners provide passwordless sudo. Run the privileged
+# read-only loopback audit when available without weakening local verification.
+if [ "${CI:-}" = "true" ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+	sudo -n sh "$ROOT/scripts/verify_single_usb_loopback.sh" "$IMAGE"
+fi
+
+echo "Static image verification passed."
+ "$KCONFIG"
+grep -q '^CONFIG_VFAT_FS=yif grep -Eq '^CONFIG_(ATA|BLK_DEV_NVME|NVME_CORE|MMC|VIRTIO_BLK)=y$' "$KCONFIG"; then
+	echo "ERROR: internal/non-USB block storage driver unexpectedly enabled" >&2
+	exit 1
+fi
+
+test -x "$OUT/target/usr/bin/usb-wallet-console"
+test -x "$OUT/target/usr/bin/usb-cold-wallet"
+for tool in ip ifconfig route ping wget nc netcat udhcpc telnet; do
+	for dir in bin sbin usr/bin usr/sbin; do
+		test ! -e "$OUT/target/$dir/$tool" || {
+			echo "ERROR: networking tool exists in target: $dir/$tool" >&2
+			exit 1
+		}
+	done
+done
+
+python3 "$ROOT/scripts/verify_image.py" "$IMAGE"
+
+# GitHub-hosted Ubuntu runners provide passwordless sudo. Run the privileged
+# read-only loopback audit when available without weakening local verification.
+if [ "${CI:-}" = "true" ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+	sudo -n sh "$ROOT/scripts/verify_single_usb_loopback.sh" "$IMAGE"
+fi
+
+echo "Static image verification passed."
+ "$KCONFIG"
+
+# The native framebuffer frontend (#79) consumes /dev/fb0 plus kernel input
+# events directly. Audit the resolved kernel that produced the shipped bzImage,
+# rather than trusting only the source config fragment.
+for symbol in \
+    CONFIG_INPUT CONFIG_INPUT_KEYBOARD CONFIG_KEYBOARD_ATKBD CONFIG_INPUT_EVDEV \
+    CONFIG_HID CONFIG_HID_GENERIC CONFIG_USB_HID \
+    CONFIG_VT CONFIG_VT_CONSOLE CONFIG_FRAMEBUFFER_CONSOLE CONFIG_FB \
+    CONFIG_DRM CONFIG_DRM_SIMPLEDRM CONFIG_DRM_FBDEV_EMULATION; do
+	grep -q "^$symbol=y$" "$KCONFIG" || {
+		echo "ERROR: required local display/input kernel capability missing: $symbol" >&2
+		exit 1
+	}
+done
 if grep -Eq '^CONFIG_(ATA|BLK_DEV_NVME|NVME_CORE|MMC|VIRTIO_BLK)=y$' "$KCONFIG"; then
 	echo "ERROR: internal/non-USB block storage driver unexpectedly enabled" >&2
 	exit 1

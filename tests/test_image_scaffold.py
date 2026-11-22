@@ -26,6 +26,7 @@ def test_kernel_removes_network_and_internal_storage():
     assert "# CONFIG_NET is not set" in text
     assert "CONFIG_USB_STORAGE=y" in text
     assert "CONFIG_VFAT_FS=y" in text
+    assert "CONFIG_DRM_FBDEV_EMULATION=y" in text
     # Initramfs cannot load missing FAT charset modules at boot.
     assert "CONFIG_NLS_CODEPAGE_437=y" in text
     assert "CONFIG_NLS_ISO8859_1=y" in text
@@ -68,6 +69,8 @@ def test_image_verifier_audits_the_kernel_used_for_shipped_bzimage():
     assert 'cmp -s "$BUILT_KERNEL" "$OUT/images/bzImage"' in verifier
     assert "grep -q '^# CONFIG_NET is not set$'" in verifier
     assert "Auditing built kernel config:" in verifier
+    assert "required local display/input kernel capability missing" in verifier
+    assert "CONFIG_DRM_FBDEV_EMULATION" in verifier
 
 
 def test_image_has_single_usb_boot_vault_and_transfer_partitions():
@@ -270,6 +273,7 @@ def test_no_network_runtime_uses_socket_free_vt_fbcon_session():
         "CONFIG_VT=y",
         "CONFIG_FRAMEBUFFER_CONSOLE=y",
         "CONFIG_DRM_SIMPLEDRM=y",
+        "CONFIG_DRM_FBDEV_EMULATION=y",
     ):
         assert symbol in kernel
     for forbidden in (
@@ -304,6 +308,7 @@ def test_post_build_has_valid_posix_shell_syntax():
     import subprocess
 
     script = ROOT / "buildroot-external/board/usb-wallet/post-build.sh"
+    assert script.stat().st_mode & 0o111
     check = subprocess.run(["sh", "-n", str(script)], capture_output=True, text=True)
     assert check.returncode == 0, check.stderr
 
