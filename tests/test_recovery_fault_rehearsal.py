@@ -271,15 +271,15 @@ def test_vault_load_rejects_fifo_without_blocking(private_dir):
 
     fifo = private_dir / "blocking-fifo.vault"
     os.mkfifo(fifo, 0o600)
-    probe = (
-        "import sys\\n"
-        "from usb_cold_wallet.vault import load_vault\\n"
-        "try:\\n"
-        "    load_vault(sys.argv[1], 'public-unused-passphrase')\\n"
-        "except ValueError:\\n"
-        "    sys.exit(0)\\n"
-        "sys.exit(2)\\n"
-    )
+    probe = """
+import sys
+from usb_cold_wallet.vault import load_vault
+try:
+    load_vault(sys.argv[1], "public-unused-passphrase")
+except ValueError:
+    sys.exit(0)
+sys.exit(2)
+"""
     result = subprocess.run(
         [sys.executable, "-c", probe, str(fifo)],
         capture_output=True, text=True, check=False, timeout=5,
