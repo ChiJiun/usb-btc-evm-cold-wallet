@@ -265,7 +265,7 @@ def _ruleset_run(
     last_push=True,
     checks=("CI / Required",),
     include_tag=True,
-    tag_rules=("creation", "update", "deletion"),
+    tag_rules=("update", "deletion"),
     main_rules=("deletion", "non_fast_forward"),
     main_excludes=(),
     main_bypass=(),
@@ -347,9 +347,8 @@ def test_repository_release_controls_require_protected_main_and_release_tags():
         {"main_bypass": ({"actor_id": 1, "actor_type": "RepositoryRole"},)},
         {"tag_excludes": ("refs/tags/v0.*",)},
         {"tag_bypass": ({"actor_id": 1, "actor_type": "RepositoryRole"},)},
-        {"tag_rules": ("creation", "deletion")},
-        {"tag_rules": ("update", "deletion")},
-        {"tag_rules": ("creation", "update")},
+        {"tag_rules": ("deletion",)},
+        {"tag_rules": ("update",)},
     ],
 )
 def test_missing_repository_release_control_blocks_release(kwargs):
