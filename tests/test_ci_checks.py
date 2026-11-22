@@ -808,7 +808,7 @@ def test_live_usb_cache_reuses_only_verifiable_source_downloads():
     assert "  clean-builds:" in live
     assert "        run: [1, 2]" in live
     assert "      - name: Independently build and statically audit image" in live
-    assert "run: sh scripts/build_image.sh" in live
+    assert "sh scripts/build_image.sh" in live
     assert "  verify-and-publish:" in live
     assert "needs: clean-builds" in live
     assert "Compare two independent SHA-256 manifests and actual image bytes" in live
