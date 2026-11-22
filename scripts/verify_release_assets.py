@@ -28,6 +28,7 @@ ASSET_RE = re.compile(
 CHECKSUM_RE = re.compile(r"([a-fA-F0-9]{64}) [ *]([A-Za-z0-9][A-Za-z0-9._+-]*)")
 MAX_MANIFEST_BYTES = 128 * 1024
 REQUIRED_STAGED_FILES = ("SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt")
+DEFAULT_AUTHORIZED_RELEASE_SIGNERS = frozenset({"ChiJiun"})
 Run = Callable[[list[str]], str]
 
 
@@ -129,7 +130,70 @@ def _validate_identity(tag: str, commit: str, asset: str | None = None) -> tuple
     return tag, commit
 
 
-def _verify_signed_tag(run: Run, tag: str, commit: str) -> None:
+def _verify_authorized_tag_signer(
+    run: Run,
+    tag_sha: str,
+    authorized_signers: frozenset[str],
+) -> None:
+    if not authorized_signers:
+        raise ReleaseVerificationError("No authorized release signer is configured")
+    query = """
+    query($owner:String!, $name:String!, $oid:GitObjectID!) {
+      repository(owner:$owner, name:$name) {
+        object(oid:$oid) {
+          ... on Tag {
+            oid
+            signature {
+              isValid
+              state
+              signer { login }
+              wasSignedByGitHub
+            }
+          }
+        }
+      }
+    }
+    """
+    result = _json(
+        run,
+        [
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-F",
+            "owner=ChiJiun",
+            "-F",
+            "name=usb-btc-evm-cold-wallet",
+            "-F",
+            f"oid={tag_sha}",
+        ],
+    )
+    repository = result.get("data", {}).get("repository")
+    obj = repository.get("object") if isinstance(repository, dict) else None
+    signature = obj.get("signature") if isinstance(obj, dict) else None
+    signer = signature.get("signer") if isinstance(signature, dict) else None
+    login = signer.get("login") if isinstance(signer, dict) else None
+    if (
+        not isinstance(obj, dict)
+        or obj.get("oid") != tag_sha
+        or not isinstance(signature, dict)
+        or signature.get("isValid") is not True
+        or signature.get("state") != "VALID"
+        or signature.get("wasSignedByGitHub") is True
+        or login not in authorized_signers
+    ):
+        raise ReleaseVerificationError("Tag signer is not an authorized release identity")
+
+
+def _verify_signed_tag(
+    run: Run,
+    tag: str,
+    commit: str,
+    authorized_signers: frozenset[str],
+    *,
+    expected_tag_object_sha: str | None = None,
+) -> str:
     ref = _json(run, ["api", f"repos/{REPOSITORY}/git/ref/tags/{tag}"])
     obj = ref.get("object")
     if not isinstance(obj, dict) or obj.get("type") != "tag":
@@ -137,6 +201,9 @@ def _verify_signed_tag(run: Run, tag: str, commit: str) -> None:
     tag_sha = obj.get("sha")
     if not isinstance(tag_sha, str) or not SHA_RE.fullmatch(tag_sha):
         raise ReleaseVerificationError("Malformed annotated tag object")
+    tag_sha = tag_sha.lower()
+    if expected_tag_object_sha is not None and tag_sha != expected_tag_object_sha.lower():
+        raise ReleaseVerificationError("Release tag object changed after validation")
 
     annotated = _json(run, ["api", f"repos/{REPOSITORY}/git/tags/{tag_sha}"])
     target = annotated.get("object")
@@ -150,15 +217,33 @@ def _verify_signed_tag(run: Run, tag: str, commit: str) -> None:
         or verification.get("verified") is not True
     ):
         raise ReleaseVerificationError("Tag signature, tag name, or pinned commit mismatch")
+    _verify_authorized_tag_signer(run, tag_sha, authorized_signers)
+    return tag_sha
 
 
-def verify_source(tag: str, commit: str, *, run: Run = _gh) -> None:
-    """Verify only the independently pinned signed tag -> exact commit binding."""
+def verify_source(
+    tag: str,
+    commit: str,
+    *,
+    run: Run = _gh,
+    authorized_signers: frozenset[str] = DEFAULT_AUTHORIZED_RELEASE_SIGNERS,
+    expected_tag_object_sha: str | None = None,
+) -> str:
+    """Verify signed tag, exact source commit, authorized signer, and optional tag-object pin."""
     tag, commit = _validate_identity(tag, commit)
-    _verify_signed_tag(run, tag, commit)
+    return _verify_signed_tag(
+        run,
+        tag,
+        commit,
+        authorized_signers,
+        expected_tag_object_sha=expected_tag_object_sha,
+    )
 
 
-def _attest_args(image: Path, tag: str, commit: str) -> list[str]:
+def _attest_args(image: Path, workflow_sha: str) -> list[str]:
+    if not SHA_RE.fullmatch(workflow_sha):
+        raise ReleaseVerificationError("Trusted workflow SHA must be a full 40-character SHA")
+    workflow_sha = workflow_sha.lower()
     return [
         "attestation",
         "verify",
@@ -166,20 +251,20 @@ def _attest_args(image: Path, tag: str, commit: str) -> list[str]:
         "-R",
         REPOSITORY,
         "--source-ref",
-        f"refs/tags/{tag}",
+        "refs/heads/main",
         "--source-digest",
-        commit,
+        workflow_sha,
         "--signer-workflow",
         RELEASE_WORKFLOW,
         "--signer-digest",
-        commit,
+        workflow_sha,
         "--predicate-type",
         "https://slsa.dev/provenance/v1",
         "--deny-self-hosted-runners",
     ]
 
 
-def _verify_metadata(path: Path, tag: str, commit: str, asset: str) -> None:
+def _verify_metadata(path: Path, tag: str, commit: str, workflow_sha: str, asset: str) -> None:
     try:
         metadata = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
@@ -191,6 +276,7 @@ def _verify_metadata(path: Path, tag: str, commit: str, asset: str) -> None:
         "repository": REPOSITORY,
         "tag": tag,
         "source_sha": commit,
+        "workflow_sha": workflow_sha,
         "workflow": ".github/workflows/release.yml",
         "asset": asset,
         "compression": "xz -6 --threads=1 --check=crc64 --no-sparse",
@@ -210,6 +296,16 @@ def _verify_metadata(path: Path, tag: str, commit: str, asset: str) -> None:
     for key in ("buildroot_version", "node_version", "xz_version"):
         value = metadata.get(key)
         if not isinstance(value, str) or not value or len(value) > 80:
+            raise ReleaseVerificationError(f"Release metadata has invalid {key}")
+    tag_object_sha = metadata.get("tag_object_sha")
+    if not isinstance(tag_object_sha, str) or not SHA_RE.fullmatch(tag_object_sha):
+        raise ReleaseVerificationError("Release metadata has invalid tag object SHA")
+    apt_snapshot = metadata.get("apt_snapshot")
+    if not isinstance(apt_snapshot, str) or not re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", apt_snapshot):
+        raise ReleaseVerificationError("Release metadata has invalid apt snapshot")
+    for key in ("runner_image_os", "runner_image_version"):
+        value = metadata.get(key)
+        if not isinstance(value, str) or not value or len(value) > 120:
             raise ReleaseVerificationError(f"Release metadata has invalid {key}")
     for key in ("workflow_run_id", "workflow_run_attempt"):
         value = metadata.get(key)
@@ -232,10 +328,10 @@ def _verify_spdx(path: Path) -> None:
 
 
 def _verify_build_provenance(
-    run: Run, directory: Path, names: list[str], tag: str, commit: str
+    run: Run, directory: Path, names: list[str], workflow_sha: str
 ) -> None:
     for name in names:
-        run(_attest_args(_safe_file(directory, name), tag, commit))
+        run(_attest_args(_safe_file(directory, name), workflow_sha))
 
 
 def verify_local_artifacts(
@@ -244,11 +340,20 @@ def verify_local_artifacts(
     asset: str,
     directory: str | Path,
     *,
+    workflow_sha: str,
     run: Run = _gh,
+    authorized_signers: frozenset[str] = DEFAULT_AUTHORIZED_RELEASE_SIGNERS,
+    expected_tag_object_sha: str | None = None,
 ) -> str:
     """Verify the exact staged bytes after attestation and before publish."""
     tag, commit = _validate_identity(tag, commit, asset)
-    _verify_signed_tag(run, tag, commit)
+    _verify_signed_tag(
+        run,
+        tag,
+        commit,
+        authorized_signers,
+        expected_tag_object_sha=expected_tag_object_sha,
+    )
 
     root = Path(directory)
     if not root.is_dir() or root.is_symlink():
@@ -268,7 +373,7 @@ def verify_local_artifacts(
             raise ReleaseVerificationError(f"Staged release digest mismatch: {name}")
 
     image = _safe_file(root, asset)
-    _verify_metadata(_safe_file(root, "release-metadata.json"), tag, commit, asset)
+    _verify_metadata(_safe_file(root, "release-metadata.json"), tag, commit, workflow_sha, asset)
     _verify_spdx(_safe_file(root, "SBOM.spdx.json"))
 
     # Every published byte set is independently bound to the same signed tag,
@@ -278,8 +383,7 @@ def verify_local_artifacts(
         run,
         root,
         ["SHA256SUMS", asset, *REQUIRED_STAGED_FILES],
-        tag,
-        commit,
+        workflow_sha,
     )
     return _sha256(image)
 
@@ -296,10 +400,25 @@ def require_successful_jobs(job_results: Mapping[str, str]) -> None:
         )
 
 
-def verify_release(tag: str, commit: str, asset: str, *, run: Run = _gh) -> str:
+def verify_release(
+    tag: str,
+    commit: str,
+    asset: str,
+    *,
+    workflow_sha: str,
+    run: Run = _gh,
+    authorized_signers: frozenset[str] = DEFAULT_AUTHORIZED_RELEASE_SIGNERS,
+    expected_tag_object_sha: str | None = None,
+) -> str:
     """Independently download and verify an already-published immutable release."""
     tag, commit = _validate_identity(tag, commit, asset)
-    _verify_signed_tag(run, tag, commit)
+    _verify_signed_tag(
+        run,
+        tag,
+        commit,
+        authorized_signers,
+        expected_tag_object_sha=expected_tag_object_sha,
+    )
 
     release = _json(
         run,
@@ -344,7 +463,7 @@ def verify_release(tag: str, commit: str, asset: str, *, run: Run = _gh) -> str:
 
         image = _safe_file(directory, asset)
         actual = _sha256(image)
-        _verify_metadata(_safe_file(directory, "release-metadata.json"), tag, commit, asset)
+        _verify_metadata(_safe_file(directory, "release-metadata.json"), tag, commit, workflow_sha, asset)
         _verify_spdx(_safe_file(directory, "SBOM.spdx.json"))
 
         # Authenticate every published file with immutable-release integrity
@@ -360,7 +479,7 @@ def verify_release(tag: str, commit: str, asset: str, *, run: Run = _gh) -> str:
                     REPOSITORY,
                 ]
             )
-        _verify_build_provenance(run, directory, release_files, tag, commit)
+        _verify_build_provenance(run, directory, release_files, workflow_sha)
     return actual
 
 
@@ -373,6 +492,14 @@ def main() -> int:
         help="Independently pinned source commit SHA",
     )
     parser.add_argument("--asset", help="Exact .img or .img.xz asset name")
+    parser.add_argument(
+        "--workflow-sha",
+        help="Exact trusted main commit containing the release workflow definition",
+    )
+    parser.add_argument(
+        "--expected-tag-object-sha",
+        help="Optional annotated tag object SHA pinned by the validate job",
+    )
     parser.add_argument(
         "--local-dir",
         help="Verify already-built final bytes in this directory; never downloads assets",
@@ -390,12 +517,21 @@ def main() -> int:
                 raise ReleaseVerificationError(
                     "--source-only cannot be combined with artifact verification options"
                 )
-            verify_source(args.tag, args.commit)
-            print(f"VERIFIED SOURCE: {args.tag} -> {args.commit.lower()}")
+            tag_object_sha = verify_source(
+                args.tag,
+                args.commit,
+                expected_tag_object_sha=args.expected_tag_object_sha,
+            )
+            print(
+                f"VERIFIED SOURCE: {args.tag} -> {args.commit.lower()} "
+                f"tag-object:{tag_object_sha}"
+            )
             return 0
 
         if not args.asset:
             raise ReleaseVerificationError("--asset is required for artifact verification")
+        if not args.workflow_sha:
+            raise ReleaseVerificationError("--workflow-sha is required for artifact verification")
 
         if args.local_dir:
             digest = verify_local_artifacts(
@@ -403,9 +539,17 @@ def main() -> int:
                 args.commit,
                 args.asset,
                 args.local_dir,
+                workflow_sha=args.workflow_sha,
+                expected_tag_object_sha=args.expected_tag_object_sha,
             )
         else:
-            digest = verify_release(args.tag, args.commit, args.asset)
+            digest = verify_release(
+                args.tag,
+                args.commit,
+                args.asset,
+                workflow_sha=args.workflow_sha,
+                expected_tag_object_sha=args.expected_tag_object_sha,
+            )
     except ReleaseVerificationError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
