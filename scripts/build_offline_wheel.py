@@ -22,7 +22,7 @@ ALLOWED_OFFLINE_MODULES = frozenset({
     "cross_boot.py", "transaction_state.py",
     "keys.py", "recovery.py", "vault.py", "policy.py", "gui.py", "review.py",
     "signer_session.py", "qr_session.py", "qr_workflow.py", "qr_cli.py",
-    "keystone_public.py", "gui_qr_bridge.py",
+    "keystone_public.py", "gui_qr_bridge.py", "framebuffer_poc.py",
 })
 ONLINE_MODULES = frozenset({"companion_core.py", "companion_btc.py", "companion_web.py",
                             "companion_portable.py", "companion_envelope.py"})
