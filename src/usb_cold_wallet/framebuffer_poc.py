@@ -1,10 +1,11 @@
 """Socket-free Linux fbdev/VT transaction review frontend.
 
-This module is intentionally limited to rendering an already-verified
-ReviewPlan and returning a ReviewIntent. It never parses a transaction, handles
-wallet secrets, calls SignerSession, or signs. Linux VT/fbdev operations use
-only local device/ioctl/mmap primitives and do not require CONFIG_NET, AF_UNIX,
-X11, Wayland, SDL, or any network socket family.
+The rendering path accepts an already-verified ReviewPlan and returns a
+ReviewIntent without wallet keys or signing. A narrow authorization adapter can
+bind a confirmed intent to the existing SignerSession only after rebuilding the
+same ReviewPlan and repeating the runtime audit. Linux VT/fbdev/evdev operations
+use only local device/ioctl/mmap primitives and do not require CONFIG_NET,
+AF_UNIX, X11, Wayland, SDL, or any network socket family.
 """
 from __future__ import annotations
 
