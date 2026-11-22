@@ -69,6 +69,7 @@ qemu-system-x86_64 \
     -monitor "unix:$TMP/hmp.sock,server=on,wait=off" \
     -net none -no-reboot \
     -device qemu-xhci,id=xhci \
+    -device usb-kbd,id=inputkbd,bus=xhci.0 \
     -drive if=none,id=walletdisk,format=raw,snapshot=on,file="$IMAGE" \
     -device usb-storage,bus=xhci.0,drive=walletdisk,bootindex=1 \
     > "$TMP/qemu.log" 2>&1 &
@@ -138,6 +139,7 @@ printf '%s\n' "console ready" >> "$ACTIONS"
 
 hmp "sendkey 8" "sendkey ret"
 wait_count "USB_WALLET_FB_POC_READY" 1 30
+grep -F 'input=evdev' "$TMP/serial.log" >/dev/null
 GUI_MS="$(date +%s%3N)"
 READY_LINE="$(grep -F 'USB_WALLET_FB_POC_READY' "$TMP/serial.log" | tail -1)"
 printf '%s\n' "$READY_LINE" >> "$ACTIONS"
@@ -186,7 +188,9 @@ printf '%s\n' "actual QEMU screendump captured" >> "$ACTIONS"
 # smoke; host tests cover long-page mandatory scrolling.
 page=1
 while [ "$page" -le 5 ]; do
-    hmp "sendkey down" "sendkey ret"
+    hmp "sendkey down"
+    sleep 1
+    hmp "sendkey ret"
     sleep 1
     if [ "$page" -lt 5 ]; then
         hmp "sendkey right"
@@ -194,8 +198,12 @@ while [ "$page" -le 5 ]; do
     fi
     page=$((page + 1))
 done
+# Enter only acknowledges the final page; a separate C key is required to
+# produce a positive review intent.
+hmp "sendkey c"
 wait_count "USB_WALLET_FB_POC_INTENT reviewed=1 reason=reviewed" 1 30
-printf '%s\n' "positive review intent observed" >> "$ACTIONS"
+wait_count "USB_WALLET_FB_POC_SESSION state=APPROVED signing_gate=ready" 1 30
+printf '%s\n' "positive review intent and SignerSession approval observed" >> "$ACTIONS"
 
 # After the demo restores KD_TEXT and returns to the appliance, launch it again
 # and prove that Escape yields only a negative intent.
@@ -204,7 +212,31 @@ hmp "sendkey 8" "sendkey ret"
 wait_count "USB_WALLET_FB_POC_READY" 2 30
 hmp "sendkey esc"
 wait_count "USB_WALLET_FB_POC_INTENT reviewed=0 reason=cancelled" 1 30
+wait_count "USB_WALLET_FB_POC_SESSION state=LOCKED signing_gate=blocked" 1 30
 printf '%s\n' "cancel intent observed" >> "$ACTIONS"
+
+# A live input-topology change invalidates the attended review. Re-adding the
+# keyboard permits a fresh review only; the old review can never resume.
+wait_count "USB_WALLET_CONSOLE_READY" 3 30
+hmp "sendkey 8"
+sleep 1
+hmp "sendkey ret"
+wait_count "USB_WALLET_FB_POC_READY" 3 30
+hmp "device_del inputkbd"
+wait_count "USB_WALLET_FB_POC_INTENT reviewed=0 reason=input_changed" 1 30
+wait_count "USB_WALLET_FB_POC_SESSION state=LOCKED signing_gate=blocked" 2 30
+printf '%s\n' "input removal failed closed" >> "$ACTIONS"
+
+wait_count "USB_WALLET_CONSOLE_READY" 4 30
+hmp "device_add usb-kbd,id=inputkbd2,bus=xhci.0"
+sleep 2
+hmp "sendkey 8"
+sleep 1
+hmp "sendkey ret"
+wait_count "USB_WALLET_FB_POC_READY" 4 30
+hmp "sendkey esc"
+wait_count "USB_WALLET_FB_POC_INTENT reviewed=0 reason=cancelled" 2 30
+printf '%s\n' "input reappearance accepted only for fresh review" >> "$ACTIONS"
 
 BOOT_MS="$(printf '%s\n' "$READY_LINE" | sed -n 's/.*boot_ms=\([0-9][0-9]*\).*/\1/p')"
 RSS_KB="$(printf '%s\n' "$READY_LINE" | sed -n 's/.*rss_kb=\([0-9][0-9]*\).*/\1/p')"
@@ -220,7 +252,12 @@ test -n "$RSS_KB"
     echo "host_console_to_first_frame_ms=$((GUI_MS - CONSOLE_MS))"
     echo "screenshot_sha256=$(sha256sum "$SCREENSHOT" | awk '{print $1}')"
     echo "positive_intent=PASS"
+    echo "explicit_confirm=PASS"
+    echo "signer_session_gate=PASS"
     echo "cancel_intent=PASS"
+    echo "input_backend=evdev"
+    echo "input_removal=PASS"
+    echo "input_reappearance=PASS"
 } > "$METRICS"
 
-echo "PASS: actual OVMF guest framebuffer POC rendered, reviewed, and cancelled without a guest NIC"
+echo "PASS: actual OVMF guest framebuffer GUI rendered; evdev input, explicit confirm, SignerSession gate, cancel and hotplug fail-closed verified without a guest NIC"

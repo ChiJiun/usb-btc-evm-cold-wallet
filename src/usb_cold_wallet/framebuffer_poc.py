@@ -25,7 +25,7 @@ import tty
 from typing import Callable
 
 from .review import ReviewField, ReviewPage, ReviewPlan, _canonical, _review_document
-from .signer_session import DEFAULT_IDLE_SECONDS, MAX_IDLE_SECONDS
+from .signer_session import DEFAULT_IDLE_SECONDS, MAX_IDLE_SECONDS, SignerSession
 
 # linux/fb.h
 FBIOGET_VSCREENINFO = 0x4600
@@ -39,6 +39,17 @@ KD_GRAPHICS = 0x01
 VT_GETSTATE = 0x5603
 VT_LOCKSWITCH = 0x560B
 VT_UNLOCKSWITCH = 0x560C
+
+# linux/input-event-codes.h / linux/input.h
+EV_KEY = 0x01
+KEY_ESC = 1
+KEY_C = 46
+KEY_ENTER = 28
+KEY_UP = 103
+KEY_LEFT = 105
+KEY_RIGHT = 106
+KEY_DOWN = 108
+_INPUT_EVENT = struct.Struct("@llHHi")
 
 PSF2_MAGIC = 0x864AB572
 MAX_PLAN_CHARS = 256 * 1024
@@ -61,6 +72,133 @@ class ReviewIntent:
     review_digest: str
     reviewed: bool
     reason: str
+
+
+class InputDeviceChanged(OSError):
+    """Input topology changed during an attended review."""
+
+
+def _decode_evdev(data: bytes) -> str:
+    """Decode one or more Linux input_event records into a reviewed action."""
+    if not data or len(data) % _INPUT_EVENT.size:
+        raise OSError("Malformed evdev input record")
+    for offset in range(0, len(data), _INPUT_EVENT.size):
+        _sec, _usec, event_type, code, value = _INPUT_EVENT.unpack_from(data, offset)
+        if event_type != EV_KEY:
+            continue
+        if value == 1:
+            action = {
+                KEY_ESC: "ESC",
+                KEY_ENTER: "ENTER",
+                KEY_C: "CONFIRM",
+                KEY_UP: "UP",
+                KEY_DOWN: "DOWN",
+                KEY_LEFT: "LEFT",
+                KEY_RIGHT: "RIGHT",
+            }.get(code)
+            if action:
+                return action
+        if value == 2:
+            action = {
+                KEY_UP: "UP",
+                KEY_DOWN: "DOWN",
+                KEY_LEFT: "LEFT",
+                KEY_RIGHT: "RIGHT",
+            }.get(code)
+            if action:
+                return action
+    return ""
+
+
+class EvdevInput:
+    """Fail-closed keyboard input directly from /dev/input/event*.
+
+    Mouse/button events are deliberately unsupported in this minimal frontend:
+    only the reviewed keyboard keycodes above can navigate or confirm.
+    """
+
+    def __init__(self, directory: Path = Path("/dev/input")):
+        self.directory = directory
+        self.paths: tuple[str, ...] = ()
+        self._fds: dict[int, str] = {}
+
+    def _discover(self) -> tuple[str, ...]:
+        try:
+            candidates = [
+                str(path)
+                for path in self.directory.glob("event*")
+                if path.name[5:].isdigit()
+            ]
+        except OSError as exc:
+            raise OSError("Unable to enumerate evdev input devices") from exc
+        return tuple(sorted(candidates))
+
+    def __enter__(self) -> "EvdevInput":
+        self.paths = self._discover()
+        if not self.paths:
+            raise OSError("No /dev/input/event* device available")
+        flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            for path in self.paths:
+                fd = os.open(path, flags)
+                self._fds[fd] = path
+        except Exception:
+            self.close()
+            raise
+        return self
+
+    def close(self) -> None:
+        for fd in tuple(self._fds):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self._fds.clear()
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        self.close()
+
+    def _assert_stable(self) -> None:
+        if self._discover() != self.paths:
+            raise InputDeviceChanged("Input device set changed during review")
+
+    def drain(self) -> None:
+        """Discard input queued before the current stable rendered frame."""
+        self._assert_stable()
+        for fd in tuple(self._fds):
+            while True:
+                try:
+                    data = os.read(fd, _INPUT_EVENT.size)
+                except BlockingIOError:
+                    break
+                except OSError as exc:
+                    raise InputDeviceChanged("Input device disappeared during review") from exc
+                if not data:
+                    raise InputDeviceChanged("Input device disappeared during review")
+                if len(data) != _INPUT_EVENT.size:
+                    raise OSError("Malformed evdev input record")
+        self._assert_stable()
+
+    def read_key(self, timeout: float = 1.0) -> str:
+        self._assert_stable()
+        ready, _, _ = select.select(tuple(self._fds), [], [], timeout)
+        if not ready:
+            self._assert_stable()
+            return ""
+        for fd in ready:
+            try:
+                data = os.read(fd, _INPUT_EVENT.size)
+            except BlockingIOError:
+                continue
+            except OSError as exc:
+                raise InputDeviceChanged("Input device disappeared during review") from exc
+            if not data:
+                raise InputDeviceChanged("Input device disappeared during review")
+            action = _decode_evdev(data)
+            if action:
+                return action
+        self._assert_stable()
+        return ""
 
 
 def _validate_plan(plan: ReviewPlan) -> None:
@@ -213,6 +351,7 @@ def render_review(
     *,
     acknowledged: bool = False,
     locked: bool = False,
+    confirm_ready: bool = False,
 ) -> int:
     """Render a complete ReviewPlan page and return its wrapped line count."""
     _validate_plan(plan)
@@ -236,7 +375,10 @@ def render_review(
     surface.rect(0, surface.height - 66, surface.width, 66, (28, 49, 76))
     surface.text(pad, surface.height - 56, "UP/DOWN scroll  LEFT/RIGHT pages  ESC cancel", (255, 222, 147))
     state = "ACKNOWLEDGED" if acknowledged else "REVIEW REQUIRED"
-    surface.text(pad, surface.height - 32, "ENTER: acknowledge page  " + state, (255, 222, 147))
+    if confirm_ready:
+        surface.text(pad, surface.height - 32, "C: CONFIRM REVIEW  ESC: REJECT", (255, 222, 147))
+    else:
+        surface.text(pad, surface.height - 32, "ENTER: acknowledge page  " + state, (255, 222, 147))
     return len(wrapped)
 
 
@@ -307,7 +449,7 @@ class ReviewController:
         if not self._audit_ok():
             self.fail_closed("audit_failed")
             return False
-        if key in ("LEFT", "RIGHT", "DOWN", "UP", "ENTER"):
+        if key in ("LEFT", "RIGHT", "DOWN", "UP", "ENTER", "CONFIRM"):
             self.last_activity = now
         if key == "LEFT":
             self.page = max(0, self.page - 1)
@@ -323,7 +465,13 @@ class ReviewController:
             if self.offset < self.scroll_bottom:
                 return False
             self.seen.add(self.page)
-            return len(self.seen) == len(self.plan.pages)
+            return False
+        elif key == "CONFIRM":
+            return (
+                self.page == len(self.plan.pages) - 1
+                and self.offset >= self.scroll_bottom
+                and self.seen == set(range(len(self.plan.pages)))
+            )
         return False
 
 
@@ -352,6 +500,20 @@ def _fb_geometry(fd: int) -> tuple[int, int, int, int]:
     if bpp == 16 and rgb != ((11, 5, 0), (5, 6, 0), (0, 5, 0)):
         raise ValueError("Unexpected RGB565 bitfields")
     return xres, yres, bpp, line_length
+
+
+def _discover_framebuffer(fb_path: str | None = None, dev_root: Path = Path("/dev")) -> str:
+    if fb_path is not None:
+        return fb_path
+    try:
+        candidates = tuple(
+            sorted(str(path) for path in dev_root.glob("fb*") if path.name[2:].isdigit())
+        )
+    except OSError as exc:
+        raise OSError("Unable to enumerate framebuffer devices") from exc
+    if len(candidates) != 1:
+        raise OSError("Exactly one framebuffer device is required")
+    return candidates[0]
 
 
 def present(surface: Surface, fb_path: str = "/dev/fb0") -> None:
@@ -429,13 +591,56 @@ def _read_key(fd: int, timeout: float = 1.0) -> str:
     return {b"A": "UP", b"B": "DOWN", b"C": "RIGHT", b"D": "LEFT"}.get(third, "ESC")
 
 
+def authorize_review_intent(
+    plan: ReviewPlan,
+    intent: ReviewIntent,
+    signer: SignerSession,
+    *,
+    rebuild_plan: Callable[[], ReviewPlan],
+    audit: Callable[[], bool],
+) -> bool:
+    """Bind human framebuffer confirmation to the existing SignerSession.
+
+    The frontend still never handles wallet keys or signs.  The caller must
+    have started this exact digest with SignerSession.start_review() before
+    rendering, and must call SignerSession.signing() only after this returns
+    True.  A fresh backend rebuild is required immediately before approval.
+    """
+    _validate_plan(plan)
+    if not isinstance(signer, SignerSession):
+        raise TypeError("Existing SignerSession is required")
+    if type(intent) is not ReviewIntent:
+        signer.lock("invalid_review_intent")
+        raise TypeError("Canonical ReviewIntent is required")
+    if not intent.reviewed:
+        signer.lock("review_rejected")
+        return False
+    try:
+        if intent.review_digest != plan.review_digest:
+            raise ValueError("Framebuffer review digest changed")
+        fresh = rebuild_plan()
+        _validate_plan(fresh)
+        if fresh != plan:
+            raise ValueError("Transaction changed after framebuffer review")
+        if audit() is not True:
+            raise ValueError("Offline runtime safety audit failed before approval")
+        signer.approve(plan.review_digest)
+    except Exception as exc:
+        signer.lock("framebuffer_authorization_failed")
+        if isinstance(exc, (ValueError, TypeError)):
+            raise
+        raise ValueError("Framebuffer authorization failed closed") from exc
+    return True
+
+
 def run_vt(
     plan: ReviewPlan,
     font_path: Path,
     *,
     audit: Callable[[], bool],
     tty_path: str = "/dev/tty1",
-    fb_path: str = "/dev/fb0",
+    fb_path: str | None = None,
+    input_directory: Path = Path("/dev/input"),
     on_ready: Callable[[], None] | None = None,
 ) -> ReviewIntent:
     """Render a verified plan on the active VT and return non-signing intent."""
@@ -447,13 +652,14 @@ def run_vt(
     if not initial_audit_ok:
         return ReviewIntent(plan.review_digest, False, "audit_failed")
     font = load_psf2(font_path)
+    fb_path = _discover_framebuffer(fb_path)
     with open(fb_path, "r+b", buffering=0) as fb:
         width, height, _, _ = _fb_geometry(fb.fileno())
     display = Surface(width, height, font)
     controller = ReviewController(plan, audit=audit)
     tty_number = _tty_number(tty_path)
 
-    with open(tty_path, "rb", buffering=0) as keyboard:
+    with open(tty_path, "rb", buffering=0) as keyboard, EvdevInput(input_directory) as inputs:
         fd = keyboard.fileno()
         old_termios = termios.tcgetattr(fd)
         old_kd_mode = _get_kd_mode(fd)
@@ -467,8 +673,8 @@ def run_vt(
             tty.setraw(fd)
             fcntl.ioctl(fd, KDSETMODE, KD_GRAPHICS)
             ready_reported = False
-            # Discard any keystrokes queued before the first stable frame and
-            # after every visual state change. Approval cannot ride behind a
+            # Discard any input queued before the first stable frame and after
+            # every visual state change. Approval cannot ride behind a
             # navigation/scroll key while the next frame is still being drawn.
             discard_queued_input = True
             while not controller.cancelled and not controller.locked:
@@ -484,18 +690,27 @@ def run_vt(
                     controller.page,
                     controller.offset,
                     acknowledged=controller.page in controller.seen,
+                    confirm_ready=(
+                        controller.page == len(plan.pages) - 1
+                        and controller.seen == set(range(len(plan.pages)))
+                    ),
                 )
                 visible = max(1, (height - 160) // (font[1] + 3))
                 controller.scroll_bottom = max(0, total - visible)
                 controller.offset = min(controller.offset, controller.scroll_bottom)
                 present(display, fb_path)
                 if discard_queued_input:
+                    inputs.drain()
                     termios.tcflush(fd, termios.TCIFLUSH)
                     discard_queued_input = False
                 if not ready_reported and on_ready is not None:
                     on_ready()
                     ready_reported = True
-                key = _read_key(fd)
+                try:
+                    key = inputs.read_key()
+                except InputDeviceChanged:
+                    controller.fail_closed("input_changed")
+                    break
                 before = (controller.page, controller.offset, frozenset(controller.seen))
                 if controller.action(key):
                     return ReviewIntent(plan.review_digest, True, "reviewed")

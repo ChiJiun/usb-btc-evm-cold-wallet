@@ -12,6 +12,7 @@ from usb_cold_wallet.exchange import package
 from usb_cold_wallet.keys import root_from_mnemonic
 from usb_cold_wallet.review import (ReviewField, ReviewPage, build_review_plan,
                                     _canonical, _review_document)
+from usb_cold_wallet.signer_session import SignerSession, State
 
 
 PUBLIC_TEST_MNEMONIC = "abandon " * 11 + "about"
@@ -74,14 +75,15 @@ def test_renderer_accepts_real_backend_review_plan_and_never_elides_long_fields(
     assert fb.render_review(display, plan, len(plan.pages) - 1, line_offset=100) == count
 
 
-def test_all_real_review_pages_require_explicit_acknowledgement():
+def test_all_real_review_pages_require_explicit_acknowledgement_and_separate_confirm():
     plan = _plan()
     ctrl = fb.ReviewController(plan, audit=lambda: True)
     for index in range(len(plan.pages)):
         if index:
             ctrl.action("RIGHT")
-        assert ctrl.action("ENTER") is (index == len(plan.pages) - 1)
+        assert ctrl.action("ENTER") is False
     assert ctrl.seen == set(range(len(plan.pages)))
+    assert ctrl.action("CONFIRM") is True
 
 
 def test_long_page_cannot_acknowledge_before_scrolling_to_end():
@@ -281,3 +283,83 @@ def test_framebuffer_idle_timeout_rejects_unsafe_configuration():
     for value in (0, 601, True, 600.0):
         with pytest.raises(ValueError, match="idle timeout"):
             fb.ReviewController(_plan(), audit=lambda: True, idle_seconds=value)
+
+
+
+def test_evdev_decoder_never_maps_mouse_or_key_repeat_to_confirmation():
+    press_enter = fb._INPUT_EVENT.pack(1, 0, fb.EV_KEY, fb.KEY_ENTER, 1)
+    press_confirm = fb._INPUT_EVENT.pack(1, 1, fb.EV_KEY, fb.KEY_C, 1)
+    repeat_confirm = fb._INPUT_EVENT.pack(1, 2, fb.EV_KEY, fb.KEY_C, 2)
+    mouse_left = fb._INPUT_EVENT.pack(1, 3, fb.EV_KEY, 272, 1)
+    assert fb._decode_evdev(press_enter) == "ENTER"
+    assert fb._decode_evdev(press_confirm) == "CONFIRM"
+    assert fb._decode_evdev(repeat_confirm) == ""
+    assert fb._decode_evdev(mouse_left) == ""
+
+
+def test_framebuffer_discovery_is_unambiguous_and_fails_closed(tmp_path: Path):
+    with pytest.raises(OSError, match="Exactly one"):
+        fb._discover_framebuffer(dev_root=tmp_path)
+    first = tmp_path / "fb0"
+    first.write_bytes(b"")
+    assert fb._discover_framebuffer(dev_root=tmp_path) == str(first)
+    (tmp_path / "fb1").write_bytes(b"")
+    with pytest.raises(OSError, match="Exactly one"):
+        fb._discover_framebuffer(dev_root=tmp_path)
+
+
+def _unlocked_signer(plan, audit=lambda: True):
+    signer = SignerSession(audit=audit, on_lock=lambda: None)
+    signer.begin_unlock()
+    signer.unlock_succeeded()
+    signer.start_review(plan.review_digest)
+    return signer
+
+
+def test_signer_session_cannot_cross_signing_gate_before_framebuffer_confirm():
+    plan = _plan()
+    signer = _unlocked_signer(plan)
+    with pytest.raises(ValueError, match="independent approval"):
+        signer.signing(plan.review_digest)
+    assert signer.state == State.LOCKED
+
+
+def test_framebuffer_confirm_rebuilds_same_plan_before_signer_approval():
+    plan = _plan()
+    signer = _unlocked_signer(plan)
+    intent = fb.ReviewIntent(plan.review_digest, True, "reviewed")
+    assert fb.authorize_review_intent(
+        plan, intent, signer, rebuild_plan=_plan, audit=lambda: True)
+    assert signer.state == State.APPROVED
+    signer.signing(plan.review_digest)
+
+
+def test_framebuffer_reject_or_changed_request_locks_signer():
+    plan = _plan()
+    signer = _unlocked_signer(plan)
+    rejected = fb.ReviewIntent(plan.review_digest, False, "cancelled")
+    assert not fb.authorize_review_intent(
+        plan, rejected, signer, rebuild_plan=_plan, audit=lambda: True)
+    assert signer.state == State.LOCKED
+
+    signer = _unlocked_signer(plan)
+    intent = fb.ReviewIntent(plan.review_digest, True, "reviewed")
+    with pytest.raises(ValueError, match="changed after framebuffer review"):
+        fb.authorize_review_intent(
+            plan,
+            intent,
+            signer,
+            rebuild_plan=lambda: replace(plan, network="wrong-network"),
+            audit=lambda: True,
+        )
+    assert signer.state == State.LOCKED
+
+
+def test_framebuffer_final_runtime_audit_failure_locks_signer():
+    plan = _plan()
+    signer = _unlocked_signer(plan)
+    intent = fb.ReviewIntent(plan.review_digest, True, "reviewed")
+    with pytest.raises(ValueError, match="safety audit failed"):
+        fb.authorize_review_intent(
+            plan, intent, signer, rebuild_plan=_plan, audit=lambda: False)
+    assert signer.state == State.LOCKED
