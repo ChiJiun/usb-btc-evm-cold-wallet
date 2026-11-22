@@ -33,3 +33,25 @@
 ## 後續實測方式
 
 對比相同類型冷端變更的 CI：Scope、Python Matrix、兩個 Clean Build、雜湊比對、QEMU、壓縮封裝與 Required Gate。以 GitHub Actions 顯示的實際 Job 時間與 Artifact 時間計算 before/after，並記錄 cache hit/miss、排隊與是否發生取消。若歷史 API 查詢權限不支援全域列舉，需 GitHub Actions API `GET /repos/{owner}/{repo}/actions/runs` 的可列舉權限才能補足全量統計。
+
+## 常見失敗與防止重複浪費 CI 時間（#87）
+
+每次修改 CI、Buildroot 或其測試前，先讀本節與 `docs/CI_SECURITY.md`；新發現的重複性故障須記錄**實際 run、根因、預防測試與驗證結果**，不能只記錄症狀。
+
+| 已發生的問題／證據 | 根因與避免方式 | 最小驗證 |
+| --- | --- | --- |
+| [CI #45002446458](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/actions/runs/45002446458)：Python 3.12／3.13 同時失敗，819 passed、1 failed、3 skipped | `test_draft_skips_expensive_image_packaging_and_upload` 用 `lstrip().startswith('if: ...')` 斷言 YAML Step；新增註解後測試誤判。改為檢查該 Step 範圍內的實際 `if`，避免依賴註解、空白或相鄰 Step 的文字位置。修正 Commit `7fa0bbe1`；**尚待最新 HEAD CI 證明通過** | 先執行 `python -m pytest -q tests/test_ci_checks.py`，再推送；兩個 Python Matrix 均須成功 |
+| [CI #44997976256](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/actions/runs/44997976256)：Python Matrix 已失敗，Live USB 仍耗時建置 | 缺少快速測試前置依賴。完整 Live USB 需等待 Python Matrix 成功；選中 Live USB 卻因失敗而跳過時，`CI / Required` 必須失敗，不能把 skipped 當 PASS | `test_live_usb_heavy_build_requires_successful_python_matrix` 與 Required Gate 負向測試 |
+| [CI #44979598989](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/actions/runs/44979598989)、[#44979598997](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/actions/runs/44979598997)：同一 PR 跑重複主 CI／Live USB | 已由 #78 改成單一主 CI 呼叫 reusable Live USB；不要再加入獨立 PR trigger，造成重複昂貴建置 | `test_full_live_usb_is_called_and_gated_with_no_path_filtered_bypass` |
+| Live USB 建置過慢且 Draft PR 反覆跑兩次 | Draft PR 只需一次乾淨建置＋實際 SHA-256＋QEMU，避免大型封裝與最終 Artifact；Ready PR 最新 HEAD、main 與手動完整驗證才執行兩次獨立建置與可重現性比較。Draft 的成功不能替代 Ready Gate | `test_draft_feedback_is_single_build_but_ready_event_requires_dual`、`test_draft_skips_expensive_image_packaging_and_upload`；另需 Ready 事件實際 CI 證據 |
+| [PR #76](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/76)：Live USB GPT 唯讀屬性稽核失敗（過往紀錄） | 映像分割區屬性必須對照**實際 raw GPT entry bytes**、產生器設定與稽核解析；不得為了綠燈只修改預期值或測試 | 執行映像稽核並核對 raw image；QEMU 不等於實體 USB 驗收 |
+| [PR #79](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/79)：`framebuffer_poc.py` 未列入離線模組 Allowlist（過往紀錄） | 新增冷端 Python 模組時，同步審查 runtime imports、離線 Allowlist、Buildroot 安裝清單；不得藉由開啟 `CONFIG_NET` 解決 | 離線模組測試＋Buildroot 安裝稽核＋QEMU 畫面證據 |
+
+### CI 修改前的固定檢查順序
+
+1. **先在本地跑受影響的短測試**：修改 `.github/workflows/**`、`scripts/ci_checks.py`、`scripts/ci_workloads.py`、`tests/test_ci_checks.py` 時，至少執行 `python -m pytest -q tests/test_ci_checks.py`。若無本地執行環境，明確標記未驗證，避免宣稱成功。
+2. **同時檢查正向與負向 Gate**：測試失敗、Job skipped/cancelled、未知路徑、workflow-only 變更、Draft→Ready、Ready 新 HEAD，均不得錯誤通過 Required Gate。對 YAML 使用結構化解析或限定 Step 範圍，避免脆弱的全文字串位置斷言。
+3. **按變更影響執行必要工作**：docs/tests-only 不跑 Buildroot；GUI、Kernel、rootfs、映像／安全邊界變更才跑完整 Live USB。未知路徑維持 fail-closed；不為了省時關閉安全 Gate。
+4. **不要用修文件反覆觸發完整 Buildroot**：將同一輪已確認的 CI 修正、測試與文件一次提交；若連續失敗，先取該次最新 HEAD 的失敗 Job Logs，定位單一根因後再推送。
+5. **驗證以最新 HEAD 為準**：記錄 Commit SHA、Run URL、各 Job 結果、總 wall-clock 與 runner-minutes；只在實測後宣稱效能改善。對 GitHub API 無法列舉的歷史 Runs，不宣稱已完成全量稽核。
+
