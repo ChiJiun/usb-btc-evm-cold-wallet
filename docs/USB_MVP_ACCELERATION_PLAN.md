@@ -60,17 +60,17 @@ M0 通過後才依序：
 
 ## 上游程式碼重用策略
 
-### A. 可直接移植（授權已確認）
+### A. Candidate：已固定上游 Commit，但尚需逐檔授權與來源核對
 
-| 上游 | 固定來源 | 用途 | 本案對應 |
-| --- | --- | --- | --- |
-| Specter-DIY (MIT) | `bec1ab108d6559a35b9cf8b1ea41da1f5731918a` | SD/QR transaction exchange、PSBT/descriptor workflow、crypto-psbt encoder pattern | #2/#5/#18/#19/#43 |
-| AirGap Coin Lib (MIT) | `50c08a4057b0f68b8d223ea4a5ab12853c3f23ba` | ERC-20 transaction semantics、offline/online split、serializer model | #3/#17/#21 |
-| AirGap Wallet/Vault (MIT) | current reviewed files | transaction detail / online-offline UX | #17/#19 |
-| BlueWallet (MIT) | `66987706630895adbff08099778e4d33e26bd2f7` | watch-only + PSBT import/verify/finalize UX | #2/#17 |
-| Blockchain Commons bc-ur-ts (BSD-2-Clause-Patent) | `38d9f35160b171220b4fc5ddab9cdc3c1ea2ae35` | UR multipart/fountain/bytewords | #18/#56 |
+| 上游 | 固定來源 | 狀態 | 用途 | 本案對應 |
+| --- | --- | --- | --- | --- |
+| Specter-DIY | `bec1ab108d6559a35b9cf8b1ea41da1f5731918a` | **Candidate**：commit 存在；尚未在本文件完成 exact source path / file-level license / dependency clearance | SD/QR transaction exchange、PSBT/descriptor workflow、crypto-psbt encoder pattern | #2/#5/#18/#19/#43 |
+| AirGap Coin Lib | `50c08a4057b0f68b8d223ea4a5ab12853c3f23ba` | **Candidate**：commit 存在；尚未完成 exact source path / file-level license / transitive dependency clearance | ERC-20 transaction semantics、offline/online split、serializer model | #3/#17/#21 |
+| AirGap Wallet/Vault | **未固定** | **Reference**：不得複製，直到固定 commit 並完成 exact path/license 核對 | transaction detail / online-offline UX | #17/#19 |
+| BlueWallet | `66987706630895adbff08099778e4d33e26bd2f7` | **Candidate**：commit 存在；尚未完成 exact source path / file-level license / dependency clearance | watch-only + PSBT import/verify/finalize UX | #2/#17 |
+| Blockchain Commons bc-ur-ts | `38d9f35160b171220b4fc5ddab9cdc3c1ea2ae35` | **Candidate**：commit 存在；目前專案已使用其 npm 套件；直接 source copy 仍需逐檔核對 BSD-2-Clause-Patent、NOTICE/copyright 與依賴 | UR multipart/fountain/bytewords | #18/#56 |
 
-移植要求：最小必要 diff、保留 copyright/license、記錄 upstream commit、不要把上游測試當成本案已通過的證據。
+上表只代表「可研究的固定來源」，**不代表已完成移植或已取得逐檔複製許可**。實際 Copy-and-Adapt 前必須記錄 exact upstream path/function、license/SPDX/header/NOTICE、transitive dependencies、 copied/adapted LOC 與本地測試證據；上游測試不得視為本案驗收。
 
 ### B. 只參考，不直接複製
 
