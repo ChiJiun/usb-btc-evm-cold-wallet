@@ -215,6 +215,8 @@ jobs:
           TAG_OBJECT_SHA: ${{ needs.validate.outputs.tag_object_sha }}
         run: |
           set -euo pipefail
+          test -n "${ImageOS:-}"
+          test -n "${ImageVersion:-}"
           . infra/buildroot.env
           export BUILDROOT_VERSION BUILDROOT_SHA256 NODE_VERSION XZ_VERSION
           dpkg-query -W -f='${Package}=${Version}\n' \
