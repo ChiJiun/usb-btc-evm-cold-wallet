@@ -53,10 +53,16 @@ def encrypt_mnemonic(mnemonic: str, passphrase: str) -> dict:
 
 
 def decrypt_mnemonic(data: dict, passphrase: str) -> str:
-    if data.get("format") != "usb-btc-evm-cold-wallet" or data.get("version") != 1:
+    if (type(data) is not dict or
+            set(data) != {"format", "version", "kdf", "cipher", "nonce", "ciphertext"} or
+            data["format"] != "usb-btc-evm-cold-wallet" or
+            type(data["version"]) is not int or data["version"] != 1):
         raise ValueError("Unknown wallet format")
-    kdf = data.get("kdf", {})
-    if (kdf.get("name"), kdf.get("n"), kdf.get("r"), kdf.get("p")) != ("scrypt", _N, _R, _P):
+    kdf = data["kdf"]
+    if (type(kdf) is not dict or
+            set(kdf) != {"name", "n", "r", "p", "salt"} or
+            any(type(kdf[key]) is not int for key in ("n", "r", "p")) or
+            (kdf["name"], kdf["n"], kdf["r"], kdf["p"]) != ("scrypt", _N, _R, _P)):
         raise ValueError("Unexpected KDF parameters")
     if data.get("cipher") != "AES-256-GCM":
         raise ValueError("Unexpected cipher")
@@ -195,10 +201,34 @@ def save_vault(path: Path, data: dict) -> None:
         os.close(parent)
 
 
+def _unique_wallet_object(pairs: list[tuple[str, object]]) -> dict:
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError("Duplicate wallet JSON field")
+        obj[key] = value
+    return obj
+
+
+def _reject_wallet_constant(value: str):
+    raise ValueError("Non-finite wallet JSON value")
+
+
 def load_vault(path: Path, passphrase: str) -> str:
     path = Path(path)
-    if not path.is_file():
-        raise ValueError("Vault file not found")
-    if path.stat().st_size > 4096:
-        raise ValueError("Vault file unexpectedly large")
-    return decrypt_mnemonic(json.loads(path.read_text(encoding="utf-8")), passphrase)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError as exc:
+        raise ValueError("Vault file not found") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 4096:
+            raise ValueError("Vault file unexpectedly large or not regular")
+        raw = os.read(fd, 4097)
+        if len(raw) > 4096:
+            raise ValueError("Vault file unexpectedly large")
+    finally:
+        os.close(fd)
+    data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_wallet_object,
+                      parse_constant=_reject_wallet_constant)
+    return decrypt_mnemonic(data, passphrase)

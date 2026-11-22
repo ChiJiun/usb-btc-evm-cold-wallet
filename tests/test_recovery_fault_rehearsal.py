@@ -220,6 +220,50 @@ def test_wrong_encryption_password_does_not_modify_vault(private_dir):
     assert path.read_bytes() == before
 
 
+@pytest.mark.parametrize("mutation", [
+    "boolean-version", "boolean-scrypt-p", "duplicate-version",
+    "duplicate-ciphertext", "extra-key", "nonfinite-version",
+])
+def test_vault_rejects_ambiguous_json_metadata(private_dir, mutation):
+    path = private_dir / "ambiguous.vault"
+    _restore(path)
+    content = path.read_text()
+    if mutation == "duplicate-version":
+        content = content.replace('"version": 1,', '"version": 999, "version": 1,', 1)
+    elif mutation == "duplicate-ciphertext":
+        content = content.replace('"ciphertext": ', '"ciphertext": "ignored", "ciphertext": ', 1)
+    else:
+        container = json.loads(content)
+        if mutation == "boolean-version":
+            container["version"] = True  # bool compares equal to integer 1
+        elif mutation == "boolean-scrypt-p":
+            container["kdf"]["p"] = True
+        elif mutation == "extra-key":
+            container["untrusted_extension"] = "must not be silently ignored"
+        else:
+            container["version"] = float("nan")
+        content = json.dumps(container)
+    path.write_text(content)
+    with pytest.raises((ValueError, json.JSONDecodeError)):
+        vault.load_vault(path, PASSWORD)
+
+
+def test_vault_load_rejects_symlink_even_to_valid_encrypted_vault(private_dir):
+    original = private_dir / "valid.vault"
+    _restore(original)
+    symlink = private_dir / "substituted.vault"
+    symlink.symlink_to(original)
+    with pytest.raises((ValueError, OSError)):
+        vault.load_vault(symlink, PASSWORD)
+
+
+def test_vault_load_rejects_oversized_file_before_json_parse(private_dir):
+    path = private_dir / "oversized.vault"
+    path.write_bytes(b"{" + b" " * 4096 + b"}")
+    with pytest.raises(ValueError, match="large"):
+        vault.load_vault(path, PASSWORD)
+
+
 def test_power_cut_before_publish_and_stage_swap_fail_closed(private_dir, monkeypatch):
     path = private_dir / "cut.vault"
     actual = vault.os.fsync

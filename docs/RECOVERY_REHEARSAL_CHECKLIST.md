@@ -19,7 +19,7 @@ open mounted USB devices. Included exercises:
 | Recovery with BIP39 passphrase | First BTC testnet address, Sepolia address, BIP84 account tpub, derivation metadata, master fingerprint, policy wallet binding identical |
 | Wrong checksum, mnemonic, BIP39 passphrase, Bitcoin network, BIP84 account/index or independently recorded address | Refuse restore; no final vault created |
 | Lost disposable vault, restored from public words | Recover exactly; newly encrypted bytes differ; repeated restore never overwrites |
-| Wrong vault encryption password, invalid format/version, one-bit ciphertext/salt/nonce tampering, truncated JSON or missing Vault | Refuse load; never silently return another wallet |
+| Wrong vault encryption password, invalid format/version, malformed or duplicate JSON metadata, non-finite or boolean header values, one-bit ciphertext/salt/nonce tampering, truncated/oversized JSON, symlink or missing Vault | Refuse load; never silently return another wallet |
 | Simulated file `fsync` failure before publish or nonprivate directory | No partial final vault; retry works after injected failure removed; unsafe directory rejected before staging |
 | Staging filename replaced by another inode | Injected rename definitely occurs; writer raises, published attacker entry cannot decrypt (same-UID race remains outside trust model) |
 | Whole historical authenticated Vault snapshot restored | **Accepted by decryption**: negative evidence that AEAD alone cannot detect replay |
@@ -106,4 +106,11 @@ USB acceptance remains BLOCKED until separately performed.
 
 Secrets are intentionally present **only in in-process test fixtures** during
 these tests. They are published compromised vectors, not production keys.
-No code in this PR changes Vault, Policy, signer or on-disk formats.
+This PR minimally hardens `vault.load_vault` and `vault.decrypt_mnemonic`: one
+bounded descriptor read (no pathname second-read race), no symlink following,
+strict JSON keys/types and rejection of duplicate/non-finite fields. There is no
+on-disk format change, cryptographic primitive change, Policy or signer change.
+These checks detect malformed metadata; they do not detect replay of a complete,
+valid historical Vault, or replacement by another valid Vault that uses the same
+decryption password. Independently verify the intended wallet identity and
+policy anchor on signing.
