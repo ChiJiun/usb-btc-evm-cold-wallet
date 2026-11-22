@@ -28,4 +28,4 @@ See the concrete source-to-feature map in `docs/OPEN_SOURCE_REFERENCES.md`. Exis
 
 ## CI / Actions 變更前必讀
 
-修改 `.github/workflows/**`、`scripts/ci_checks.py`、`scripts/ci_workloads.py`、`tests/test_ci_checks.py` 或 Live USB 建置流程前，**先讀 [`docs/CI_PERFORMANCE_AUDIT.md`](docs/CI_PERFORMANCE_AUDIT.md) 的「常見失敗與防止重複浪費 CI 時間」及 [`docs/CI_SECURITY.md`](docs/CI_SECURITY.md)**。重複故障必須記錄 Run URL、根因、最小修正、負向回歸測試與最新 HEAD 驗證結果。先執行 `python -m pytest -q tests/test_ci_checks.py`；未執行不可聲稱通過。不要為了修測試而降低 Required Gate、啟用 `CONFIG_NET` 或重啟重複的昂貴 Live USB Workflow。Draft PR 的單次 Build/QEMU 不代表 Ready PR 的雙次可重現性驗收。
+修改 `.github/workflows/**`、`scripts/ci_checks.py`、`scripts/ci_workloads.py`、`tests/test_ci_checks.py` 或 Live USB 建置流程前，**先讀 [`docs/CI_PERFORMANCE_AUDIT.md`](docs/CI_PERFORMANCE_AUDIT.md) 的「常見失敗與防止重複浪費 CI 時間」及 [`docs/CI_SECURITY.md`](docs/CI_SECURITY.md)**。重複故障必須記錄 Run URL、根因、最小修正、負向回歸測試與最新 HEAD 驗證結果。先執行 `python -m pytest -q tests/test_ci_checks.py`；未執行不可聲稱通過。不要為了修測試而降低 Required Gate、啟用 `CONFIG_NET` 或重啟重複的昂貴 Live USB Workflow。Draft 與 Ready PR 使用同一個雙 Clean Build＋QEMU Gate，不要再加入依 Draft 狀態分流或 `ready_for_review` 重跑。

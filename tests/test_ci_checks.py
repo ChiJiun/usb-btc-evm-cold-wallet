@@ -735,7 +735,7 @@ def test_full_live_usb_is_called_and_gated_with_no_path_filtered_bypass():
     assert "  live_usb:" in ci
     assert "uses: ./.github/workflows/live-usb-build.yml" in ci
     assert "      - live_usb" in required
-    assert "LIVE_USB_REQUIRED: ${{ needs.changes.outputs.live_usb == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}" in required
+    assert "LIVE_USB_REQUIRED: ${{ needs.changes.outputs.live_usb }}" in required
     assert "LIVE_USB: ${{ needs.live_usb.result }}" in required
     assert "workflow_call:" in live
     assert "  pull_request:" not in live
@@ -778,7 +778,7 @@ def test_live_usb_heavy_build_requires_successful_python_matrix():
     live_job = ci.split("\n  live_usb:\n", 1)[1].split("\n  btc_core:\n", 1)[0]
     assert "needs: [changes, tests]" in live_job
     assert "needs.tests.result == 'success'" in live_job
-    assert "(github.event_name != 'pull_request' || !github.event.pull_request.draft)" in live_job
+    assert "draft" not in live_job
     assert "needs.changes.outputs.live_usb == 'true'" in live_job
     assert "uses: ./.github/workflows/live-usb-build.yml" in live_job
     assert "      - live_usb" in ci.split("\n  required:\n", 1)[1]
@@ -807,7 +807,7 @@ def test_live_usb_cache_reuses_only_verifiable_source_downloads():
     assert "hashFiles(" in cache_block
     assert "buildroot-external/configs/usb_wallet_x86_64_defconfig" in cache_block
     assert "  clean-builds:" in live
-    assert "fromJSON(github.event_name == 'pull_request'" in live
+    assert "matrix:\n        run: [1, 2]" in live
     assert "      - name: Independently build and statically audit image" in live
     assert "sh scripts/build_image.sh" in live
     assert "  verify-and-publish:" in live
@@ -827,13 +827,14 @@ def test_parallel_live_usb_requires_two_independent_clean_runners_and_real_bytes
     )[0]
     verify = live.split("\n  verify-and-publish:\n", 1)[1]
 
-    assert "matrix:\n        run: ${{ fromJSON(" in builds
+    assert "matrix:\n        run: [1, 2]" in builds
+    assert "fail-fast: true" in builds
     assert "    runs-on: ubuntu-24.04" in builds
     assert "    if: inputs.smoke_only != true" in builds
     assert "sh scripts/build_image.sh" in builds
     assert "sha256sum usb-cold-wallet.img bzImage" in builds
     assert "live-usb-clean-hashes-${{ matrix.run }}" in builds
-    assert "if: matrix.run == 2 ||" in builds
+    assert "        if: matrix.run == 2\n" in builds
     assert "live-usb-selected-clean-image" in builds
     assert "build/output/images/usb-cold-wallet.img" in builds
     assert "build/output/images/bzImage" in builds
@@ -842,7 +843,11 @@ def test_parallel_live_usb_requires_two_independent_clean_runners_and_real_bytes
     assert "actions/download-artifact@" in verify
     assert "merge-multiple: true" in verify
     assert "cmp -s build/reproducibility/run-1.sha256 build/reproducibility/run-2.sha256" in verify
-    assert 'sha256sum -c "../../reproducibility/run-${selected}.sha256"' in verify
+    assert "test -s build/reproducibility/run-1.sha256" in verify
+    assert "test -s build/reproducibility/run-2.sha256" in verify
+    assert "sha256sum -c ../../reproducibility/run-2.sha256" in verify
+    assert 'echo "clean_build_count=2"' in verify
+    assert 'echo "reproducibility_verified=true"' in verify
     assert "run: sh scripts/verify_uefi_boot.sh" in verify
     assert "Upload verified testnet-only boot image (NOT A RELEASE)" in verify
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in verify
@@ -856,49 +861,96 @@ def test_parallel_live_usb_requires_two_independent_clean_runners_and_real_bytes
         )[1].split("      - name: Prepare authenticated offline sources", 1)[0]
 
 
-def test_draft_feedback_is_single_build_but_ready_event_requires_dual():
+def _workflow_text(name: str) -> str:
     from pathlib import Path
-    root = Path(__file__).resolve().parents[1]
-    ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    live = (root / ".github/workflows/live-usb-build.yml").read_text(encoding="utf-8")
-    assert "ready_for_review" in ci
-    assert "converted_to_draft" in ci
-    assert "fromJSON(github.event_name == 'pull_request' && github.event.pull_request.draft && '[1]' || '[1,2]')" in live
-    assert 'test ! -e build/reproducibility/run-2.sha256' in live
-    assert 'test -s build/reproducibility/run-2.sha256' in live
-    assert "cmp -s build/reproducibility/run-1.sha256 build/reproducibility/run-2.sha256" in live
-    assert "sh scripts/verify_uefi_boot.sh" in live
-    assert 'echo "clean_build_count=$selected"' in live
+    return (Path(__file__).resolve().parents[1] / ".github/workflows" / name).read_text(encoding="utf-8")
 
 
-def test_draft_skips_expensive_image_packaging_and_upload():
-    from pathlib import Path
-    live = (Path(__file__).resolve().parents[1] /
-            ".github/workflows/live-usb-build.yml").read_text(encoding="utf-8")
-    condition = "if: github.event_name != 'pull_request' || !github.event.pull_request.draft"
-    for name in ("Package and verify exact image artifact",
-                 "Upload verified testnet-only boot image (NOT A RELEASE)"):
-        job = live.split("      - name: " + name + "\n", 1)[1]
-        assert condition in job.split("\n      - name:", 1)[0]
-    assert "run: sh scripts/verify_uefi_boot.sh" in live
+def test_draft_and_ready_run_identical_full_gate_without_ready_rerun():
+    """Required success must always mean full dual-build verification of the SHA.
+
+    A draft/ready split saves no wall-clock (the two builds run in parallel) but
+    forces a second ~40 min run when a draft is marked Ready, and lets a draft
+    run report Required success without image verification.
+    """
+    import yaml
+
+    ci_text = _workflow_text("ci.yml")
+    live_text = _workflow_text("live-usb-build.yml")
+    assert "draft" not in ci_text.split("\njobs:\n", 1)[1]
+    assert "github.event.pull_request.draft" not in live_text
+    assert "DRAFT-SINGLE-BUILD" not in live_text
+
+    ci = yaml.safe_load(ci_text)
+    triggers = ci[True] if True in ci else ci["on"]  # PyYAML parses `on:` as True
+    assert triggers["pull_request"]["types"] == ["opened", "synchronize", "reopened"]
+    assert set(triggers) >= {"push", "pull_request", "workflow_dispatch", "schedule"}
+    assert triggers["push"]["branches"] == ["main"]
+
+    live = yaml.safe_load(live_text)
+    builds = live["jobs"]["clean-builds"]
+    assert builds["strategy"]["matrix"]["run"] == [1, 2]
+    assert builds["strategy"]["fail-fast"] is True
+    verify = live["jobs"]["verify-and-publish"]
+    assert verify["needs"] == "clean-builds"
+    gated = [
+        "Compare two independent SHA-256 manifests and actual image bytes",
+        "Boot generated USB image using UEFI OVMF/QEMU (TCG)",
+        "Package and verify exact image artifact",
+        "Upload verified testnet-only boot image (NOT A RELEASE)",
+    ]
+    steps = {step.get("name"): step for step in verify["steps"]}
+    for name in gated:
+        assert name in steps, name
+        assert "if" not in steps[name], name  # no event-dependent bypass
 
 
-def test_draft_defers_full_image_build_without_weakening_ready_gate():
-    from pathlib import Path
-    ci = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+def test_live_usb_concurrency_only_supersedes_pull_requests():
+    """A later merge must never cancel an earlier main image gate (false red main)."""
+    import yaml
+
+    for name in ("ci.yml", "live-usb-build.yml"):
+        conc = yaml.safe_load(_workflow_text(name))["concurrency"]
+        assert "github.run_id" in conc["group"], name
+        assert "github.ref" not in conc["group"], name
+        assert conc["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}", name
+
+
+def test_live_usb_selected_gate_is_scope_only_and_fail_closed():
+    ci = _workflow_text("ci.yml")
     job = ci.split("\n  live_usb:\n", 1)[1].split("\n  btc_core:\n", 1)[0]
     required = ci.split("\n  required:\n", 1)[1]
-    ready_only = "(github.event_name != 'pull_request' || !github.event.pull_request.draft)"
-    assert ready_only in job
-    assert "needs.tests.result == 'success'" in job
-    assert "needs.changes.outputs.live_usb == 'true'" in job
-    assert "LIVE_USB_REQUIRED: ${{ needs.changes.outputs.live_usb == 'true' && " + ready_only + " }}" in required
-    assert "LIVE_USB: ${{ needs.live_usb.result }}" in required
-    # Draft: skipped full build is expected. Ready: a skipped build is fatal.
-    draft = required_env(CODE="true", TESTS="success", REPRODUCIBLE_BUILD="success",
-                         QR_TRANSPORT="success", LIVE_USB_REQUIRED="false", LIVE_USB="skipped")
-    assert ci_checks.gate_errors(draft) == []
-    ready = {**draft, "LIVE_USB_REQUIRED": "true"}
-    assert any("LIVE_USB" in e for e in ci_checks.gate_errors(ready))
-    ready["LIVE_USB"] = "success"
-    assert ci_checks.gate_errors(ready) == []
+    assert "if: needs.changes.outputs.live_usb == 'true' && needs.tests.result == 'success'\n" in job
+    assert "LIVE_USB_REQUIRED: ${{ needs.changes.outputs.live_usb }}" in required
+    base = required_env(CODE="true", TESTS="success", REPRODUCIBLE_BUILD="success",
+                        QR_TRANSPORT="success", LIVE_USB_REQUIRED="true")
+    for bad in ("skipped", "cancelled", "failure", ""):
+        assert any("LIVE_USB" in e for e in ci_checks.gate_errors({**base, "LIVE_USB": bad})), bad
+    assert ci_checks.gate_errors({**base, "LIVE_USB": "success"}) == []
+    # Unselected image work must be skipped, never silently run-and-ignored.
+    unselected = {**base, "LIVE_USB_REQUIRED": "false", "LIVE_USB": "success"}
+    assert any("LIVE_USB" in e for e in ci_checks.gate_errors(unselected))
+
+
+@pytest.mark.parametrize("path", [
+    ".github/workflows/live-usb-build.yml",
+    ".github/workflows/unknown.yml",
+    "scripts/unrecognized.sh",
+    "buildroot-external/board/usb-wallet/linux.config",
+])
+def test_workflow_and_unknown_changes_cannot_skip_image_gate(monkeypatch, path):
+    def fake_check_output(cmd, **_kwargs):
+        if cmd[:2] == ["git", "diff"]:
+            return (path + "\0").encode()
+        raise subprocess.CalledProcessError(1, cmd)  # git show fails => fail closed
+
+    monkeypatch.setattr(ci_checks.subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(ci_checks.subprocess, "check_output", fake_check_output)
+    _, workloads = ci_checks.select_scopes("pull_request", "a" * 40)
+    assert workloads.live_usb
+
+
+@pytest.mark.parametrize("event", ["workflow_dispatch", "repository_dispatch", "merge_group"])
+def test_manual_and_unknown_events_select_full_image_gate(event):
+    _, workloads = ci_checks.select_scopes(event)
+    assert workloads.live_usb

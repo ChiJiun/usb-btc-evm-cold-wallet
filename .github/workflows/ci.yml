@@ -3,8 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+  # Default PR activity only. Draft and Ready run the identical gate, so
+  # marking a draft Ready must not repeat a ~40 min image build on the same SHA.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
   # Scheduled workflows run from the default branch even when no files change.
   schedule:
@@ -345,12 +347,11 @@ jobs:
       smoke_only: true
 
   live_usb:
-    # Do not spend hours building an image after fast Python validation fails.
-    # Draft PRs run fast checks and reusable workflow smoke, but defer full
-    # image builds until Ready. Ready/main/manual retain the complete gate.
-    # A failed/skipped prerequisite on Ready still fails CI / Required.
+    # Do not spend ~75 runner-minutes building images after fast Python
+    # validation fails. Draft, Ready, main and manual runs use the same full
+    # dual clean-build gate; a failed/skipped prerequisite fails CI / Required.
     needs: [changes, tests]
-    if: needs.changes.outputs.live_usb == 'true' && needs.tests.result == 'success' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    if: needs.changes.outputs.live_usb == 'true' && needs.tests.result == 'success'
     uses: ./.github/workflows/live-usb-build.yml
 
   btc_core:
@@ -519,7 +520,7 @@ jobs:
           QR_REQUIRED: ${{ needs.changes.outputs.qr }}
           NATIVE_REQUIRED: ${{ needs.changes.outputs.native_qr }}
           WINDOWS_REQUIRED: ${{ needs.changes.outputs.windows }}
-          LIVE_USB_REQUIRED: ${{ needs.changes.outputs.live_usb == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+          LIVE_USB_REQUIRED: ${{ needs.changes.outputs.live_usb }}
           LIVE_USB_SMOKE_REQUIRED: ${{ needs.changes.outputs.live_usb_smoke }}
           LIVE_USB_SMOKE: ${{ needs.live_usb_smoke.result }}
           BTC_CORE_REQUIRED: ${{ needs.changes.outputs.btc_core }}

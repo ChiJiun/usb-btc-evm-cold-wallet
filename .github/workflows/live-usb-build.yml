@@ -13,8 +13,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: live-usb-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.smoke_only && 'smoke' || 'full' }}
-  cancel-in-progress: true
+  # Supersede only obsolete pull-request runs. main/manual validations use a
+  # unique run id so a later merge can never cancel an earlier main gate and
+  # turn CI / Required into a false (fail-closed) failure.
+  group: live-usb-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}-${{ inputs.smoke_only && 'smoke' || 'full' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   contract-smoke:
@@ -32,13 +35,17 @@ jobs:
     # Both complete Buildroot builds run on separate clean GitHub-hosted runners.
     # Independent source/build outputs are NOT cached. Matrix builds execute
     # concurrently, reducing wall-clock latency without reducing coverage.
+    # Draft and Ready PRs run the SAME dual build: in parallel it costs no
+    # extra wall-clock, and Required success always means full verification
+    # of that exact SHA (no re-run when a draft is marked Ready).
+    # Either build failing already fails the gate, so cancel its twin early.
     if: inputs.smoke_only != true
     runs-on: ubuntu-24.04
-    timeout-minutes: 240
+    timeout-minutes: 120
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
-        run: ${{ fromJSON(github.event_name == 'pull_request' && github.event.pull_request.draft && '[1]' || '[1,2]') }}
+        run: [1, 2]
     env:
       DEBIAN_FRONTEND: noninteractive
       BR2_JLEVEL: "2"
@@ -111,7 +118,7 @@ jobs:
           retention-days: 3
 
       - name: Stage exact image and kernel for boot verification
-        if: matrix.run == 2 || (github.event_name == 'pull_request' && github.event.pull_request.draft && matrix.run == 1)
+        if: matrix.run == 2
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: UNVERIFIED-live-usb-selected-clean-image
@@ -127,7 +134,7 @@ jobs:
     if: inputs.smoke_only != true
     needs: clean-builds
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -163,19 +170,13 @@ jobs:
         run: |
           set -euo pipefail
           test -s build/reproducibility/run-1.sha256
-          selected=2
-          if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ github.event.pull_request.draft }}" = "true" ]; then
-            test ! -e build/reproducibility/run-2.sha256
-            selected=1
-          else
-            test -s build/reproducibility/run-2.sha256
-            if ! cmp -s build/reproducibility/run-1.sha256 build/reproducibility/run-2.sha256; then
-              echo "::error::Independent clean builds produced different image/kernel SHA-256"
-              diff -u build/reproducibility/run-1.sha256 build/reproducibility/run-2.sha256 || true
-              exit 1
-            fi
+          test -s build/reproducibility/run-2.sha256
+          if ! cmp -s build/reproducibility/run-1.sha256 build/reproducibility/run-2.sha256; then
+            echo "::error::Independent clean builds produced different image/kernel SHA-256"
+            diff -u build/reproducibility/run-1.sha256 build/reproducibility/run-2.sha256 || true
+            exit 1
           fi
-          (cd build/output/images && sha256sum -c "../../reproducibility/run-${selected}.sha256")
+          (cd build/output/images && sha256sum -c ../../reproducibility/run-2.sha256)
 
       - name: Boot generated USB image using UEFI OVMF/QEMU (TCG)
         run: sh scripts/verify_uefi_boot.sh
@@ -183,35 +184,28 @@ jobs:
       # Publish only after both clean builds match AND the generated image
       # actually booted through OVMF with the startup security audit passing.
       # No artifact is created on failed/cancelled/incomplete verification.
-      # Raw image is the audited output; test-only .xz uses a reproducible
-      # moderate compression preset to avoid -9e's excessive CPU cost.
       - name: Package and verify exact image artifact
-        # Draft feedback only needs verified image bytes and QEMU; avoid the
-        # expensive raw-image upload and xz packaging until merge-ready.
-        if: github.event_name != 'pull_request' || !github.event.pull_request.draft
         env:
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           ARTIFACT_DIR: build/verified-artifact
-          XZ_PARAMS: "--threads=1 --check=crc64 -6"
+          XZ_PARAMS: "--threads=1 --check=crc64 -9e"
         run: |
           set -eu
           image="build/output/images/usb-cold-wallet.img"
           evidence="build/reproducibility"
           mkdir -p "$ARTIFACT_DIR"
 
-          selected=2
-          if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ github.event.pull_request.draft }}" = "true" ]; then selected=1; fi
+          # Bind the published bytes to the second clean build that was boot-audited.
           (
             cd build/output/images
-            sha256sum -c "../../reproducibility/run-${selected}.sha256"
+            sha256sum -c ../../reproducibility/run-2.sha256
             sha256sum usb-cold-wallet.img > usb-cold-wallet.img.sha256
             sha256sum -c usb-cold-wallet.img.sha256
           )
 
           cp "$image" "$ARTIFACT_DIR/usb-cold-wallet.img"
           cp build/output/images/usb-cold-wallet.img.sha256 "$ARTIFACT_DIR/"
-          cp "$evidence/run-1.sha256" "$ARTIFACT_DIR/"
-          if [ "$selected" = 2 ]; then cp "$evidence/run-2.sha256" "$ARTIFACT_DIR/"; fi
+          cp "$evidence/run-1.sha256" "$evidence/run-2.sha256" "$ARTIFACT_DIR/"
 
           # xz does not embed timestamps. Single-threaded fixed parameters make
           # the compressed representation independently reproducible.
@@ -229,8 +223,8 @@ jobs:
           test "$actual" = "$EXPECTED_HEAD_SHA"
           {
             echo "classification=TESTNET ONLY / NOT A RELEASE"
-            echo "clean_build_count=$selected"
-            echo "reproducibility_verified=$([ "$selected" = 2 ] && echo true || echo false)"
+            echo "clean_build_count=2"
+            echo "reproducibility_verified=true"
             echo "repository=${{ github.repository }}"
             echo "commit_sha=$actual"
             echo "event_head_sha=$EXPECTED_HEAD_SHA"
@@ -249,16 +243,15 @@ jobs:
           } > "$ARTIFACT_DIR/ARTIFACT-MANIFEST.txt"
 
           # Manifest and evidence must all describe the exact same raw image.
-          expected="$(awk '$2 == "usb-cold-wallet.img" {print $1}' "$evidence/run-${selected}.sha256")"
+          expected="$(awk '$2 == "usb-cold-wallet.img" {print $1}' "$evidence/run-2.sha256")"
           test -n "$expected"
           test "$expected" = "$(awk '{print $1}' "$ARTIFACT_DIR/usb-cold-wallet.img.sha256")"
           test "$expected" = "$(sed -n 's/^image_sha256=//p' "$ARTIFACT_DIR/ARTIFACT-MANIFEST.txt")"
 
       - name: Upload verified testnet-only boot image (NOT A RELEASE)
-        if: github.event_name != 'pull_request' || !github.event.pull_request.draft
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'DRAFT-SINGLE-BUILD-NOT-REPRODUCIBILITY-VERIFIED' || 'testnet-only-NOT-A-RELEASE-usb-cold-wallet' }}
+          name: testnet-only-NOT-A-RELEASE-usb-cold-wallet
           path: build/verified-artifact/
           if-no-files-found: error
           compression-level: 0

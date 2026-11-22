@@ -20,7 +20,7 @@
 | Python／Backend | Import 循環、漏裝依賴、Python 3.12／3.13 差異、公開 API 改名、錯誤被吞、序列化變更；執行相關 pytest |
 | 測試 | 斷言依賴 YAML 註解／空白／順序、Fixture 污染、Mock 掩蓋真實路徑、只修測試不修產品；測正反案例 |
 | CLI／Shell／Build | Shebang、未引用路徑、Exit Code、pipefail、工作目錄、缺少系統工具；語法檢查與失敗注入 |
-| CI／GitHub Actions | YAML 表達式、`needs`、skipped 被當 PASS、Draft→Ready、舊 SHA、重複 Workflow、未鎖 Action SHA、Cache 污染；先跑 `python -m pytest -q tests/test_ci_checks.py` |
+| CI／GitHub Actions | YAML 表達式、`needs`、skipped 被當 PASS、依 Draft 狀態分流、concurrency 誤取消 main、舊 SHA、重複 Workflow、未鎖 Action SHA、Cache 污染；先跑 `python -m pytest -q tests/test_ci_checks.py`，整批修改一次 Push（逐檔 Push 會讓每次 Run 被取消） |
 | Buildroot／Live USB | `CONFIG_NET=n`、離線模組 Allowlist、Runtime imports、Framebuffer／Input、GPT Read-only Bit、Mount Policy；核對 raw image、QEMU/OVMF，GUI 要實際畫面證據 |
 | Vault／Signer／Policy | 私鑰或敏感 Log、簽章與畫面不一致、錯鏈／帳戶／digest、Replay Ledger 回滾、普通 USB 假冒可信 Anchor；缺 Anchor 時 fail closed |
 | BTC／EVM／跨開機 | PSBT、整數精度、Fee／Nonce／Chain ID、Request／Response 綁定、USB 拔除／替換、RPC 故障；公開向量、獨立 Oracle、負向測試 |
