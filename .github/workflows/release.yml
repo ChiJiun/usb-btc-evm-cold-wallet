@@ -220,6 +220,8 @@ jobs:
           test -n "${ImageVersion:-}"
           . infra/buildroot.env
           export BUILDROOT_VERSION BUILDROOT_SHA256 NODE_VERSION XZ_VERSION
+          export EFI_PARTITION_SHA256="$(sha256sum build/output/images/efi-part.vfat | awk '{print $1}')"
+          export KERNEL_SHA256="$(sha256sum build/output/images/bzImage | awk '{print $1}')"
           dpkg-query -W -f='${Package}=${Version}\n' \
             build-essential make gcc g++ patch rsync perl tar cpio file bc gawk gzip \
             bzip2 xz-utils python3 python3-venv python3-pip curl wget gnupg \
@@ -249,6 +251,9 @@ jobs:
               "runner_image_version": os.environ.get("ImageVersion", "unknown"),
               "compression": "xz -6 --threads=1 --check=crc64 --no-sparse",
               "raw_image_sha256": os.environ["RAW_IMAGE_SHA256"],
+              "efi_partition_sha256": os.environ["EFI_PARTITION_SHA256"],
+              "kernel_sha256": os.environ["KERNEL_SHA256"],
+              "sbom_scope": "buildroot-target-rootfs",
               "reproducibility_runs": 2,
               "workflow_run_id": os.environ["GITHUB_RUN_ID"],
               "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
