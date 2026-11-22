@@ -537,6 +537,8 @@ def test_workload_classifier_tracks_exact_offline_installer_allowlist():
     ("src/usb_cold_wallet/btc.py", ("live_usb", "btc_core", "btc_fuzz", "qr")),
     ("src/usb_cold_wallet/gui.py", ("live_usb", "windows", "vfat")),
     ("src/usb_cold_wallet/cross_boot.py", ("live_usb", "windows")),
+    ("scripts/ci_checks.py", ("qr", "native_qr", "windows", "snap", "btc_core", "btc_fuzz", "vfat")),
+    ("scripts/ci_workloads.py", ("qr", "native_qr", "windows", "snap", "btc_core", "btc_fuzz", "vfat")),
     ("scripts/install_target_python.py", ("live_usb",)),
     ("buildroot-external/board/usb-wallet/linux.config", ("live_usb",)),
     ("infra/wheelhouse.sha256", ("live_usb",)),
@@ -567,6 +569,8 @@ def test_workload_positive_scope(path, expected):
 
 @pytest.mark.parametrize("path", [
     "docs/CI_SECURITY.md",
+    "scripts/ci_checks.py",
+    "scripts/ci_workloads.py",
     "README.md",
     "README.en.md",
     "tests/test_boot_media.py",
