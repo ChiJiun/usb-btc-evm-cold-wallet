@@ -326,7 +326,7 @@ def verify_repository_release_controls(*, run: Run = _gh) -> None:
         missing.append(
             "active main ruleset with no excludes/bypass actors, >=1 approval, "
             "dismiss stale approvals, resolve review threads, last-push approval, "
-            "strict GitHub-Actions-bound CI / Required, deletion protection, 
+            "strict GitHub-Actions-bound CI / Required, deletion protection, "
             "and non-fast-forward protection"
         )
     if not tag_ok:
