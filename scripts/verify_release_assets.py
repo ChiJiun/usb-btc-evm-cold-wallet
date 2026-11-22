@@ -240,6 +240,108 @@ def verify_source(
     )
 
 
+def _active_ruleset_details(run: Run) -> list[dict]:
+    try:
+        summaries = json.loads(run(["api", f"repos/{REPOSITORY}/rulesets"]))
+    except (ValueError, TypeError) as exc:
+        raise ReleaseVerificationError("Invalid repository ruleset list") from exc
+    if not isinstance(summaries, list):
+        raise ReleaseVerificationError("Repository ruleset list must be an array")
+
+    details: list[dict] = []
+    for summary in summaries:
+        if not isinstance(summary, dict) or summary.get("enforcement") != "active":
+            continue
+        ruleset_id = summary.get("id")
+        if not isinstance(ruleset_id, int):
+            raise ReleaseVerificationError("Active repository ruleset has no numeric id")
+        detail = _json(run, ["api", f"repos/{REPOSITORY}/rulesets/{ruleset_id}"])
+        if detail.get("enforcement") == "active":
+            details.append(detail)
+    return details
+
+
+def _ruleset_includes(detail: dict, ref_pattern: str) -> bool:
+    conditions = detail.get("conditions")
+    ref_name = conditions.get("ref_name") if isinstance(conditions, dict) else None
+    includes = ref_name.get("include") if isinstance(ref_name, dict) else None
+    excludes = ref_name.get("exclude") if isinstance(ref_name, dict) else None
+    if not isinstance(includes, list) or ref_pattern not in includes:
+        return False
+    return not isinstance(excludes, list) or ref_pattern not in excludes
+
+
+def verify_repository_release_controls(*, run: Run = _gh) -> None:
+    """Require active main/release-tag rulesets before privileged release work."""
+    details = _active_ruleset_details(run)
+
+    main_ok = False
+    tag_ok = False
+    for detail in details:
+        rules = detail.get("rules")
+        if not isinstance(rules, list):
+            continue
+        by_type = {
+            rule.get("type"): rule
+            for rule in rules
+            if isinstance(rule, dict) and isinstance(rule.get("type"), str)
+        }
+
+        if (
+            detail.get("target") == "branch"
+            and _ruleset_includes(detail, "refs/heads/main")
+        ):
+            pull_request = by_type.get("pull_request")
+            required_checks = by_type.get("required_status_checks")
+            pr_params = (
+                pull_request.get("parameters")
+                if isinstance(pull_request, dict)
+                else None
+            )
+            check_params = (
+                required_checks.get("parameters")
+                if isinstance(required_checks, dict)
+                else None
+            )
+            checks = (
+                check_params.get("required_status_checks")
+                if isinstance(check_params, dict)
+                else None
+            )
+            check_names = {
+                item.get("context")
+                for item in checks
+                if isinstance(item, dict) and isinstance(item.get("context"), str)
+            } if isinstance(checks, list) else set()
+            main_ok = (
+                isinstance(pr_params, dict)
+                and isinstance(pr_params.get("required_approving_review_count"), int)
+                and pr_params["required_approving_review_count"] >= 1
+                and pr_params.get("require_last_push_approval") is True
+                and "CI / Required" in check_names
+            ) or main_ok
+
+        if (
+            detail.get("target") == "tag"
+            and _ruleset_includes(detail, "refs/tags/v*")
+        ):
+            tag_ok = {"creation", "update", "deletion"}.issubset(by_type) or tag_ok
+
+    missing = []
+    if not main_ok:
+        missing.append(
+            "active main ruleset with >=1 approval, last-push approval, and CI / Required"
+        )
+    if not tag_ok:
+        missing.append(
+            "active refs/tags/v* ruleset restricting creation, update, and deletion"
+        )
+    if missing:
+        raise ReleaseVerificationError(
+            "Repository release controls are not enforced: " + "; ".join(missing)
+        )
+
+
 def _attest_args(image: Path, workflow_sha: str) -> list[str]:
     if not SHA_RE.fullmatch(workflow_sha):
         raise ReleaseVerificationError("Trusted workflow SHA must be a full 40-character SHA")
