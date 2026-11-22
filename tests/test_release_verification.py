@@ -783,9 +783,6 @@ def test_release_workflows_pin_actions_and_isolate_privileges():
     assert "--clobber" not in finalizer
     assert 'test "$current_main" = "$GITHUB_SHA"' in finalizer
     assert "gh release create" in finalizer
-    assert 'gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq .enabled' in publish
-    assert '[[ "$immutable" != "true" ]]' in publish
-    assert publish.index("immutable-releases") < publish.index("gh release create")
 
     for workflow in (candidate, finalizer):
         use_lines = [line.strip() for line in workflow.splitlines() if "uses:" in line]
@@ -796,6 +793,10 @@ def test_release_workflows_pin_actions_and_isolate_privileges():
     attest = finalizer.split("\n  attest:\n", 1)[1].split("\n  verify:\n", 1)[0]
     verify = finalizer.split("\n  verify:\n", 1)[1].split("\n  gate:\n", 1)[0]
     publish = finalizer.split("\n  publish:\n", 1)[1]
+
+    assert 'gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq .enabled' in publish
+    assert '[[ "$immutable" != "true" ]]' in publish
+    assert publish.index("immutable-releases") < publish.index("gh release create")
 
     assert "id-token: write" in attest
     assert "attestations: write" in attest
