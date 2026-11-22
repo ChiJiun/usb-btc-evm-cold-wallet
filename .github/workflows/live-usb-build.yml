@@ -1,27 +1,35 @@
 name: Live USB image verification
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/live-usb-build.yml"
-      - "buildroot-external/**"
-      - "infra/**"
-      - "scripts/**"
-      - "src/**"
-      - "tests/**"
-      - "Makefile"
-      - "pyproject.toml"
+  workflow_call:
+    inputs:
+      smoke_only:
+        type: boolean
+        required: false
+        default: false
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: live-usb-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: live-usb-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.smoke_only && 'smoke' || 'full' }}
   cancel-in-progress: true
 
 jobs:
+  contract-smoke:
+    if: inputs.smoke_only == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Verify real reusable workflow invocation
+        run: |
+          set -euo pipefail
+          test "${{ inputs.smoke_only }}" = "true"
+          echo "Live USB reusable workflow_call contract executed"
+
   build-and-reproduce:
+    if: inputs.smoke_only != true
     runs-on: ubuntu-24.04
     timeout-minutes: 330
     env:

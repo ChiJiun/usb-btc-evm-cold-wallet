@@ -1,13 +1,7 @@
 name: Bitcoin PSBT coverage-guided fuzz
 
 on:
-  pull_request:
-    paths:
-      - 'src/usb_cold_wallet/btc.py'
-      - 'tools/fuzz_btc_psbt.py'
-      - 'tests/test_btc_*'
-      - 'tests/fixtures/btc_psbt_crashes/**'
-      - '.github/workflows/btc-psbt-fuzz.yml'
+  workflow_call:
   workflow_dispatch:
   schedule:
     - cron: "40 3 * * 0"
