@@ -260,6 +260,14 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                     if data or crossboot is None:
                         raise ValueError("Cross-boot resume requires TX_TRANSFER and accepts no overrides")
                     result = crossboot.resume_response(session, btc_session)
+                elif self.path == "/api/crossboot/reconcile":
+                    if data or crossboot is None:
+                        raise ValueError("Broadcast reconciliation accepts no transaction override")
+                    reservation = crossboot.broadcast_reservation(session, btc_session)
+                    observed = lookup_public_transaction(
+                        session, btc_session, reservation["asset"], reservation["txid"]
+                    )
+                    result = crossboot.reconcile_broadcast(session, btc_session, observed)
                 elif self.path == "/api/lookup":
                     if set(data) != {"asset", "txid"}:
                         raise ValueError("Only public asset and transaction hash allowed")
