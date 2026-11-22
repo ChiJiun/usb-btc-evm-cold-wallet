@@ -1,5 +1,7 @@
 # Agent development rules — reuse before implementation
 
+**每次修改任何檔案前，先讀 [`docs/CHANGE_PRE_FLIGHT_CHECKLIST.md`](docs/CHANGE_PRE_FLIGHT_CHECKLIST.md)，依變更類型執行最小預檢。** CI 專屬補充規則仍見下方章節。
+
 Read `docs/OPEN_SOURCE_REFERENCES.md` and `docs/USB_MVP_ACCELERATION_PLAN.md` before starting an issue that overlaps an existing wallet, QR, GUI, or Live USB feature.
 
 ## Required reuse-first workflow
