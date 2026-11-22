@@ -146,6 +146,7 @@ def required_env(**overrides):
     for scope in ("QR_REQUIRED", "NATIVE_REQUIRED", "WINDOWS_REQUIRED"):
         env.setdefault(scope, "true" if env.get("CODE") == "true" else "false")
     for scope, result in (
+        ("LIVE_USB_SMOKE_REQUIRED", "LIVE_USB_SMOKE"),
         ("LIVE_USB_REQUIRED", "LIVE_USB"),
         ("BTC_CORE_REQUIRED", "BTC_CORE"),
         ("BTC_FUZZ_REQUIRED", "BTC_FUZZ"),
@@ -537,8 +538,8 @@ def test_workload_classifier_tracks_exact_offline_installer_allowlist():
     ("src/usb_cold_wallet/btc.py", ("live_usb", "btc_core", "btc_fuzz", "qr")),
     ("src/usb_cold_wallet/gui.py", ("live_usb", "windows", "vfat")),
     ("src/usb_cold_wallet/cross_boot.py", ("live_usb", "windows")),
-    ("scripts/ci_checks.py", ("qr", "native_qr", "windows", "snap", "btc_core", "btc_fuzz", "vfat")),
-    ("scripts/ci_workloads.py", ("qr", "native_qr", "windows", "snap", "btc_core", "btc_fuzz", "vfat")),
+    ("scripts/ci_checks.py", ("live_usb_smoke", "qr", "native_qr", "windows", "snap", "btc_core", "btc_fuzz", "vfat")),
+    ("scripts/ci_workloads.py", ("live_usb_smoke", "qr", "native_qr", "windows", "snap", "btc_core", "btc_fuzz", "vfat")),
     ("scripts/install_target_python.py", ("live_usb",)),
     ("buildroot-external/board/usb-wallet/linux.config", ("live_usb",)),
     ("infra/wheelhouse.sha256", ("live_usb",)),
@@ -553,8 +554,8 @@ def test_workload_classifier_tracks_exact_offline_installer_allowlist():
     ("scripts/verify_usb_vfat_atomic.py", ("vfat",)),
     ("tools/generate_core_bip84_psbt_e2e.py", ("btc_core",)),
     ("tools/fuzz_btc_psbt.py", ("btc_fuzz",)),
-    (".github/workflows/ci.yml", ("live_usb", "qr", "windows")),
-    (".github/workflows/live-usb-build.yml", ("live_usb",)),
+    (".github/workflows/ci.yml", ("live_usb_smoke", "qr", "windows")),
+    (".github/workflows/live-usb-build.yml", ("live_usb_smoke",)),
     ("src/usb_cold_wallet/new_secret_module.py", ("live_usb", "windows")),
     ("scripts/unrecognized.sh", ("live_usb", "windows")),
     ("review_only/parser.py", ("qr", "native_qr", "windows", "snap")),
@@ -590,6 +591,24 @@ def test_workload_positive_scope(path, expected):
 def test_unrelated_change_does_not_rebuild_offline_image(path):
     from scripts.ci_workloads import classify_workloads
     assert not classify_workloads([path]).live_usb
+
+
+def test_ci_wiring_uses_real_live_usb_smoke_without_expensive_build():
+    from pathlib import Path
+    from scripts.ci_workloads import classify_workloads
+    root = Path(__file__).resolve().parents[1]
+    ci = (root / ".github/workflows/ci.yml").read_text()
+    live = (root / ".github/workflows/live-usb-build.yml").read_text()
+    for path in (".github/workflows/ci.yml", "scripts/ci_checks.py",
+                 "scripts/ci_workloads.py"):
+        workloads = classify_workloads([path])
+        assert workloads.live_usb_smoke
+        assert not workloads.live_usb
+    assert "  live_usb_smoke:" in ci
+    assert "      smoke_only: true" in ci
+    assert "LIVE_USB_SMOKE: ${{ needs.live_usb_smoke.result }}" in ci
+    assert "  contract-smoke:" in live
+    assert "    if: inputs.smoke_only != true" in live
 
 
 def test_multiple_paths_union_and_unknown_fail_closed():
