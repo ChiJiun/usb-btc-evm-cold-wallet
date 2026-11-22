@@ -51,22 +51,32 @@ def _write_disk(
     boot_uuid=media.BOOT_UUID,
     vault_uuid=media.VAULT_UUID,
     transfer_uuid=media.TRANSFER_UUID,
+    boot_type=media.EFI_TYPE,
+    vault_type=None,
+    transfer_type=media.DATA_TYPE,
+    boot_attrs=media.READ_ONLY,
+    vault_attrs=0,
     transfer_attrs=0,
+    boot_sectors=media.BOOT_SECTORS,
+    vault_sectors=media.VAULT_SECTORS,
+    transfer_sectors=media.TRANSFER_SECTORS,
     include_transfer=True,
     extra_partition=False,
     gap_entry=False,
 ) -> None:
     entries = bytearray(media.GPT_ENTRY_COUNT * media.GPT_ENTRY_SIZE)
     start = 2048
+    effective_vault_type = (
+        vault_type
+        if vault_type is not None
+        else (media.LINUX_FS_TYPE if include_transfer else media.DATA_TYPE)
+    )
     specs = [
-        (media.EFI_TYPE, boot_uuid, media.READ_ONLY, media.BOOT_SECTORS),
-        (
-            media.LINUX_FS_TYPE if include_transfer else media.DATA_TYPE,
-            vault_uuid, 0, media.VAULT_SECTORS,
-        ),
+        (boot_type, boot_uuid, boot_attrs, boot_sectors),
+        (effective_vault_type, vault_uuid, vault_attrs, vault_sectors),
     ]
     if include_transfer:
-        specs.append((media.DATA_TYPE, transfer_uuid, transfer_attrs, media.TRANSFER_SECTORS))
+        specs.append((transfer_type, transfer_uuid, transfer_attrs, transfer_sectors))
     if extra_partition:
         specs.append((media.DATA_TYPE, uuid.uuid4(), 0, 128))
     for number, (kind, uid, attrs, sectors) in enumerate(specs):
@@ -118,7 +128,15 @@ def _create(
     boot_uuid=media.BOOT_UUID,
     vault_uuid=media.VAULT_UUID,
     transfer_uuid=media.TRANSFER_UUID,
+    boot_type=media.EFI_TYPE,
+    vault_type=None,
+    transfer_type=media.DATA_TYPE,
+    boot_attrs=media.READ_ONLY,
+    vault_attrs=0,
     transfer_attrs=0,
+    boot_sectors=media.BOOT_SECTORS,
+    vault_sectors=media.VAULT_SECTORS,
+    transfer_sectors=media.TRANSFER_SECTORS,
     boot_label="USBCOLD_EFI",
     vault_label="COLD_VAULT",
     transfer_label="TX_TRANSFER",
@@ -138,9 +156,9 @@ def _create(
     (location / "queue/logical_block_size").write_text("512\n")
 
     cursor = 2048
-    sectors_by_number = [media.BOOT_SECTORS, media.VAULT_SECTORS]
+    sectors_by_number = [boot_sectors, vault_sectors]
     if include_transfer:
-        sectors_by_number.append(media.TRANSFER_SECTORS)
+        sectors_by_number.append(transfer_sectors)
     for index, sectors in enumerate(sectors_by_number, 1):
         partition = location / f"{name}{index}"
         partition.mkdir()
@@ -157,7 +175,15 @@ def _create(
         boot_uuid=boot_uuid,
         vault_uuid=vault_uuid,
         transfer_uuid=transfer_uuid,
+        boot_type=boot_type,
+        vault_type=vault_type,
+        transfer_type=transfer_type,
+        boot_attrs=boot_attrs,
+        vault_attrs=vault_attrs,
         transfer_attrs=transfer_attrs,
+        boot_sectors=boot_sectors,
+        vault_sectors=vault_sectors,
+        transfer_sectors=transfer_sectors,
         include_transfer=include_transfer,
         extra_partition=extra_partition,
         gap_entry=gap_entry,
@@ -188,6 +214,36 @@ def test_single_verified_three_partition_usb(tmp_path):
         str(dev / "sda3"),
         "sda",
     )
+
+
+def test_primary_and_backup_gpt_preserve_exact_partition_security_fields(tmp_path):
+    sys_block, dev = tmp_path / "sys", tmp_path / "dev"
+    _create(sys_block, dev)
+    disk_id, parts = media.read_gpt(dev / "sda")
+    assert disk_id == media.DISK_UUID
+    assert parts == [
+        (
+            media.EFI_TYPE,
+            media.BOOT_UUID,
+            media.READ_ONLY,
+            media.BOOT_START_LBA,
+            media.VAULT_START_LBA - 1,
+        ),
+        (
+            media.LINUX_FS_TYPE,
+            media.VAULT_UUID,
+            0,
+            media.VAULT_START_LBA,
+            media.TRANSFER_START_LBA - 1,
+        ),
+        (
+            media.DATA_TYPE,
+            media.TRANSFER_UUID,
+            0,
+            media.TRANSFER_START_LBA,
+            media.TRANSFER_START_LBA + media.TRANSFER_SECTORS - 1,
+        ),
+    ]
 
 
 def test_legacy_two_partition_usb_remains_identifiable(tmp_path):
@@ -221,6 +277,15 @@ def test_duplicated_cloned_usb_is_denied(tmp_path):
         "wrong_vault_guid",
         "wrong_transfer_guid",
         "wrong_disk_guid",
+        "wrong_boot_type",
+        "wrong_vault_type",
+        "wrong_transfer_type",
+        "missing_boot_read_only",
+        "extra_boot_attribute",
+        "vault_attribute",
+        "wrong_boot_size",
+        "wrong_vault_size",
+        "wrong_transfer_size",
         "wrong_boot_label",
         "wrong_vault_label",
         "wrong_transfer_label",
@@ -249,6 +314,24 @@ def test_corruption_and_unexpected_media_fail_closed(tmp_path, mutation):
         kwargs["transfer_uuid"] = uuid.uuid4()
     elif mutation == "wrong_disk_guid":
         kwargs["disk_uuid"] = uuid.uuid4()
+    elif mutation == "wrong_boot_type":
+        kwargs["boot_type"] = uuid.uuid4()
+    elif mutation == "wrong_vault_type":
+        kwargs["vault_type"] = uuid.uuid4()
+    elif mutation == "wrong_transfer_type":
+        kwargs["transfer_type"] = uuid.uuid4()
+    elif mutation == "missing_boot_read_only":
+        kwargs["boot_attrs"] = 0
+    elif mutation == "extra_boot_attribute":
+        kwargs["boot_attrs"] = media.READ_ONLY | (1 << 2)
+    elif mutation == "vault_attribute":
+        kwargs["vault_attrs"] = 1 << 62
+    elif mutation == "wrong_boot_size":
+        kwargs["boot_sectors"] = media.BOOT_SECTORS - 1
+    elif mutation == "wrong_vault_size":
+        kwargs["vault_sectors"] = media.VAULT_SECTORS - 1
+    elif mutation == "wrong_transfer_size":
+        kwargs["transfer_sectors"] = media.TRANSFER_SECTORS - 1
     elif mutation == "transfer_hidden":
         kwargs["transfer_attrs"] = 1 << 62
     elif mutation == "transfer_no_drive_letter":
