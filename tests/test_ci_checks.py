@@ -542,6 +542,7 @@ def test_workload_classifier_tracks_exact_offline_installer_allowlist():
     ("infra/wheelhouse.sha256", ("live_usb",)),
     ("pyproject.toml", ("live_usb", "windows", "qr", "native_qr")),
     ("src/usb_cold_wallet/companion_web.py", ("windows",)),
+    ("src/usb_cold_wallet/companion_crossboot.py", ("windows",)),
     ("scripts/windows_companion.py", ("windows",)),
     ("src/usb_cold_wallet/companion_static/companion.js", ("windows",)),
     ("qr-transport/src/typed_registry.mjs", ("qr",)),
@@ -578,6 +579,7 @@ def test_workload_positive_scope(path, expected):
     "qr-metamask/src/adapter.mjs",
     "metamask-snap/src/index.ts",
     "src/usb_cold_wallet/companion_core.py",
+    "src/usb_cold_wallet/companion_crossboot.py",
     "requirements/ci.lock",
     "review_only/parser.py",
 ])
