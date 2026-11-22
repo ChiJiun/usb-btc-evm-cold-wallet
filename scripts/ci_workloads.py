@@ -103,7 +103,7 @@ def classify_workloads(paths: list[str]) -> Workloads:
             elif relative in OFFLINE_MODULES:
                 add("live_usb")
                 if relative in {
-                    "btc.py", "evm.py", "keys.py", "exchange.py",
+                    "__init__.py", "btc.py", "evm.py", "keys.py", "exchange.py",
                     "cross_boot.py", "transaction_state.py", "policy.py",
                     "qr_cli.py", "qr_session.py", "qr_workflow.py",
                     "gui_qr_bridge.py", "gui.py", "review.py",
@@ -113,7 +113,8 @@ def classify_workloads(paths: list[str]) -> Workloads:
                 if relative in {"btc.py", "keys.py", "cross_boot.py"}:
                     add("btc_core", "btc_fuzz")
                 if relative in {"vault.py", "gui.py", "exchange.py",
-                                "cross_boot.py", "transaction_state.py"}:
+                                "cross_boot.py", "transaction_state.py",
+                                "keys.py", "policy.py"}:
                     add("vfat")
             else:
                 # New, moved or renamed module: the target installer rejects it.
