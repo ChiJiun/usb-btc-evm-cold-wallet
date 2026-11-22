@@ -346,10 +346,11 @@ jobs:
 
   live_usb:
     # Do not spend hours building an image after fast Python validation fails.
-    # Cold-image changes always select the Python tests; a failed/skipped test
-    # leaves this job skipped, which CI / Required rejects (fail closed).
+    # Draft PRs run fast checks and reusable workflow smoke, but defer full
+    # image builds until Ready. Ready/main/manual retain the complete gate.
+    # A failed/skipped prerequisite on Ready still fails CI / Required.
     needs: [changes, tests]
-    if: needs.changes.outputs.live_usb == 'true' && needs.tests.result == 'success'
+    if: needs.changes.outputs.live_usb == 'true' && needs.tests.result == 'success' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     uses: ./.github/workflows/live-usb-build.yml
 
   btc_core:
@@ -518,7 +519,7 @@ jobs:
           QR_REQUIRED: ${{ needs.changes.outputs.qr }}
           NATIVE_REQUIRED: ${{ needs.changes.outputs.native_qr }}
           WINDOWS_REQUIRED: ${{ needs.changes.outputs.windows }}
-          LIVE_USB_REQUIRED: ${{ needs.changes.outputs.live_usb }}
+          LIVE_USB_REQUIRED: ${{ needs.changes.outputs.live_usb == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
           LIVE_USB_SMOKE_REQUIRED: ${{ needs.changes.outputs.live_usb_smoke }}
           LIVE_USB_SMOKE: ${{ needs.live_usb_smoke.result }}
           BTC_CORE_REQUIRED: ${{ needs.changes.outputs.btc_core }}
