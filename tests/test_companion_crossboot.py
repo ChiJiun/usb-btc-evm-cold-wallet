@@ -179,8 +179,9 @@ def test_sepolia_response_survives_restart_and_reverifies_before_broadcast(tmp_p
     request_id = prepared["pending"]["request_id"]
     manager.export_current(online, btc)
     request = load_request(manager, request_id)
+    original_tx = dict(online.pending["tx"])
     response = package_v2_response(
-        request, signed_evm_payload(online.pending["tx"]),
+        request, signed_evm_payload(original_tx),
         expected_account=ADDRESS, allow_no_trusted_clock=True,
     )
     write_response(manager, request_id, response)
@@ -193,6 +194,14 @@ def test_sepolia_response_survives_restart_and_reverifies_before_broadcast(tmp_p
     assert status["stage"] == "verified"
     assert status["state"] == "IMPORTED_VERIFIED"
     assert restored.pending["request_id"] == request_id
+    assert restored.pending["tx"] == original_tx
+    assert restored.pending["tx_hash"] == response["payload"]["transaction_hash"]
+    assert restored.pending["tx"]["chainId"] == 11155111
+    assert restored.pending["tx"]["nonce"] == original_tx["nonce"]
+    assert restored.pending["tx"]["gas"] == original_tx["gas"]
+    assert restored.pending["tx"]["to"] == original_tx["to"]
+    assert restored.pending["tx"]["value"] == original_tx["value"]
+    assert restored.pending["tx"].get("data", "0x") in ("", "0x")
     assert rpc.sent == []
     verify_v2_response(
         request, response, expected_account=ADDRESS, allow_no_trusted_clock=True
@@ -237,6 +246,7 @@ def test_btc_psbt_v2_roundtrip_survives_restart(tmp_path):
     btc.import_wallet(WATCH)
     prepared = btc.prepare(BTC_TARGET, "0.0005")
     request_id = prepared["pending"]["request_id"]
+    original_pending = btc.pending_view()
     manager.export_current(evm, btc)
     request = load_request(manager, request_id)
     checked = verify_v2_request(
@@ -266,16 +276,24 @@ def test_btc_psbt_v2_roundtrip_survives_restart(tmp_path):
     assert status["stage"] == "verified"
     assert restored_btc.pending["recipient"] == BTC_TARGET
     assert restored_btc.pending["amount_sats"] == 50_000
-    assert restored_btc.pending["fee_rate"] == 2
-    assert restored_btc.pending["change_index"] == 0
-    assert restored_btc.pending["change_address"] == restored_btc._address(1, 0)
-    assert restored_btc.pending["inputs"] == [{
+    assert restored_btc.pending["fee_sats"] == original_pending["fee_sats"]
+    assert restored_btc.pending["fee_rate"] == original_pending["fee_rate"] == 2
+    assert restored_btc.pending["change_sats"] == original_pending["change_sats"]
+    assert restored_btc.pending["change_index"] == original_pending["change_index"] == 0
+    assert restored_btc.pending["change_address"] == original_pending["change_address"]
+    assert restored_btc.pending["inputs"] == original_pending["inputs"] == [{
         "txid": btc_api.txid, "vout": 0, "value": 150_000, "address": BTC_RECEIVE,
     }]
+    assert restored_btc.pending["outputs"] == original_pending["outputs"]
     assert len(restored_btc.pending["outputs"]) == 2
     assert {item["address"] for item in restored_btc.pending["outputs"]} == {
         BTC_TARGET, restored_btc._address(1, 0),
     }
+    assert {item["value"] for item in restored_btc.pending["outputs"]} == {
+        50_000, original_pending["change_sats"],
+    }
+    finalized = transaction.Transaction.parse(bytes.fromhex(signed["finalized_tx_hex"]))
+    assert restored_btc.pending["txid"] == finalized.txid().hex()
 
 
 def _http(server, token, method, path, body=None):
