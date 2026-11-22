@@ -4,14 +4,15 @@ Never point these tests at a removable disk or user-supplied vault path.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
 
 import pytest
-from embit import bip39
+from embit import bip39, networks, script
 
-from usb_cold_wallet.keys import root_from_mnemonic, watch_only
+from usb_cold_wallet.keys import btc_address, root_from_mnemonic, watch_only
 from usb_cold_wallet.policy import default_profile, load_profile, save_profile, wallet_binding
 from usb_cold_wallet.recovery import (
     PUBLIC_TEST_MNEMONIC, restore_paper_wallet, verify_paper_recovery,
@@ -21,7 +22,15 @@ from usb_cold_wallet import vault
 PASSWORD = "PUBLIC-TEST-only-strong-container-passphrase"
 MNEMONIC = PUBLIC_TEST_MNEMONIC
 # Trezor BIP39 test vector: 128-bit zero entropy, passphrase TREZOR.
-EXPECTED_SEED_PREFIX = "c55257c360c07c72029aebc1b53c05ed"
+# Trezor python-mnemonic vectors.json, English vector 0, commit
+# b57a5ad77a981e743f4167ab2f7927a55c1e82a8. Published and compromised.
+EXPECTED_SEED = (
+    "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e534955"
+    "31f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04"
+)
+# SHA-256 of the *published* BIP32 master xprv in the same upstream vector.
+# Keep the public compromised xprv itself out of fixtures and CI artifacts.
+EXPECTED_MASTER_XPRV_SHA256 = "ce0e5e2d20c072573ebbd11097f811c970974484431102b9501e6af36b3c6d7e"
 
 
 @pytest.fixture
@@ -53,11 +62,12 @@ def _restore(path, mnemonic=MNEMONIC, phrase="", reference=None):
 def test_public_bip39_vector_backup_and_full_watch_only_identity(private_dir):
     assert bip39.mnemonic_to_bytes(MNEMONIC) == bytes(16)
     seed = bip39.mnemonic_to_seed(MNEMONIC, password="TREZOR")
-    assert seed.hex().startswith(EXPECTED_SEED_PREFIX)
-    assert seed == hashlib.pbkdf2_hmac(
+    assert seed.hex() == EXPECTED_SEED
+    assert hashlib.pbkdf2_hmac(
         "sha512", MNEMONIC.encode("utf-8"), b"mnemonicTREZOR", 2048, 64
-    )
+    ) == bytes.fromhex(EXPECTED_SEED)
     root, before = _identity(MNEMONIC, "TREZOR")
+    assert hashlib.sha256(root.to_base58().encode("ascii")).hexdigest() == EXPECTED_MASTER_XPRV_SHA256
     target = private_dir / "test-only-restored.vault"
     returned = _restore(target, MNEMONIC, "TREZOR", before)
     after_root, after = _identity(vault.load_vault(target, PASSWORD), "TREZOR")
@@ -102,6 +112,43 @@ def test_wrong_bip39_passphrase_and_wrong_external_wallet_identity(private_dir):
                               _identity()[1]["evm"]["address"])
 
 
+def test_wrong_bitcoin_network_or_account_is_rejected(private_dir):
+    root, recorded = _identity()
+    first = recorded["bitcoin"]["receive_addresses"][0]
+    mainnet = script.address_to_scriptpubkey(first).address(networks.NETWORKS["main"])
+    assert mainnet != first and not mainnet.startswith("tb1")
+    # A mainnet receive address must never be accepted as a testnet reference.
+    with pytest.raises(ValueError, match="testnet"):
+        verify_paper_recovery(MNEMONIC, "", mainnet, recorded["evm"]["address"])
+    target = private_dir / "wrong-account.vault"
+    # Account 0, next address index: valid but not the independently recorded
+    # first receive address. A wrong account/path is likewise not an identity.
+    other_index = btc_address(root, 0, 1)
+    assert other_index != first
+    with pytest.raises(ValueError, match="disagree"):
+        restore_paper_wallet(target, MNEMONIC, "", other_index,
+                             recorded["evm"]["address"], PASSWORD)
+    assert not target.exists()
+
+
+def test_missing_vault_is_rejected_without_writing(private_dir):
+    missing = private_dir / "never-created.vault"
+    with pytest.raises(ValueError, match="not found"):
+        vault.load_vault(missing, PASSWORD)
+    assert not missing.exists()
+
+
+def test_nonprivate_vault_directory_rejected_before_staging(private_dir):
+    unsafe = private_dir / "unsafe"
+    unsafe.mkdir(mode=0o755)
+    unsafe.chmod(0o755)
+    target = unsafe / "unpublished.vault"
+    with pytest.raises(PermissionError, match="signer-private"):
+        _restore(target)
+    assert not target.exists()
+    assert not list(unsafe.glob(".usbwallet-*.partial"))
+
+
 def test_missing_vault_restore_is_create_only_and_never_overwrites(private_dir):
     path = private_dir / "test-only.vault"
     reference = _identity()[1]
@@ -127,15 +174,15 @@ def _restore_result_matches(path, reference):
     return current == reference
 
 
-@pytest.mark.parametrize("mutation", ["ciphertext", "truncate", "format", "version", "salt"])
+@pytest.mark.parametrize("mutation", ["ciphertext", "truncate", "format", "version", "salt", "nonce"])
 def test_corrupt_or_unsupported_vault_never_decrypts(private_dir, mutation):
     path = private_dir / "corrupted.vault"
     _restore(path)
     obj = json.loads(path.read_text())
     if mutation == "ciphertext":
         # Valid base64 but invalid AEAD tag.
-        ciphertext = __import__("base64").b64decode(obj["ciphertext"])
-        obj["ciphertext"] = __import__("base64").b64encode(
+        ciphertext = base64.b64decode(obj["ciphertext"], validate=True)
+        obj["ciphertext"] = base64.b64encode(
             ciphertext[:-1] + bytes([ciphertext[-1] ^ 1])
         ).decode("ascii")
         path.write_text(json.dumps(obj))
@@ -148,7 +195,14 @@ def test_corrupt_or_unsupported_vault_never_decrypts(private_dir, mutation):
         obj["version"] = 999
         path.write_text(json.dumps(obj))
     else:
-        obj["kdf"]["salt"] = "%%%invalid"
+        field = "salt" if mutation == "salt" else "nonce"
+        container = obj["kdf"] if mutation == "salt" else obj
+        encoded = base64.b64decode(container[field], validate=True)
+        # Preserve valid base64, size and JSON; alter exactly one bit so
+        # rejection must come from authenticated decryption, not parsing.
+        container[field] = base64.b64encode(
+            bytes([encoded[0] ^ 1]) + encoded[1:]
+        ).decode("ascii")
         path.write_text(json.dumps(obj))
     with pytest.raises((ValueError, KeyError, json.JSONDecodeError)):
         vault.load_vault(path, PASSWORD)
@@ -188,8 +242,10 @@ def test_staged_vault_filename_substitution_detected(private_dir, monkeypatch):
     foreign.write_bytes(b"public-test-attacker-file")
     actual = vault._atomic_rename_noreplace
 
+    injected = []
     def swap_before_publish(parent_fd, stage, final):
         # Attacker with same UID moves a different inode into staging slot.
+        injected.append(stage)
         os.replace(foreign, private_dir / stage)
         return actual(parent_fd, stage, final)
 
@@ -197,10 +253,13 @@ def test_staged_vault_filename_substitution_detected(private_dir, monkeypatch):
         m.setattr(vault, "_atomic_rename_noreplace", swap_before_publish)
         with pytest.raises(OSError, match="does not match|changed"):
             _restore(path)
-    # A privileged attacker can leave a suspicious destination; never trust it.
-    if path.exists():
-        with pytest.raises((ValueError, json.JSONDecodeError, UnicodeDecodeError)):
-            vault.load_vault(path, PASSWORD)
+    # Prove the injected swap actually reached publication, then verify that
+    # the resulting attacker-owned final entry is not accepted as a Vault.
+    assert len(injected) == 1
+    assert path.exists()
+    assert path.read_bytes() == b"public-test-attacker-file"
+    with pytest.raises((ValueError, json.JSONDecodeError, UnicodeDecodeError)):
+        vault.load_vault(path, PASSWORD)
 
 
 def test_historical_valid_vault_replay_is_not_detectable_without_anchor(private_dir):
