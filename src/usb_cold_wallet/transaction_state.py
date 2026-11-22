@@ -271,9 +271,11 @@ class _Journal:
         }
         if type(data) is not dict or set(data) != fields:
             raise StateCorruptionError("Invalid state record fields")
-        if data["format"] != FORMAT or data["version"] != VERSION or data["owner"] != self.owner:
+        if (type(data["format"]) is not str or type(data["version"]) is not int or
+                data["format"] != FORMAT or data["version"] != VERSION or
+                data["owner"] != self.owner):
             raise StateCorruptionError("State record format/owner mismatch")
-        if REQUEST_ID_RE.fullmatch(data["requestId"] or "") is None:
+        if type(data["requestId"]) is not str or REQUEST_ID_RE.fullmatch(data["requestId"]) is None:
             raise StateCorruptionError("Invalid state requestId")
         if type(data["counter"]) is not int or not 1 <= data["counter"] <= MAX_RECORDS:
             raise StateCorruptionError("Invalid state counter")
