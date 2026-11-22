@@ -501,3 +501,34 @@ def test_only_pull_request_runs_are_superseded_and_required_stays_fail_closed():
     assert any("WINDOWS_PORTABLE" in error for error in ci_checks.gate_errors(env))
     env["WINDOWS_PORTABLE"] = "success"
     assert ci_checks.gate_errors(env) == []
+
+
+def test_live_usb_scope_keeps_security_critical_paths_and_skips_unrelated_tests():
+    """Guard the path filter against accidentally dropping cold-image inputs."""
+    from pathlib import Path
+    import fnmatch
+    import re
+
+    workflow = Path(".github/workflows/live-usb-build.yml").read_text(encoding="utf-8")
+    section = workflow.split("  pull_request:", 1)[1].split("  workflow_dispatch:", 1)[0]
+    patterns = re.findall(r'^      - "([^"]+)"$', section, re.MULTILINE)
+
+    def selected(path):
+        return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
+
+    for path in (
+        "src/usb_cold_wallet/gui.py",
+        "src/usb_cold_wallet/policy.py",
+        "scripts/verify_uefi_boot.sh",
+        "buildroot-external/configs/usb_wallet_defconfig",
+        "infra/buildroot.env",
+        "tests/test_live_usb_boot.py",
+        "tests/test_appliance.py",
+        "tests/test_runtime_mount_audit.py",
+        "tests/test_release_verification.py",
+        ".github/workflows/live-usb-build.yml",
+    ):
+        assert selected(path), path
+
+    for path in ("tests/test_btc.py", "tests/test_companion_ui.mjs", "docs/README.md"):
+        assert not selected(path), path
