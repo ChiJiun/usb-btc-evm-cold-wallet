@@ -11,6 +11,7 @@ PUBLIC = "\n".join([
     "'usb_cold_wallet.companion_portable'",
     "'usb_cold_wallet.companion_envelope'",
     "'usb_cold_wallet.companion_crossboot'",
+    "'usb_cold_wallet.cross_boot_public'",
     "'usb_cold_wallet.transaction_state'",
     "'usb_cold_wallet.companion_static.index.html'",
     "'usb_cold_wallet.companion_static.companion.css'",
