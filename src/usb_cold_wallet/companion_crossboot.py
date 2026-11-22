@@ -204,8 +204,12 @@ class CrossBootManager:
             return False
         data = _read_json(self.watch_path)
         wallet = unpack_envelope(data, "watch-only")
-        session.wallet = wallet
-        btc_session.import_wallet(wallet)
+        # A checksum on Windows-writable storage does not authorize its
+        # contents. Re-run the same full watch-only schema, tpub and address
+        # derivation checks as the interactive import, before installing it
+        # into either live session.
+        session.import_wallet(canonical(wallet))
+        btc_session.import_wallet(session.wallet)
         return True
 
     def _request_path(self, request_id: str) -> Path:
