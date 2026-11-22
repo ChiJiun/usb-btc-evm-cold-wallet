@@ -287,17 +287,22 @@ def verify_repository_release_controls(*, run: Run = _gh) -> None:
                 if isinstance(check_params, dict)
                 else None
             )
-            check_names = {
-                item.get("context")
+            check_by_name = {
+                item.get("context"): item
                 for item in checks
                 if isinstance(item, dict) and isinstance(item.get("context"), str)
-            } if isinstance(checks, list) else set()
+            } if isinstance(checks, list) else {}
+            required_ci = check_by_name.get("CI / Required")
             main_ok = (
                 isinstance(pr_params, dict)
                 and isinstance(pr_params.get("required_approving_review_count"), int)
                 and pr_params["required_approving_review_count"] >= 1
                 and pr_params.get("require_last_push_approval") is True
-                and "CI / Required" in check_names
+                and isinstance(check_params, dict)
+                and check_params.get("strict_required_status_checks_policy") is True
+                and isinstance(required_ci, dict)
+                and isinstance(required_ci.get("integration_id"), int)
+                and required_ci["integration_id"] > 0
                 and {"deletion", "non_fast_forward"}.issubset(by_type)
             ) or main_ok
 
@@ -314,8 +319,8 @@ def verify_repository_release_controls(*, run: Run = _gh) -> None:
     if not main_ok:
         missing.append(
             "active main ruleset with no excludes/bypass actors, >=1 approval, "
-            "last-push approval, CI / Required, deletion protection, and "
-            "non-fast-forward protection"
+            "last-push approval, strict app-bound CI / Required, deletion protection, "
+            "and non-fast-forward protection"
         )
     if not tag_ok:
         missing.append(
