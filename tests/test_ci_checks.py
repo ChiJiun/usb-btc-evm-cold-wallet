@@ -868,3 +868,15 @@ def test_draft_feedback_is_single_build_but_ready_event_requires_dual():
     assert "cmp -s build/reproducibility/run-1.sha256 build/reproducibility/run-2.sha256" in live
     assert "sh scripts/verify_uefi_boot.sh" in live
     assert 'echo "clean_build_count=$selected"' in live
+
+
+def test_draft_skips_expensive_image_packaging_and_upload():
+    from pathlib import Path
+    live = (Path(__file__).resolve().parents[1] /
+            ".github/workflows/live-usb-build.yml").read_text(encoding="utf-8")
+    condition = "if: github.event_name != 'pull_request' || !github.event.pull_request.draft"
+    for name in ("Package and verify exact image artifact",
+                 "Upload verified testnet-only boot image (NOT A RELEASE)"):
+        job = live.split("      - name: " + name + "\\n", 1)[1]
+        assert job.lstrip().startswith(condition)
+    assert "run: sh scripts/verify_uefi_boot.sh" in live
