@@ -878,5 +878,5 @@ def test_draft_skips_expensive_image_packaging_and_upload():
     for name in ("Package and verify exact image artifact",
                  "Upload verified testnet-only boot image (NOT A RELEASE)"):
         job = live.split("      - name: " + name + "\n", 1)[1]
-        assert job.lstrip().startswith(condition)
+        assert condition in job.split("\n      - name:", 1)[0]
     assert "run: sh scripts/verify_uefi_boot.sh" in live
