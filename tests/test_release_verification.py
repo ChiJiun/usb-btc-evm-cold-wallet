@@ -148,13 +148,13 @@ def _write_local_release(
 
 def test_good_release_verifies_pinned_tag_and_build_provenance():
     fake = FakeGitHub()
-    assert verify_release(TAG, COMMIT, ASSET, run=fake) == DIGEST
+    assert verify_release(TAG, COMMIT, ASSET, workflow_sha=WORKFLOW_SHA, run=fake) == DIGEST
     assert ["release", "verify", TAG, "-R", REPOSITORY] in fake.calls
     attest = next(a for a in fake.calls if a[:2] == ["attestation", "verify"])
-    assert attest[attest.index("--source-ref") + 1] == f"refs/tags/{TAG}"
-    assert attest[attest.index("--source-digest") + 1] == COMMIT
+    assert attest[attest.index("--source-ref") + 1] == "refs/heads/main"
+    assert attest[attest.index("--source-digest") + 1] == WORKFLOW_SHA
     assert attest[attest.index("--signer-workflow") + 1] == RELEASE_WORKFLOW
-    assert attest[attest.index("--signer-digest") + 1] == COMMIT
+    assert attest[attest.index("--signer-digest") + 1] == WORKFLOW_SHA
     assert attest[attest.index("--predicate-type") + 1] == "https://slsa.dev/provenance/v1"
     assert sum(a[:2] == ["release", "verify-asset"] for a in fake.calls) == 5
     assert sum(a[:2] == ["attestation", "verify"] for a in fake.calls) == 5
@@ -162,22 +162,35 @@ def test_good_release_verifies_pinned_tag_and_build_provenance():
 
 def test_source_only_accepts_signed_annotated_tag_bound_to_exact_commit():
     fake = FakeGitHub()
-    verify_source(TAG, COMMIT, run=fake)
-    assert len(fake.calls) == 2
+    assert verify_source(TAG, COMMIT, run=fake) == TAG_OBJECT_SHA
+    assert len(fake.calls) == 3
     assert not any(a and a[0] == "release" for a in fake.calls)
+
+
+def test_valid_signature_from_unauthorized_release_signer_is_rejected():
+    fake = FakeGitHub()
+    fake.signer_login = "mallory"
+    with pytest.raises(ReleaseVerificationError, match="authorized release identity"):
+        verify_source(TAG, COMMIT, run=fake)
+
+
+def test_tag_object_replacement_after_validation_is_rejected():
+    fake = FakeGitHub()
+    with pytest.raises(ReleaseVerificationError, match="changed after validation"):
+        verify_source(TAG, COMMIT, run=fake, expected_tag_object_sha="d" * 40)
 
 
 def test_staged_final_bytes_verify_before_publish(tmp_path):
     fake = FakeGitHub()
     _write_local_release(tmp_path)
-    assert verify_local_artifacts(TAG, COMMIT, ASSET, tmp_path, run=fake) == DIGEST
+    assert verify_local_artifacts(TAG, COMMIT, ASSET, tmp_path, workflow_sha=WORKFLOW_SHA, run=fake) == DIGEST
     assert not any(a[:2] == ["release", "view"] for a in fake.calls)
     attest = next(
         a for a in fake.calls
         if a[:2] == ["attestation", "verify"] and Path(a[2]).name == ASSET
     )
     assert Path(attest[2]).read_bytes() == BINARY
-    assert attest[attest.index("--source-digest") + 1] == COMMIT
+    assert attest[attest.index("--source-digest") + 1] == WORKFLOW_SHA
 
 
 @pytest.mark.parametrize(
@@ -187,14 +200,14 @@ def test_staged_final_bytes_verify_before_publish(tmp_path):
 def test_untrusted_tag_cannot_select_arbitrary_ref(invalid):
     fake = FakeGitHub()
     with pytest.raises(ReleaseVerificationError):
-        verify_release(invalid, COMMIT, ASSET, run=fake)
+        verify_release(invalid, COMMIT, ASSET, workflow_sha=WORKFLOW_SHA, run=fake)
     assert fake.calls == []
 
 
 @pytest.mark.parametrize("invalid", ["main", "deadbeef", "-a" * 20, "x" * 40])
 def test_commit_must_be_exact_sha(invalid):
     with pytest.raises(ReleaseVerificationError):
-        verify_release(TAG, invalid, ASSET, run=FakeGitHub())
+        verify_release(TAG, invalid, ASSET, workflow_sha=WORKFLOW_SHA, run=FakeGitHub())
 
 
 @pytest.mark.parametrize(
@@ -212,7 +225,7 @@ def test_commit_must_be_exact_sha(invalid):
 def test_asset_basename_and_tag_must_match_and_urls_are_rejected(invalid):
     fake = FakeGitHub()
     with pytest.raises(ReleaseVerificationError):
-        verify_release(TAG, COMMIT, invalid, run=fake)
+        verify_release(TAG, COMMIT, invalid, workflow_sha=WORKFLOW_SHA, run=fake)
     assert fake.calls == []
 
 
@@ -249,7 +262,7 @@ def test_untrusted_release_ref_is_rejected_before_download(failure):
     else:
         fake.draft = True
     with pytest.raises(ReleaseVerificationError):
-        verify_release(TAG, COMMIT, ASSET, run=fake)
+        verify_release(TAG, COMMIT, ASSET, workflow_sha=WORKFLOW_SHA, run=fake)
     assert not any(a[:2] == ["release", "download"] for a in fake.calls)
 
 
@@ -257,7 +270,7 @@ def test_binary_substitution_is_rejected_before_attestation():
     fake = FakeGitHub()
     fake.binary = b"tampered release asset"
     with pytest.raises(ReleaseVerificationError, match="digest mismatch"):
-        verify_release(TAG, COMMIT, ASSET, run=fake)
+        verify_release(TAG, COMMIT, ASSET, workflow_sha=WORKFLOW_SHA, run=fake)
     assert not any(a[:2] == ["attestation", "verify"] for a in fake.calls)
 
 
@@ -273,7 +286,7 @@ def test_missing_or_invalid_immutable_release_or_build_attestation_blocks(comman
     fake = FakeGitHub()
     fake.fail_command = command
     with pytest.raises(ReleaseVerificationError):
-        verify_release(TAG, COMMIT, ASSET, run=fake)
+        verify_release(TAG, COMMIT, ASSET, workflow_sha=WORKFLOW_SHA, run=fake)
 
 
 def test_checksums_are_not_themselves_claimed_to_authenticate_release():
@@ -281,7 +294,7 @@ def test_checksums_are_not_themselves_claimed_to_authenticate_release():
     fake.manifest_digest = hashlib.sha256(fake.binary).hexdigest()
     fake.fail_command = ("release", "verify-asset")
     with pytest.raises(ReleaseVerificationError):
-        verify_release(TAG, COMMIT, ASSET, run=fake)
+        verify_release(TAG, COMMIT, ASSET, workflow_sha=WORKFLOW_SHA, run=fake)
 
 
 @pytest.mark.parametrize("mutation", ["asset", "sha", "metadata_commit", "sbom", "extra_file"])
@@ -325,7 +338,7 @@ def test_staged_asset_substitution_wrong_sha_source_or_manifest_fails_closed(
             handle.write(f"{'0' * 64}  unexpected.bin\n")
 
     with pytest.raises(ReleaseVerificationError):
-        verify_local_artifacts(TAG, COMMIT, ASSET, tmp_path, run=fake)
+        verify_local_artifacts(TAG, COMMIT, ASSET, tmp_path, workflow_sha=WORKFLOW_SHA, run=fake)
 
 
 def test_wrong_or_missing_attestation_subject_fails_staged_verification(tmp_path):
@@ -333,7 +346,7 @@ def test_wrong_or_missing_attestation_subject_fails_staged_verification(tmp_path
     fake.fail_command = ("attestation", "verify")
     _write_local_release(tmp_path)
     with pytest.raises(ReleaseVerificationError):
-        verify_local_artifacts(TAG, COMMIT, ASSET, tmp_path, run=fake)
+        verify_local_artifacts(TAG, COMMIT, ASSET, tmp_path, workflow_sha=WORKFLOW_SHA, run=fake)
 
 
 @pytest.mark.parametrize("state", ["skipped", "failure", "cancelled", "neutral"])
