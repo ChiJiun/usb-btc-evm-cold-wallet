@@ -221,8 +221,9 @@ def test_wrong_encryption_password_does_not_modify_vault(private_dir):
 
 
 @pytest.mark.parametrize("mutation", [
-    "boolean-version", "boolean-scrypt-p", "duplicate-version",
-    "duplicate-ciphertext", "extra-key", "nonfinite-version",
+    "boolean-version", "boolean-scrypt-p", "boolean-salt", "array-nonce",
+    "object-ciphertext", "duplicate-version", "duplicate-ciphertext",
+    "extra-key", "nonfinite-version",
 ])
 def test_vault_rejects_ambiguous_json_metadata(private_dir, mutation):
     path = private_dir / "ambiguous.vault"
@@ -238,6 +239,12 @@ def test_vault_rejects_ambiguous_json_metadata(private_dir, mutation):
             container["version"] = True  # bool compares equal to integer 1
         elif mutation == "boolean-scrypt-p":
             container["kdf"]["p"] = True
+        elif mutation == "boolean-salt":
+            container["kdf"]["salt"] = True
+        elif mutation == "array-nonce":
+            container["nonce"] = []
+        elif mutation == "object-ciphertext":
+            container["ciphertext"] = {}
         elif mutation == "extra-key":
             container["untrusted_extension"] = "must not be silently ignored"
         else:
