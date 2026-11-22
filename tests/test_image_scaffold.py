@@ -5,6 +5,7 @@ from scripts.install_target_python import (
     TARGET_EMBIT_PREBUILT,
     _keep_target_embit_prebuilt,
 )
+from scripts.generate_framebuffer_font import build_psf2
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -223,3 +224,34 @@ def test_buildroot_device_manager_preserves_offline_kernel_policy():
     assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV" in validator
     assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y" in verifier
     assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_(MDEV|EUDEV)=y" in verifier
+
+
+def test_framebuffer_guest_path_is_explicit_dormant_and_network_free():
+    kernel = (ROOT / "buildroot-external/board/usb-wallet/linux.config").read_text()
+    postbuild = (ROOT / "buildroot-external/board/usb-wallet/post-build.sh").read_text()
+    appliance = (ROOT / "src/usb_cold_wallet/appliance.py").read_text()
+    verifier = (ROOT / "scripts/verify_framebuffer_qemu.sh").read_text()
+    workflow = (ROOT / ".github/workflows/live-usb-build.yml").read_text()
+    package = (ROOT / "buildroot-external/package/usb-wallet-app/usb-wallet-app.mk").read_text()
+
+    assert "# CONFIG_NET is not set" in kernel
+    assert "CONFIG_DRM_FBDEV_EMULATION=y" in kernel
+    assert "framebuffer-demo.py" in postbuild
+    assert "EXPERIMENTAL framebuffer review demo" in appliance
+    assert "subprocess.run([sys.executable, str(FRAMEBUFFER_DEMO)]" in appliance
+    assert "-net none" in verifier
+    assert "screendump" in verifier
+    assert "reviewed=1 reason=reviewed" in verifier
+    assert "reviewed=0 reason=cancelled" in verifier
+    assert "verify_framebuffer_qemu.sh" in workflow
+    assert "generate_framebuffer_font.py" in package
+    assert "usb-wallet-framebuffer-demo" not in (ROOT / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/inittab").read_text() if (ROOT / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/inittab").exists() else True
+
+
+def test_generated_framebuffer_font_is_fixed_psf2():
+    data = build_psf2()
+    assert len(data) == 32 + 256 * 16
+    magic, version, header, flags, length, charsize, height, width = __import__("struct").unpack_from("<8I", data)
+    assert (magic, version, header, flags) == (0x864AB572, 0, 32, 0)
+    assert (length, charsize, height, width) == (256, 16, 16, 8)
+    assert any(data[32 + 32 * 16:32 + 128 * 16])
