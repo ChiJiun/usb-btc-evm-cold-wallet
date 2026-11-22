@@ -51,8 +51,114 @@ grep -q '^# CONFIG_NET is not set$' "$KCONFIG" || {
 	grep -E '^(CONFIG_NET=|# CONFIG_NET is not set$)' "$ROOT/buildroot-external/board/usb-wallet/linux.config" >&2 || true
 	exit 1
 }
-grep -q '^CONFIG_USB_STORAGE=y$' "$KCONFIG"
-grep -q '^CONFIG_VFAT_FS=y$' "$KCONFIG"
+grep -q '^CONFIG_USB_STORAGE=yif grep -Eq '^CONFIG_(ATA|BLK_DEV_NVME|NVME_CORE|MMC|VIRTIO_BLK)=y$' "$KCONFIG"; then
+	echo "ERROR: internal/non-USB block storage driver unexpectedly enabled" >&2
+	exit 1
+fi
+
+test -x "$OUT/target/usr/bin/usb-wallet-console"
+test -x "$OUT/target/usr/bin/usb-cold-wallet"
+test -x "$OUT/target/usr/libexec/usb-wallet-framebuffer-demo"
+test -s "$OUT/target/usr/share/usb-cold-wallet/font8x16.psf"
+# The experimental GUI must remain manual; normal tty1 boot stays on the
+# existing single-purpose appliance.
+grep -q '^tty1::respawn:/usr/bin/usb-wallet-consolefor tool in ip ifconfig route ping wget nc netcat udhcpc telnet; do
+	for dir in bin sbin usr/bin usr/sbin; do
+		test ! -e "$OUT/target/$dir/$tool" || {
+			echo "ERROR: networking tool exists in target: $dir/$tool" >&2
+			exit 1
+		}
+	done
+done
+
+python3 "$ROOT/scripts/verify_image.py" "$IMAGE"
+echo "Static image verification passed."
+ "$KCONFIG"
+grep -q '^CONFIG_VFAT_FS=yif grep -Eq '^CONFIG_(ATA|BLK_DEV_NVME|NVME_CORE|MMC|VIRTIO_BLK)=y$' "$KCONFIG"; then
+	echo "ERROR: internal/non-USB block storage driver unexpectedly enabled" >&2
+	exit 1
+fi
+
+test -x "$OUT/target/usr/bin/usb-wallet-console"
+test -x "$OUT/target/usr/bin/usb-cold-wallet"
+for tool in ip ifconfig route ping wget nc netcat udhcpc telnet; do
+	for dir in bin sbin usr/bin usr/sbin; do
+		test ! -e "$OUT/target/$dir/$tool" || {
+			echo "ERROR: networking tool exists in target: $dir/$tool" >&2
+			exit 1
+		}
+	done
+done
+
+python3 "$ROOT/scripts/verify_image.py" "$IMAGE"
+echo "Static image verification passed."
+ "$KCONFIG"
+for symbol in CONFIG_VT CONFIG_VT_CONSOLE CONFIG_INPUT CONFIG_INPUT_KEYBOARD CONFIG_HID CONFIG_USB_HID CONFIG_FB CONFIG_DRM CONFIG_DRM_SIMPLEDRM CONFIG_DRM_FBDEV_EMULATION; do
+	grep -q "^$symbol=y$" "$KCONFIG" || {
+		echo "ERROR: framebuffer POC required kernel symbol missing: $symbol" >&2
+		exit 1
+	}
+done
+if grep -Eq '^CONFIG_(ATA|BLK_DEV_NVME|NVME_CORE|MMC|VIRTIO_BLK)=y$' "$KCONFIG"; then
+	echo "ERROR: internal/non-USB block storage driver unexpectedly enabled" >&2
+	exit 1
+fi
+
+test -x "$OUT/target/usr/bin/usb-wallet-console"
+test -x "$OUT/target/usr/bin/usb-cold-wallet"
+for tool in ip ifconfig route ping wget nc netcat udhcpc telnet; do
+	for dir in bin sbin usr/bin usr/sbin; do
+		test ! -e "$OUT/target/$dir/$tool" || {
+			echo "ERROR: networking tool exists in target: $dir/$tool" >&2
+			exit 1
+		}
+	done
+done
+
+python3 "$ROOT/scripts/verify_image.py" "$IMAGE"
+echo "Static image verification passed."
+ "$OUT/target/etc/inittab"
+if grep -q 'tty1::respawn:.*usb-wallet-framebuffer-demo' "$OUT/target/etc/inittab"; then
+	echo "ERROR: unverified framebuffer demo became the default Live OS session" >&2
+	exit 1
+fi
+for tool in ip ifconfig route ping wget nc netcat udhcpc telnet; do
+	for dir in bin sbin usr/bin usr/sbin; do
+		test ! -e "$OUT/target/$dir/$tool" || {
+			echo "ERROR: networking tool exists in target: $dir/$tool" >&2
+			exit 1
+		}
+	done
+done
+
+python3 "$ROOT/scripts/verify_image.py" "$IMAGE"
+echo "Static image verification passed."
+ "$KCONFIG"
+grep -q '^CONFIG_VFAT_FS=yif grep -Eq '^CONFIG_(ATA|BLK_DEV_NVME|NVME_CORE|MMC|VIRTIO_BLK)=y$' "$KCONFIG"; then
+	echo "ERROR: internal/non-USB block storage driver unexpectedly enabled" >&2
+	exit 1
+fi
+
+test -x "$OUT/target/usr/bin/usb-wallet-console"
+test -x "$OUT/target/usr/bin/usb-cold-wallet"
+for tool in ip ifconfig route ping wget nc netcat udhcpc telnet; do
+	for dir in bin sbin usr/bin usr/sbin; do
+		test ! -e "$OUT/target/$dir/$tool" || {
+			echo "ERROR: networking tool exists in target: $dir/$tool" >&2
+			exit 1
+		}
+	done
+done
+
+python3 "$ROOT/scripts/verify_image.py" "$IMAGE"
+echo "Static image verification passed."
+ "$KCONFIG"
+for symbol in CONFIG_VT CONFIG_VT_CONSOLE CONFIG_INPUT CONFIG_INPUT_KEYBOARD CONFIG_HID CONFIG_USB_HID CONFIG_FB CONFIG_DRM CONFIG_DRM_SIMPLEDRM CONFIG_DRM_FBDEV_EMULATION; do
+	grep -q "^$symbol=y$" "$KCONFIG" || {
+		echo "ERROR: framebuffer POC required kernel symbol missing: $symbol" >&2
+		exit 1
+	}
+done
 if grep -Eq '^CONFIG_(ATA|BLK_DEV_NVME|NVME_CORE|MMC|VIRTIO_BLK)=y$' "$KCONFIG"; then
 	echo "ERROR: internal/non-USB block storage driver unexpectedly enabled" >&2
 	exit 1
