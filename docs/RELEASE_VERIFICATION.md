@@ -4,16 +4,19 @@
 
 ## Release workflow 信任邊界
 
-Release workflow 必須從受保護的 `refs/heads/main` 執行 `workflow_dispatch`；workflow definition 的 commit SHA（`GITHUB_SHA`）與待發布 source commit（input `source_sha`）分開處理。Validate job 先要求 `GITHUB_REF == refs/heads/main`，再從 trusted workflow commit checkout verifier；之後才驗證 release tag 是 signed annotated tag、tag 指向 exact source SHA，且 GitHub 將該 GPG tag 標為 `verified`/`reason=valid`，signed tagger email 必須命中受保護 verifier 內的 release identity allowlist。Validate 會固定 annotated tag object SHA，供 verify / publish 再次比對。
+`.github/workflows/release.yml` 是**無特權 candidate workflow**。它可由 `workflow_dispatch` 接受 tag、source SHA 與 publish intent，但整個 workflow 都沒有 `contents: write`、OIDC 或 attestation write 權限；即使有人刻意從非 main ref dispatch，也不能直接建立 attestation 或 Release。Candidate 仍要求 `GITHUB_REF == refs/heads/main`，用來拒絕非 main 的正式候選建置，但這項檢查本身不被當成發布權限的信任錨點。
 
-因此 SLSA provenance 的 workflow/source identity 綁到 **trusted main workflow SHA**，而 release source SHA/tag 則由 signed tag + release metadata 獨立綁定。這避免把不可信 tag commit 同時當成 privileged workflow definition。PR 事件不會執行此 workflow。
+真正有特權的 `.github/workflows/release-finalize.yml` 只由 `workflow_run` 啟動，workflow definition 由 repository default branch 取得。Finalizer 只接受成功完成、event=`workflow_dispatch`、head branch=`main`、workflow path=`.github/workflows/release.yml`、repository/head repository 均為本 repository 的前置 run，並要求觸發 run 的 head SHA 與 finalizer 當下的 protected-main `GITHUB_SHA` 完全相同。main 若在長時間 Buildroot 建置期間前進，finalizer 直接 fail closed，必須從新 main 重新產生 candidate。
+
+Candidate 的 signed annotated tag 必須精確指向 input source SHA；GitHub 必須回報 GPG tag `verified=true` / `reason=valid`，tagger email 必須命中受保護 verifier 內的 release identity allowlist。Validate 固定 annotated tag object SHA；finalizer 在 attestation 前與 publish 前都重新比對。SLSA provenance 的 signer workflow / source identity 綁定 **`release-finalize.yml` 的 protected-main SHA**；實際 release source SHA/tag 則由 signed tag、metadata 與 manifest 獨立綁定。
 
 權限分離如下：
 
-- validate / build / gate：`contents: read`；build 沒有 OIDC、attestation 或 release write。
-- verify：`contents: read` + `attestations: read`，只能讀取並驗證既有 provenance，沒有 write/OIDC。
-- attest：只有此 job 取得 `id-token: write`、`attestations: write`，另提供目前 `actions/attest` 寫入 artifact metadata 所需的 `artifact-metadata: write`；沒有 `contents: write`。
-- publish：只有 gate 成功且使用者明確設定 `publish=true` 才取得 `contents: write`；另以 `issues: read` 確認 #24 與 #43 均已關閉。既有 Release 一律拒絕覆寫。
+- candidate validate / build / verify / gate：最多 `contents: read`，沒有 OIDC、attestation write 或 release write。
+- finalizer preflight：`actions: read` + `contents: read`，只下載並解析前置 run 的 artifact，不執行 artifact 內程式碼。
+- finalizer attest：`id-token: write`、`attestations: write`、`artifact-metadata: write`，但沒有 `contents: write`。
+- finalizer verify：`contents: read` + `attestations: read`。
+- finalizer publish：只有 candidate metadata 明確記錄 `publish_requested=true`、所有 privileged gates 成功、#24/#43（stable 另含 #48）通過時才取得 `contents: write`。既有 Release 一律拒絕覆寫。
 
 所有 `uses:` 都釘選完整 40-hex action commit。Buildroot 版本、來源 SHA-256、簽章與 release key 由 `infra/buildroot.env` 固定；target wheelhouse 由 `infra/wheelhouse-requirements.txt` 與 `infra/wheelhouse.sha256` 固定；Node release runtime 固定為 `24.22.3` 並以 lockfile 執行 `npm ci`。SBOM action 固定 commit，Syft 固定版本。Release host 的 APT 現改用固定 Ubuntu Snapshot ID，並把每個安裝套件解析成 `package=version` 後驗證實際 dpkg version；`build-host-packages.txt` 仍保留作證據。GitHub-hosted `ubuntu-24.04` runner image 與 host kernel 仍是 GitHub 管理的可變輸入，因此目前只能稱為 **APT snapshot-pinned、runner-recorded**，不能宣稱 hermetic build。
 
@@ -25,10 +28,10 @@ Release workflow 必須從受保護的 `refs/heads/main` 執行 `workflow_dispat
 2. 同一來源做兩次 clean Buildroot image build，`scripts/check_reproducible.sh` 比對 raw `usb-cold-wallet.img` SHA-256。
 3. 對兩次 raw image 的 SHA-256 再做顯式相等檢查，將共同 digest 寫入 `release-metadata.json`；使用該 Buildroot 版本所固定的 host `xz`，以 `-6 --threads=1 --check=crc64 --no-sparse` 壓縮兩次並 byte-for-byte 比對。
 4. 由最後 root filesystem 產生 SPDX JSON SBOM；保存 `build-host-packages.txt`、`release-metadata.json` 與 `SHA256SUMS`。manifest 精確涵蓋最後 image、SBOM、metadata、host dependency evidence。
-5. 將這批 candidate bytes 上傳成同一次 workflow 的 immutable Actions artifact；attest job 對 image、SBOM、metadata、host dependency evidence 建立同一 source identity 的 SLSA Build Provenance，並另外對 `SHA256SUMS` 建立 provenance、對 image 建立 SBOM attestation。
-6. verify job 重新下載同一 candidate artifact，驗證 trusted workflow SHA、authorized signed tag、固定 tag object SHA、source SHA、每個發布檔案的 subject digest、manifest、SPDX identity 與 metadata。
-7. required gate 把 build / attest / verify 的 `skipped`、`cancelled`、`failure` 全部視為失敗。
-8. publish job 只下載已通過驗證的 artifact，再做 checksum；緊接著重新取得 tag ref、重新驗證 authorized signer、source SHA 與原先固定的 tag object SHA，任何刪除／重指向／替換都 fail closed，然後才呼叫 `gh release create`。這是 TOCTOU 的程式層縮窗措施；真正防止所有 tag replacement 仍依賴 Active tag ruleset。
+5. Candidate workflow 將這批 bytes 上傳成名稱綁定 `run_id` / `run_attempt` 的 Actions artifact，並先做無特權的本機 digest／metadata／tag-object 驗證。
+6. Default-branch `release-finalize.yml` 由 `workflow_run` 啟動；preflight 重新驗證前置 run 身分、protected main SHA、repository rulesets、唯一 artifact 名稱、signed tag、source SHA、tag object、manifest、SPDX 與 metadata。main 已前進或 artifact/run 不一致即 fail closed。
+7. Finalizer attest 對 image、SBOM、metadata、host dependency evidence 建立由 `release-finalize.yml` protected-main SHA 簽發的 SLSA Build Provenance，另對 `SHA256SUMS` 建立 provenance、對 image 建立 SBOM attestation；verify 再逐一驗證 subject digest 與 signer identity。
+8. Privileged gate 把 preflight / attest / verify 的 `skipped`、`cancelled`、`failure` 全部視為失敗。publish 只下載同一已驗證 artifact，並在 `gh release create` 前再次確認 current main、前置 workflow run、repository controls、authorized signer、source SHA 與固定 tag object SHA。任何 main/tag/run/artifact 替換都 fail closed。
 
 ## 發行等級與可宣稱範圍
 
@@ -54,7 +57,7 @@ python3 scripts/verify_release_assets.py \
   --asset usb-cold-wallet-v0.1.0-beta.1.img.xz
 ~~~
 
-驗證器固定 repository，不接受 URL；它從 GitHub Release 下載 `SHA256SUMS`、指定 image、SPDX SBOM、release metadata 與 host dependency evidence，要求 manifest 精確覆蓋全部 payload 並逐一重算 SHA-256，再對每個檔案要求 Immutable Release asset integrity 與 `.github/workflows/release.yml` 對相同 tag/source SHA/subject digest 的 SLSA Build Provenance。任一缺失或不一致均 nonzero exit。
+驗證器固定 repository，不接受 URL；它從 GitHub Release 下載 `SHA256SUMS`、指定 image、SPDX SBOM、release metadata 與 host dependency evidence，要求 manifest 精確覆蓋全部 payload 並逐一重算 SHA-256，再對每個檔案要求 Immutable Release asset integrity，以及由 `.github/workflows/release-finalize.yml` 在指定 protected-main SHA 簽發的 SLSA Build Provenance。release source tag/SHA 則另外由 signed annotated tag 與 metadata 驗證；任一缺失或不一致均 nonzero exit。
 
 `SHA256SUMS` 只能證明 bytes 與 manifest 一致；其本身仍需 GitHub 的 Release integrity / asset verification。signed tag、Immutable Release、Build Provenance 各自提供不同保證，不能互相替代。
 
@@ -64,7 +67,7 @@ python3 scripts/verify_release_assets.py \
 
 1. **Immutable Releases**：Repository → Settings → General → Releases 啟用 immutable releases。正式發布後執行 `gh release verify <tag> -R ChiJiun/usb-btc-evm-cold-wallet`。
 2. **Release tag ruleset（目前 BLOCKER）**：建立 Active tag ruleset，include 精確設定 `refs/tags/v*`，啟用 **Restrict creations / Restrict updates / Restrict deletions**；bypass 僅允許實際 release maintainer。Release workflow 的 validate job 會從 Rulesets API fail-closed 驗證 target=tag、Active、pattern 與三個限制；bypass actor 的實際人員身分仍須 Admin 人工核對。
-3. **main / workflow trust anchor（目前 BLOCKER）**：現有 `main-protection` 必須至少要求 1 個有效 PR approval、**Require approval of the most recent reviewable push**，並把 `CI / Required` 設為 required status check；不得保留 0 approval / 0 required check。Release workflow 的 validate job 會從 Rulesets API fail-closed 驗證這些條件。完成後讀 ruleset detail 確認 `refs/heads/main`、Active、approval count ≥ 1、last-push approval=true、required check 包含 `CI / Required`。
+3. **main / workflow trust anchor（目前 BLOCKER）**：現有 `main-protection` 必須至少要求 1 個有效 PR approval、**Require approval of the most recent reviewable push**、required status check `CI / Required`，並禁止 branch deletion 與 non-fast-forward update。Finalizer 會從 Rulesets API fail-closed 驗證這些條件。完成後讀 ruleset detail 確認 `refs/heads/main`、Active、approval count ≥ 1、last-push approval=true、required check 包含 `CI / Required`，且 deletion / non-fast-forward 規則存在。
 4. **Authorized signer**：release tag 目前明確限制為 **GPG signed annotated tag**；verifier 同時要求 GitHub `verified=true`、`reason=valid`、PGP signature armor，以及 signed tagger email 命中受保護 main 內的 allowlist。GitHub 對 GPG tag 的 Verified 判定會核對 tagger email、GPG key identity 與該帳號已驗證 email。若未來增加 release maintainer，必須先經受保護 main PR 修改 allowlist。
 5. **Protected release environment（建議的第二道人工 gate）**：建立 `release` environment 並設 required reviewer / deployment protection，再把 publish job 綁定該 environment。未完成前不得把 environment protection 當成已存在。
 
