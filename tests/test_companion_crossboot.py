@@ -719,3 +719,28 @@ def test_reboot_rejects_rehashed_response_after_durable_import(tmp_path, ambiguo
     assert restarted_evm.pending is None
     expected_state = "BROADCAST_REQUESTED" if ambiguous else "IMPORTED_VERIFIED"
     assert PendingRequestStore(manager.state_root).get(request_id).state == expected_state
+
+
+@pytest.mark.parametrize("mutation", ["wrong-network", "wrong-receive-address"])
+def test_reboot_revalidates_persisted_watch_only_not_just_envelope_hash(tmp_path, mutation):
+    from usb_cold_wallet.companion_core import pack_envelope
+
+    manager = CrossBootManager(tmp_path)
+    online, btc, _ = fresh_sessions()
+    manager.remember_wallet(online, btc)
+    altered_wallet = json.loads(canonical(WATCH))
+    if mutation == "wrong-network":
+        altered_wallet["bitcoin"]["network"] = "mainnet"
+    else:
+        altered_wallet["bitcoin"]["receive_addresses"][0] = BTC_TARGET
+
+    # The attacker can recompute all checksums on writable USB storage.
+    forged = pack_envelope("watch-only", altered_wallet)
+    manager.watch_path.write_bytes(canonical(forged) + b"\n")
+    restarted, restarted_btc, _ = fresh_sessions()
+    restarted.wallet = None
+    restarted_btc.wallet = None
+    with pytest.raises(ValueError, match="Unsupported BTC watch-only|do not match account tpub"):
+        CrossBootManager(tmp_path).restore(restarted, restarted_btc)
+    assert restarted.wallet is None
+    assert restarted_btc.wallet is None
