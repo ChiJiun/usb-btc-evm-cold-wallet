@@ -150,7 +150,7 @@ def live_workflow_trigger_only(base: str) -> bool:
             '      - name: Verify real reusable workflow invocation\n'
             '        run: |\n'
             '          set -euo pipefail\n'
-            '          test "\${{ inputs.smoke_only }}" = "true"\n'
+            '          test "${{ inputs.smoke_only }}" = "true"\n'
             '          echo "Live USB reusable workflow_call contract executed"\n'
             '\n'
         )
