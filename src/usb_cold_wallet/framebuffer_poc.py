@@ -21,7 +21,7 @@ import termios
 import tty
 from typing import Callable
 
-from .review import ReviewPlan
+from .review import ReviewField, ReviewPage, ReviewPlan
 
 # linux/fb.h
 FBIOGET_VSCREENINFO = 0x4600
@@ -60,21 +60,23 @@ class ReviewIntent:
 
 
 def _validate_plan(plan: ReviewPlan) -> None:
-    if not isinstance(plan, ReviewPlan):
-        raise TypeError("Framebuffer UI accepts only the existing ReviewPlan type")
-    if not 1 <= len(plan.pages) <= MAX_PAGES:
+    if type(plan) is not ReviewPlan:
+        raise TypeError("Framebuffer UI accepts only the exact existing ReviewPlan type")
+    if type(plan.pages) is not tuple or not 1 <= len(plan.pages) <= MAX_PAGES:
         raise ValueError("ReviewPlan page count outside display bounds")
     if not re.fullmatch(r"[0-9a-f]{64}", plan.review_digest):
         raise ValueError("ReviewPlan digest is invalid")
     total = 0
     for page in plan.pages:
-        if not page.fields:
-            raise ValueError("ReviewPlan contains an empty page")
+        if type(page) is not ReviewPage or type(page.fields) is not tuple or not page.fields:
+            raise TypeError("ReviewPlan contains non-canonical page objects")
         for value in (page.key,):
             if type(value) is not str:
                 raise TypeError("ReviewPlan contains non-text display metadata")
             total += len(value)
         for field in page.fields:
+            if type(field) is not ReviewField:
+                raise TypeError("ReviewPlan contains non-canonical field objects")
             if not all(type(value) is str for value in (field.key, field.value, field.source)):
                 raise TypeError("ReviewPlan contains non-text display fields")
             normalized = (field.key + " " + field.source).lower()
