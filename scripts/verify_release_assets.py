@@ -451,11 +451,16 @@ def build_slsa_predicate(metadata: Mapping[str, object], workflow_sha: str) -> d
         "nodeVersion": metadata["node_version"],
         "xzVersion": metadata["xz_version"],
         "compression": metadata["compression"],
+        "sbomScope": metadata["sbom_scope"],
     }
     internal = {
         "trustedFinalizerWorkflowSha": workflow_sha,
         "runnerImageOS": metadata["runner_image_os"],
         "runnerImageVersion": metadata["runner_image_version"],
+        "bootComponentDigests": {
+            "efiPartitionSha256": metadata["efi_partition_sha256"],
+            "kernelSha256": metadata["kernel_sha256"],
+        },
     }
     dependencies = [
         {
@@ -546,9 +551,12 @@ def _verify_metadata(
         if metadata.get(key) != value:
             raise ReleaseVerificationError(f"Release metadata mismatch: {key}")
 
-    digest = metadata.get("raw_image_sha256")
-    if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
-        raise ReleaseVerificationError("Release metadata has invalid raw image digest")
+    for key in ("raw_image_sha256", "efi_partition_sha256", "kernel_sha256"):
+        digest = metadata.get(key)
+        if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+            raise ReleaseVerificationError(f"Release metadata has invalid {key}")
+    if metadata.get("sbom_scope") != "buildroot-target-rootfs":
+        raise ReleaseVerificationError("Release metadata has invalid SBOM scope")
     for key in ("buildroot_sha256",):
         value = metadata.get(key)
         if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value):
