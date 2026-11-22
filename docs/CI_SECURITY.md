@@ -34,15 +34,13 @@ Python 3.12/3.13 測試、可重現 wheel 建置仍依
 執行 Dependency Review 與適用的 Python/Node 稽核；每天 02:20 UTC
 仍跑完整依賴弱點掃描（含 Node dev/build 套件）。
 
-### CI 效能最佳化（#87）
+### CI 效能最佳化（#87；[詳細實測稽核](CI_PERFORMANCE_AUDIT.md)）
 
-完整 Live USB 在每次需要時仍執行 **兩次 Clean Build、SHA-256 比對與 QEMU/OVMF 安全開機驗證**。
-在啟動昂貴建置前，先要求 Python 3.12/3.13 測試矩陣成功；若測試失敗，Live USB Job 因相依關係跳過，但 `CI / Required` 必須拒絕合併。
+在受影響的 PR HEAD 上完整 Live USB 仍必須通過 **兩次獨立 Clean Build、SHA-256 比對、QEMU/OVMF 安全開機驗證**。CI 先要求 Python 3.12/3.13 測試成功才啟動昂貴建置；若測試失敗，`live_usb` 跳過，但 `CI / Required` 仍拒絕合併。
 
-為減少跨 PR 重複下載，Live USB 只快取 `build/dl`、`build/cache`、`build/wheelhouse`。
-每次仍由 Buildroot 的來源雜湊驗證、Buildroot 發行版簽章與 Wheelhouse SHA-256 驗證確認內容；快取不可取代來源驗證。編譯輸出、rootfs、映像與驗證結果**不快取**，也不將舊 Commit 的結果視為最新 HEAD 已通過。
+兩次完整 Buildroot 建置在獨立 GitHub-hosted Runner 上 **並行** 執行，彼此不共用編譯輸出。各自完成靜態映像稽核與 `usb-cold-wallet.img`/`bzImage` SHA-256。只有兩邊成功，後段 Job 才能比對兩份雜湊、驗證實際下載的映像與 kernel、執行 QEMU/OVMF，最後產生 testnet-only Artifact。
 
-此優化主要降低 **Python 失敗時的浪費**與**下載成本**；成功的冷端修改仍需完成雙 Clean Build，效益應以 CI Job 實際耗時量測，不承諾固定百分比。
+兩個建置 Job 只快取 `build/dl`、`build/cache`、`build/wheelhouse`。仍逐次驗證 Buildroot 的發行簽章、來源 SHA-256 與 Wheelhouse SHA-256；`build/output`、rootfs、映像、編譯器輸出與通過紀錄**不快取**。測試用 xz 壓縮採固定 `-6`，保留完整性及解壓縮逐位元組比對。正式 Release Clean Build、簽章與 Provenance 門檻不受此最佳化取代。
 
 ### 完整 Live USB 合併門檻
 
@@ -54,7 +52,8 @@ Python 3.12/3.13 測試、可重現 wheel 建置仍依
 
 `live-usb-build.yml` 透過 `workflow_call` 由主 CI 的
 `live_usb` Job 條件式呼叫；不使用 PR `paths` 省略整個 Workflow。
-該 Job 執行兩次 Clean Build，比對原始映像 SHA-256，並以
+受呼叫的 Workflow 以兩個獨立 Matrix Runner 平行執行兩次 Clean Build，
+在第三個驗證 Job 對比原始映像與 kernel SHA-256、核對實際位元組，並以
 QEMU/OVMF 開機驗證。其他 BTC Core、PSBT Fuzz、VFAT 亦從主 CI
 條件式呼叫；同一項驗證不再另由獨立 PR Workflow 重複觸發。
 手動診斷與 PSBT Fuzz 原有定期排程可保留。
