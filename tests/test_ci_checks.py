@@ -611,6 +611,89 @@ def test_ci_wiring_uses_real_live_usb_smoke_without_expensive_build():
     assert "    if: inputs.smoke_only != true" in live
 
 
+
+
+def test_live_workflow_trigger_only_checks_actual_job_body(monkeypatch):
+    """An event-only edit may skip the image; any executable edit may not."""
+    from scripts import ci_checks
+
+    base = """name: Live USB image verification
+
+on:
+  pull_request:
+    paths:
+      - "buildroot-external/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-reproduce:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo build
+"""
+    smoke = (
+        '  contract-smoke:\n'
+        '    if: inputs.smoke_only == true\n'
+        '    runs-on: ubuntu-24.04\n'
+        '    timeout-minutes: 5\n'
+        '    steps:\n'
+        '      - name: Verify real reusable workflow invocation\n'
+        '        run: |\n'
+        '          set -euo pipefail\n'
+        '          test "${{ inputs.smoke_only }}" = "true"\n'
+        '          echo "Live USB reusable workflow_call contract executed"\n'
+        '\n'
+    )
+    candidate = base.replace(
+        'on:\n  pull_request:\n    paths:\n      - "buildroot-external/**"\n  workflow_dispatch:\n',
+        'on:\n  workflow_call:\n    inputs:\n      smoke_only:\n        type: boolean\n        required: false\n        default: false\n  workflow_dispatch:\n',
+    ).replace(
+        '  build-and-reproduce:\n',
+        smoke + '  build-and-reproduce:\n    if: inputs.smoke_only != true\n',
+    )
+    assert candidate != base
+
+    def check(current, expected):
+        def fake_output(args, **kwargs):
+            return (base if args[2].startswith('a' * 40 + ':') else current).encode()
+        monkeypatch.setattr(ci_checks.subprocess, 'check_output', fake_output)
+        assert ci_checks.live_workflow_trigger_only('a' * 40) is expected
+
+    check(candidate, True)
+    for changed in (
+        candidate.replace('echo build', 'echo malicious-build'),
+        candidate.replace('contents: read', 'contents: write'),
+        candidate.replace('runs-on: ubuntu-24.04', 'runs-on: ubuntu-latest'),
+        candidate.replace('if: inputs.smoke_only != true', 'if: always()'),
+        candidate.replace('test "${{ inputs.smoke_only }}" = "true"', 'true'),
+        candidate + '\n  unsafe-job:\n    runs-on: ubuntu-latest\n',
+    ):
+        check(changed, False)
+
+    def git_error(*args, **kwargs):
+        raise subprocess.CalledProcessError(128, 'git show')
+    monkeypatch.setattr(ci_checks.subprocess, 'check_output', git_error)
+    assert ci_checks.live_workflow_trigger_only('a' * 40) is False
+
+
+def test_live_workflow_body_change_forces_full_build(monkeypatch):
+    from scripts import ci_checks
+
+    def fake_output(args, **kwargs):
+        if args[1] == 'diff':
+            return b'.github/workflows/live-usb-build.yml\\0'
+        return b'on:\\n  workflow_dispatch:\\n'
+    monkeypatch.setattr(ci_checks.subprocess, 'run', lambda *a, **kw: None)
+    monkeypatch.setattr(ci_checks.subprocess, 'check_output', fake_output)
+    scope, workloads = ci_checks.select_scopes('pull_request', pr_base_sha='a' * 40)
+    assert scope.code
+    assert workloads.live_usb
+    assert workloads.live_usb_smoke
+
+
 def test_multiple_paths_union_and_unknown_fail_closed():
     from scripts.ci_workloads import FULL, classify_workloads
     chosen = classify_workloads([
