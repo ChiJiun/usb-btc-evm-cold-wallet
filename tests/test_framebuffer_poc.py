@@ -375,3 +375,40 @@ def test_evdev_same_path_replacement_fails_closed(tmp_path: Path):
         event.write_bytes(b"new")
         with pytest.raises(fb.InputDeviceChanged, match="identity changed"):
             inputs._assert_stable()
+
+
+
+def _fake_fb_ioctl(*, xres=800, yres=600, xv=800, yv=600, bpp=32,
+                   red=(16, 8, 0), green=(8, 8, 0), blue=(0, 8, 0)):
+    def ioctl(_fd, request, buf, _mutate):
+        if request == fb.FBIOGET_VSCREENINFO:
+            struct.pack_into("<7I", buf, 0, xres, yres, xv, yv, 0, 0, bpp)
+            for offset, field in ((32, red), (44, green), (56, blue)):
+                struct.pack_into("<III", buf, offset, *field)
+        elif request == fb.FBIOGET_FSCREENINFO:
+            struct.pack_into("<I", buf, 24, xres * yres * max(1, bpp // 8))
+            struct.pack_into("<I", buf, 48, xres * max(1, bpp // 8))
+        else:
+            raise AssertionError("unexpected ioctl")
+        return 0
+    return ioctl
+
+
+def test_framebuffer_resolution_and_pixel_format_fail_closed(monkeypatch):
+    monkeypatch.setattr(fb.fcntl, "ioctl", _fake_fb_ioctl(xv=801))
+    with pytest.raises(ValueError, match="pixel layout"):
+        fb._fb_geometry(3)
+
+    monkeypatch.setattr(fb.fcntl, "ioctl", _fake_fb_ioctl(bpp=24))
+    with pytest.raises(ValueError, match="pixel layout"):
+        fb._fb_geometry(3)
+
+    monkeypatch.setattr(
+        fb.fcntl, "ioctl",
+        _fake_fb_ioctl(red=(0, 8, 0), green=(8, 8, 0), blue=(16, 8, 0)),
+    )
+    with pytest.raises(ValueError, match="XRGB8888"):
+        fb._fb_geometry(3)
+
+    monkeypatch.setattr(fb.fcntl, "ioctl", _fake_fb_ioctl(bpp=16))
+    assert fb._fb_geometry(3) == (800, 600, 16, 1600)
