@@ -336,6 +336,8 @@ def _ruleset_run(
     *,
     main_approvals=1,
     last_push=True,
+    stale_reviews=True,
+    review_threads=True,
     checks=("CI / Required",),
     strict_checks=True,
     check_integration_id=15368,
@@ -368,6 +370,8 @@ def _ruleset_run(
                 "parameters": {
                     "required_approving_review_count": main_approvals,
                     "require_last_push_approval": last_push,
+                    "dismiss_stale_reviews_on_push": stale_reviews,
+                    "required_review_thread_resolution": review_threads,
                 },
             },
             {
@@ -421,9 +425,12 @@ def test_repository_release_controls_require_protected_main_and_release_tags():
     [
         {"main_approvals": 0},
         {"last_push": False},
+        {"stale_reviews": False},
+        {"review_threads": False},
         {"checks": ()},
         {"strict_checks": False},
         {"check_integration_id": None},
+        {"check_integration_id": 99999},
         {"include_tag": False},
         {"main_rules": ("deletion",)},
         {"main_rules": ("non_fast_forward",)},
