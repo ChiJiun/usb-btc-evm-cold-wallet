@@ -66,7 +66,7 @@ No seed, mnemonic, private key, Vault plaintext, or signing capability is persis
 12. Export writes `response-<requestId>.json` create-only and then records `SIGNED`. If power is lost after the completed response is published but before the ledger update, re-export verifies the existing response and safely completes the ledger transition.
 13. Shut down the offline system and boot Windows.
 14. Companion restores `EXPORTED`, discovers the response, verifies v2 binding, re-runs the existing EVM raw transaction / BTC PSBT verifier, and advances to `IMPORTED_VERIFIED`.
-15. Broadcast remains an explicit button. Successful send advances to `BROADCASTED`; there is no background or automatic broadcast.
+15. Broadcast remains an explicit button. An RPC/Esplora send acknowledgement is untrusted; it leaves the durable state at `BROADCAST_REQUESTED` and the session at `broadcast_unknown`. Advancing to `BROADCASTED` is blocked until independently authenticated chain evidence exists. There is no background or automatic broadcast.
 
 Normal operation requires no Python, Node, CLI, MetaMask, or manual JSON editing.
 
@@ -91,8 +91,11 @@ The integration suite uses only the public BIP39 `abandon ... about` test vector
 - formal online journal transition and explicit cancel cleanup;
 - restart auto-import of a valid response with zero automatic broadcasts;
 - ambiguous broadcast restart keeps `BROADCAST_REQUESTED` and exchange evidence when only untrusted RPC/Esplora status is available;
-- successful explicit broadcast followed by restart with duplicate broadcast blocked;
+- matching RPC/Esplora send acknowledgement retains an ambiguous durable reservation; restart blocks duplicate broadcast;
 - ambiguous broadcast restart recovery as exact-txid status-only lookup without resend or durable state advance;
+- request replacement with separately valid rehashed v2 envelope rejected against the original journal digest;
+- signed response replacement after durable import/broadcast reservation rejected against committed responseDigest;
+- hostile rehashed watch-only metadata rejected by the same tpub/address/network checks used for direct import;
 - pinned Bitcoin Core regtest `finalizepsbt` / `decoderawtransaction` as an independent BTC signing/finalization oracle;
 - browser UI export controls with no broadcast side effect;
 - SignerSession lock clearing the active single-USB binding;
