@@ -116,6 +116,7 @@ def _create(
     *,
     disk_uuid=media.DISK_UUID,
     boot_uuid=media.BOOT_UUID,
+    vault_uuid=media.VAULT_UUID,
     transfer_uuid=media.TRANSFER_UUID,
     transfer_attrs=0,
     boot_label="USBCOLD_EFI",
@@ -154,6 +155,7 @@ def _create(
         dev / name,
         disk_uuid=disk_uuid,
         boot_uuid=boot_uuid,
+        vault_uuid=vault_uuid,
         transfer_uuid=transfer_uuid,
         transfer_attrs=transfer_attrs,
         include_transfer=include_transfer,
@@ -216,9 +218,11 @@ def test_duplicated_cloned_usb_is_denied(tmp_path):
         "bad_backup_entries_crc",
         "backup_geometry_mismatch",
         "wrong_boot_guid",
+        "wrong_vault_guid",
         "wrong_transfer_guid",
         "wrong_disk_guid",
         "wrong_boot_label",
+        "wrong_vault_label",
         "wrong_transfer_label",
         "transfer_fat16",
         "transfer_hidden",
@@ -238,6 +242,8 @@ def test_corruption_and_unexpected_media_fail_closed(tmp_path, mutation):
     kwargs = {}
     if mutation == "wrong_boot_guid":
         kwargs["boot_uuid"] = uuid.uuid4()
+    elif mutation == "wrong_vault_guid":
+        kwargs["vault_uuid"] = uuid.uuid4()
     elif mutation == "wrong_transfer_guid":
         kwargs["transfer_uuid"] = uuid.uuid4()
     elif mutation == "wrong_disk_guid":
@@ -248,6 +254,8 @@ def test_corruption_and_unexpected_media_fail_closed(tmp_path, mutation):
         kwargs["transfer_attrs"] = 1 << 63
     elif mutation == "wrong_boot_label":
         kwargs["boot_label"] = "IMPOSTOR"
+    elif mutation == "wrong_vault_label":
+        kwargs["vault_label"] = "IMPOSTOR"
     elif mutation == "wrong_transfer_label":
         kwargs["transfer_label"] = "IMPOSTOR"
     elif mutation == "extra_partition":
