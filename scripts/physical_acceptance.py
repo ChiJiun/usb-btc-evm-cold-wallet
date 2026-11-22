@@ -25,7 +25,8 @@ CASES = (
     "SEPOLIA_IMPORT_VERIFY", "SEPOLIA_BROADCAST", "SEPOLIA_RECEIPT",
     "REPLACE_REQUEST", "REPLACE_RESPONSE", "REPLAY_REQUEST",
     "REPLAY_RESPONSE", "WRONG_CHAIN", "WRONG_ACCOUNT",
-    "USB_UNPLUG", "POWER_INTERRUPTION", "RECOVERY",
+    "USB_UNPLUG", "USB_REPLUG", "WRONG_DISK", "MALFORMED_TRANSFER",
+    "POWER_INTERRUPTION", "RECOVERY",
 )
 HEX40 = re.compile(r"^[a-fA-F0-9]{40}$")
 HEX64 = re.compile(r"^[a-fA-F0-9]{64}$")
@@ -65,14 +66,45 @@ def save(path: Path, data: dict) -> None:
     finally:
         if os.path.exists(temp):
             os.unlink(temp)
+    if os.name != "nt":
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+
+def verify_evidence(journal_path: Path, observation: dict) -> None:
+    if not isinstance(observation, dict) or not observation.get("command"):
+        raise ValueError("PASS requires an executed command or test case")
+    reference = clean(str(observation.get("evidence", "")), "evidence")
+    if Path(reference).name != reference or reference.startswith("."):
+        raise ValueError("Evidence must be a local basename")
+    artifact = journal_path.parent / reference
+    if artifact.is_symlink() or not artifact.is_file():
+        raise ValueError("Missing or unsafe evidence artifact")
+    if artifact.stat().st_size <= 0 or artifact.stat().st_size > 100 * 1024 * 1024:
+        raise ValueError("Invalid evidence size")
+    if hashlib.sha256(artifact.read_bytes()).hexdigest() != observation.get("evidenceSha256"):
+        raise ValueError("Evidence hash mismatch")
 
 
 def load(path: Path) -> dict:
     if path.is_symlink() or not path.is_file():
         raise ValueError("Evidence file missing or symlink")
     data = json.loads(path.read_text(encoding="utf-8"))
-    if data.get("schemaVersion") != 1 or set(data.get("cases", {})) != set(CASES):
-        raise ValueError("Unknown journal schema or incomplete matrix")
+    if data.get("schemaVersion") != 2 or not isinstance(data.get("cases"), dict):
+        raise ValueError("Unknown journal schema")
+    if set(data["cases"]) != set(CASES) or not HEX40.fullmatch(str(data.get("imageCommit", ""))) or not HEX64.fullmatch(str(data.get("imageSha256", ""))):
+        raise ValueError("Invalid image binding or incomplete matrix")
+    clean(str(data.get("deviceIdentity", "")), "deviceIdentity")
+    for name, case in data["cases"].items():
+        if not isinstance(case, dict) or case.get("status") not in STATUSES or not isinstance(case.get("observations"), list):
+            raise ValueError(f"Corrupt case {name}")
+        if case["status"] == "PASS":
+            if not case["observations"] or case["observations"][-1].get("status") != "PASS":
+                raise ValueError(f"Unaudited PASS for {name}")
+            verify_evidence(path, case["observations"][-1])
     return data
 
 
@@ -83,12 +115,13 @@ def start(args: argparse.Namespace) -> None:
     if not HEX40.fullmatch(args.commit) or not HEX64.fullmatch(args.image_sha256):
         raise ValueError("Require exact 40-hex commit and 64-hex image SHA-256")
     data = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "createdUtc": utc_now(),
         "updatedUtc": utc_now(),
         "imageCommit": args.commit.lower(),
         "imageSha256": args.image_sha256.lower(),
         "hardwareModel": clean(args.hardware, "hardware"),
+        "deviceIdentity": clean(args.device_identity, "deviceIdentity"),
         "firmware": clean(args.firmware, "firmware"),
         "partitions": [],
         "boots": [],
@@ -104,16 +137,27 @@ def record(args: argparse.Namespace) -> None:
     if args.case not in CASES or args.status not in STATUSES:
         raise ValueError("Unknown case or status")
     # Do not allow PASS without independent human-readable evidence reference.
-    if args.status == "PASS" and not args.evidence:
-        raise ValueError("PASS requires --evidence")
+    if args.status == "PASS" and (not args.evidence or not args.command):
+        raise ValueError("PASS requires existing --evidence and --command")
     evidence = clean(args.evidence, "evidence") if args.evidence else None
     note = clean(args.note, "note") if args.note else None
+    observation = {
+        "atUtc": utc_now(), "status": args.status, "evidence": evidence,
+        "note": note, "command": clean(args.command, "command") if args.command else None,
+        "imageCommit": data["imageCommit"], "imageSha256": data["imageSha256"],
+        "deviceIdentity": data["deviceIdentity"],
+    }
+    if args.status == "PASS":
+        if Path(evidence).name != evidence:
+            raise ValueError("Evidence must be a local basename")
+        artifact = path.parent / evidence
+        if artifact.is_symlink() or not artifact.is_file():
+            raise ValueError("PASS evidence file missing")
+        observation["evidenceSha256"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        verify_evidence(path, observation)
     case = data["cases"][args.case]
     case["status"] = args.status
-    case["observations"].append({
-        "atUtc": utc_now(), "status": args.status, "evidence": evidence,
-        "note": note,
-    })
+    case["observations"].append(observation)
     data["updatedUtc"] = utc_now()
     save(path, data)
 
@@ -153,6 +197,7 @@ def main(argv: list[str] | None = None) -> None:
     init.add_argument("--image-sha256", required=True)
     init.add_argument("--hardware", required=True)
     init.add_argument("--firmware", required=True)
+    init.add_argument("--device-identity", required=True)
     init.set_defaults(fn=start)
     rec = sub.add_parser("record")
     rec.add_argument("--file", required=True)
@@ -160,6 +205,7 @@ def main(argv: list[str] | None = None) -> None:
     rec.add_argument("--status", choices=sorted(STATUSES), required=True)
     rec.add_argument("--evidence")
     rec.add_argument("--note")
+    rec.add_argument("--command")
     rec.set_defaults(fn=record)
     b = sub.add_parser("boot")
     b.add_argument("--file", required=True)
