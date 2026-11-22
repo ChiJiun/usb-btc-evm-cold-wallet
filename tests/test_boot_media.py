@@ -212,6 +212,9 @@ def test_duplicated_cloned_usb_is_denied(tmp_path):
     [
         "bad_gpt_header_crc",
         "bad_gpt_entries_crc",
+        "bad_backup_header_crc",
+        "bad_backup_entries_crc",
+        "backup_geometry_mismatch",
         "wrong_boot_guid",
         "wrong_transfer_guid",
         "wrong_disk_guid",
@@ -227,6 +230,7 @@ def test_duplicated_cloned_usb_is_denied(tmp_path):
         "kernel_start_mismatch",
         "kernel_size_mismatch",
         "kernel_partition_number_mismatch",
+        "gpt_entry_gap",
     ],
 )
 def test_corruption_and_unexpected_media_fail_closed(tmp_path, mutation):
@@ -248,6 +252,8 @@ def test_corruption_and_unexpected_media_fail_closed(tmp_path, mutation):
         kwargs["transfer_label"] = "IMPOSTOR"
     elif mutation == "extra_partition":
         kwargs["extra_partition"] = True
+    elif mutation == "gpt_entry_gap":
+        kwargs["gap_entry"] = True
     _create(sys_block, dev, **kwargs)
 
     disk = dev / "sda"
@@ -276,7 +282,7 @@ def test_corruption_and_unexpected_media_fail_closed(tmp_path, mutation):
     elif mutation == "hybrid_mbr":
         with disk.open("r+b") as handle:
             handle.seek(462 + 4)
-            handle.write(b"\\x07")
+            handle.write(b"\x07")
     elif mutation == "wrong_sector_size":
         (sys_block / "sda/queue/logical_block_size").write_text("4096\n")
     elif mutation == "kernel_start_mismatch":
@@ -326,21 +332,3 @@ def test_spoofed_trusted_identifiers_on_non_usb_disk_lock_down_even_with_valid_u
         media.identify(sys_block, dev)
 
 
-def test_gpt_entry_gap_with_valid_checksums_fails_closed(tmp_path):
-    sys_block, dev = tmp_path / "sys", tmp_path / "dev"
-    _create(sys_block, dev)
-    data = bytearray((dev / "sda").read_bytes())
-    # Move entry 3 to entry 4, leaving an unused slot. The Linux sdX naming
-    # cannot be inferred from a filtered list of nonempty GPT entries.
-    entry_start = 1024
-    data[entry_start + 3 * 128:entry_start + 4 * 128] = data[
-        entry_start + 2 * 128:entry_start + 3 * 128
-    ]
-    data[entry_start + 2 * 128:entry_start + 3 * 128] = bytes(128)
-    checksum = zlib.crc32(data[entry_start:entry_start + 128 * 128])
-    struct.pack_into("<I", data, 512 + 88, checksum)
-    struct.pack_into("<I", data, 512 + 16, 0)
-    struct.pack_into("<I", data, 512 + 16, zlib.crc32(data[512:512 + 92]))
-    (dev / "sda").write_bytes(data)
-    with pytest.raises(ValueError, match="missing|duplicated|inconsistent"):
-        media.identify(sys_block, dev)
