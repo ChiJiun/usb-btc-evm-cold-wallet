@@ -383,7 +383,9 @@ def runtime_audit(
             ("network isolation", ("network stack absent", "/proc/net absent")),
             ("no active swap", ("no active swap",)),
             ("RAM-backed root", ("root filesystem is RAM-backed",)),
+            ("boot partition unmounted", ("boot partition is not mounted in cold runtime",)),
             ("COLD_VAULT mount", ("COLD_VAULT mounted",)),
+            ("COLD_VAULT restrictive mount options", ("COLD_VAULT restrictive mount options verified",)),
             ("no unexpected writable persistent filesystem", ("no unexpected writable persistent filesystem",)),
         )
         for name, markers in required_boot:
