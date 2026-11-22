@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: live-usb-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: live-usb-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.smoke_only && 'smoke' || 'full' }}
   cancel-in-progress: true
 
 jobs:
