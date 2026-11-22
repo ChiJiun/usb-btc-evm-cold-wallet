@@ -344,8 +344,11 @@ jobs:
       smoke_only: true
 
   live_usb:
-    needs: changes
-    if: needs.changes.outputs.live_usb == 'true'
+    # Do not spend hours building an image after fast Python validation fails.
+    # Cold-image changes always select the Python tests; a failed/skipped test
+    # leaves this job skipped, which CI / Required rejects (fail closed).
+    needs: [changes, tests]
+    if: needs.changes.outputs.live_usb == 'true' && needs.tests.result == 'success'
     uses: ./.github/workflows/live-usb-build.yml
 
   btc_core:
