@@ -119,6 +119,8 @@ def test_target_exposes_only_single_purpose_appliance_on_interactive_tty():
     assert 'BR2_TARGET_GENERIC_GETTY_PORT=""' in defconfig
     assert "tty1::respawn:/usr/bin/usb-wallet-gui-session" in postbuild
     assert "interactive getty or shell survived appliance lockdown" in postbuild
+    assert "unexpected interactive inittab entry survived appliance lockdown" in postbuild
+    assert "tty1::respawn:/usr/bin/usb-wallet-gui-session" in postbuild
     assert ":(askfirst|respawn):.*\\/bin\\/(a|ba|z)?sh" in postbuild
 
 
