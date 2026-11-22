@@ -455,7 +455,11 @@ jobs:
           set -euo pipefail
           current_tag_object_sha="$(python3 - <<'PY'
           import os
-          from scripts.verify_release_assets import verify_source
+          from scripts.verify_release_assets import (
+              verify_repository_release_controls,
+              verify_source,
+          )
+          verify_repository_release_controls()
           print(verify_source(
               os.environ["TAG"],
               os.environ["SOURCE_SHA"],
