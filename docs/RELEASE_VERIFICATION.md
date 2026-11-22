@@ -49,7 +49,8 @@ Release workflow 必須從受保護的 `refs/heads/main` 執行 `workflow_dispat
 ~~~sh
 python3 scripts/verify_release_assets.py \
   --tag v0.1.0-beta.1 \
-  --commit <independently-verified-40-hex-commit> \
+  --commit <independently-verified-40-hex-source-commit> \
+  --workflow-sha <independently-verified-40-hex-main-workflow-commit> \
   --asset usb-cold-wallet-v0.1.0-beta.1.img.xz
 ~~~
 
@@ -62,8 +63,8 @@ python3 scripts/verify_release_assets.py \
 此 workflow **不會也不能假裝已替 repository 開啟下列管理設定**：
 
 1. **Immutable Releases**：Repository → Settings → General → Releases 啟用 immutable releases。正式發布後執行 `gh release verify <tag> -R ChiJiun/usb-btc-evm-cold-wallet`。
-2. **Release tag ruleset（目前 BLOCKER）**：建立 Active tag ruleset，target 至少涵蓋 `refs/tags/v*`，啟用 **Restrict creations / Restrict updates / Restrict deletions**；bypass 僅允許實際 release maintainer。完成後以 Repository → Settings → Rulesets 及 `GET /repos/ChiJiun/usb-btc-evm-cold-wallet/rulesets` 確認 target=tag、enforcement=active，再讀 ruleset detail 確認三個限制都存在。
-3. **main / workflow trust anchor（目前 BLOCKER）**：現有 `main-protection` 必須至少要求有效 PR review、必要 CI，且 release workflow / verifier 的修改需 Code Owner 或等效獨立 approval；不得保留 0 approval / 0 required check 作為正式 release trust anchor。完成後讀 ruleset detail 確認 `refs/heads/main`、Active、required review/status checks。
+2. **Release tag ruleset（目前 BLOCKER）**：建立 Active tag ruleset，include 精確設定 `refs/tags/v*`，啟用 **Restrict creations / Restrict updates / Restrict deletions**；bypass 僅允許實際 release maintainer。Release workflow 的 validate job 會從 Rulesets API fail-closed 驗證 target=tag、Active、pattern 與三個限制；bypass actor 的實際人員身分仍須 Admin 人工核對。
+3. **main / workflow trust anchor（目前 BLOCKER）**：現有 `main-protection` 必須至少要求 1 個有效 PR approval、**Require approval of the most recent reviewable push**，並把 `CI / Required` 設為 required status check；不得保留 0 approval / 0 required check。Release workflow 的 validate job 會從 Rulesets API fail-closed 驗證這些條件。完成後讀 ruleset detail 確認 `refs/heads/main`、Active、approval count ≥ 1、last-push approval=true、required check 包含 `CI / Required`。
 4. **Authorized signer**：workflow/verifier 目前只接受 GitHub signer login `ChiJiun`，且要求 signature `isValid=true`、state=`VALID`、不是 GitHub 代簽。若未來增加 release maintainer，必須先經受保護 main PR 修改 allowlist。
 5. **Protected release environment（建議的第二道人工 gate）**：建立 `release` environment 並設 required reviewer / deployment protection，再把 publish job 綁定該 environment。未完成前不得把 environment protection 當成已存在。
 
