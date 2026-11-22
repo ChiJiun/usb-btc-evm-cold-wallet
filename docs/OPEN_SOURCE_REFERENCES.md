@@ -16,23 +16,23 @@ This is an original MIT-licensed CLI with dependencies; **no code copied or vend
 
 Prefer protocol-compatible libraries over writing your own ECDSA, secp256k1, Keccak, AES or BIP32. Upstream license notices remain required when distributing upstream packages or source.
 
-## Verified reuse evidence in current main (2026-11-22)
+## Verified reuse evidence in current repository (2026-11-22)
 
-These are **real dependency integrations**, not evidence of copied source code:
+These are **real dependency integrations confirmed from repository source/configuration**, not evidence of copied source code:
 
-| Local path | Existing upstream reuse | Do not reinvent |
-| --- | --- | --- |
-| `src/usb_cold_wallet/btc.py`, `companion_btc.py`, `keys.py` | `embit` PSBT / BIP32 / BIP39 / Bitcoin primitives | PSBT parsing, key derivation and signature primitives; keep local validation |
-| `src/usb_cold_wallet/evm.py`, `companion_core.py` | `eth-account` | Ethereum signing and transaction encoding |
-| `qr-transport/src/typed_registry.mjs`, `ur_transport.mjs` | Blockchain Commons `@blockchaincommons/uniform-resources` / `dcbor` | UR/CBOR machinery |
-| `qr-metamask/src/adapter.mjs` | `@keystonehq/bc-ur-registry`, `@keystonehq/bc-ur-registry-eth`, `@ngraveio/bc-ur` | Ethereum typed UR and QR registry |
-| `scripts/fetch_buildroot.sh`, `scripts/configure_buildroot.sh` | Pinned Buildroot distribution | Live OS build system |
+| Local evidence | Dependency / pinned input | Classification | Do not reinvent |
+| --- | --- | --- | --- |
+| `pyproject.toml`; `src/usb_cold_wallet/btc.py`; `src/usb_cold_wallet/companion_btc.py`; `src/usb_cold_wallet/keys.py`; `infra/embit.env` | `embit==0.8.0` | Dependency | PSBT parsing, BIP32/BIP39 derivation and Bitcoin primitives; keep local validation |
+| `pyproject.toml`; `src/usb_cold_wallet/evm.py`; `src/usb_cold_wallet/companion_core.py` | `eth-account==0.14.0` | Dependency | Ethereum signing / transaction encoding; keep local chain/account/policy validation |
+| `qr-transport/package.json`; `qr-transport/package-lock.json`; `qr-transport/src/typed_registry.mjs`; `qr-transport/src/ur_transport.mjs` | `@blockchaincommons/uniform-resources==1.0.0-beta.5`, `@blockchaincommons/dcbor==1.0.0-beta.5` | Dependency | UR/CBOR machinery |
+| `qr-metamask/package.json`; `qr-metamask/package-lock.json`; `qr-metamask/src/adapter.mjs` | `@keystonehq/bc-ur-registry==0.8.1`, `@keystonehq/bc-ur-registry-eth==0.23.1`, `@ngraveio/bc-ur==1.1.13` | Dependency | Ethereum typed UR and QR registry |
+| `infra/buildroot.env`; `scripts/fetch_buildroot.sh`; `scripts/configure_buildroot.sh` | Buildroot `2026.08.2`, archive SHA-256 pinned in `infra/buildroot.env` | Pinned build input / dependency | Live OS build system |
 
-**Source-copy status:** no confirmed bulk source-copy from Specter-DIY, AirGap, BlueWallet or SignerOS in this inspection. These remain candidates, not completed porting work. `scripts/fetch_sources.sh` fetches Buildroot build inputs; it is not a wallet-source import script.
+**Source-copy status:** no confirmed wallet source-copy from Specter-DIY, AirGap, BlueWallet, Keystone or SignerOS in this inspection. These remain Candidate/Reference sources unless a PR records the exact upstream commit, exact copied path/lines, path-level license coverage, required notices and local test evidence. `scripts/fetch_sources.sh` prepares authenticated build inputs; it is not evidence that wallet source was ported.
 
 ## Concrete upstream porting procedure
 
-For an issue, locate the relevant row in `docs/USB_MVP_ACCELERATION_PLAN.md` (upstream commit and issue mapping), then inspect the **actual file/function** at that commit. Record the path, license coverage, dependencies and existing local equivalent. Prefer the smallest legal copy-and-adapt patch over a fresh rewrite where it genuinely saves effort.
+For an issue, locate the relevant row in `docs/USB_MVP_ACCELERATION_PLAN.md` (upstream commit and issue mapping), then inspect the **actual file/function** at that commit. A commit existing upstream is only provenance evidence; it does not prove a particular file is legally or technically suitable to copy. Record the exact path/function, file-level or covering license evidence, SPDX/header/NOTICE/copyright requirements, transitive dependencies and existing local equivalent. Prefer the smallest legal copy-and-adapt patch over a fresh rewrite where it genuinely saves effort.
 
 Before copying, compare exact behavior and integration boundaries. A copied implementation must retain required attribution and pass local negative/security tests. If the upstream path is not yet licensed/verified, use it only as a reference. For SignerOS Buildroot/scripts, Trezor GPL components and Reown Community License code, do not directly copy without an explicit license review.
 
@@ -45,8 +45,8 @@ Research snapshot: November 2026. No audit or security endorsement of any refere
 
 For the physical-USB MVP, prefer code that is both technically close and clearly reusable:
 
-- **Direct-copy candidates:** Specter-DIY (MIT), AirGap repositories reviewed under MIT, BlueWallet (MIT), Blockchain Commons bc-ur-ts (BSD-2-Clause-Patent). Pin the exact upstream commit and preserve notices.
-- **Reference-only until cleared:** SignerOS Buildroot/scripts; Trezor GPL firmware modules; Reown/WalletConnect Community License code.
+- **Candidate only until path-level clearance:** Specter-DIY, AirGap, BlueWallet and Blockchain Commons source. Repository-level license metadata is insufficient; pin the exact commit **and** verify the exact source path, headers/SPDX, NOTICE/copyright and dependencies before copying.
+- **Reference-only until cleared:** SignerOS Buildroot/scripts; Trezor GPL firmware modules; Reown/WalletConnect Community License code. Do not copy GPL/LGPL/community/custom-license code into this MIT repository merely because the API or architecture is useful.
 - **Do not replace already-hardened local core:** BTC PSBT signer, Sepolia native signer, vault/policy, canonical request/response binding and existing generic UR transport. Reuse upstream code only where it removes an actual remaining gap.
 
 See [USB_MVP_ACCELERATION_PLAN.md](USB_MVP_ACCELERATION_PLAN.md) for the critical path and exact physical-validation scope.
