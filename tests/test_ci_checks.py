@@ -540,7 +540,7 @@ def test_workload_classifier_tracks_exact_offline_installer_allowlist():
     ("scripts/install_target_python.py", ("live_usb",)),
     ("buildroot-external/board/usb-wallet/linux.config", ("live_usb",)),
     ("infra/wheelhouse.sha256", ("live_usb",)),
-    ("pyproject.toml", ("windows", "qr", "native_qr")),
+    ("pyproject.toml", ("live_usb", "windows", "qr", "native_qr")),
     ("src/usb_cold_wallet/companion_web.py", ("windows",)),
     ("scripts/windows_companion.py", ("windows",)),
     ("src/usb_cold_wallet/companion_static/companion.js", ("windows",)),
@@ -554,6 +554,7 @@ def test_workload_classifier_tracks_exact_offline_installer_allowlist():
     (".github/workflows/live-usb-build.yml", ("live_usb",)),
     ("src/usb_cold_wallet/new_secret_module.py", ("live_usb", "windows")),
     ("scripts/unrecognized.sh", ("live_usb", "windows")),
+    ("review_only/parser.py", ("qr", "native_qr", "windows", "snap")),
     (".github/workflows/unknown.yml", ("live_usb", "windows")),
 ])
 def test_workload_positive_scope(path, expected):
@@ -578,6 +579,7 @@ def test_workload_positive_scope(path, expected):
     "metamask-snap/src/index.ts",
     "src/usb_cold_wallet/companion_core.py",
     "requirements/ci.lock",
+    "review_only/parser.py",
 ])
 def test_unrelated_change_does_not_rebuild_offline_image(path):
     from scripts.ci_workloads import classify_workloads
