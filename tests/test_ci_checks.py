@@ -805,6 +805,51 @@ def test_live_usb_cache_reuses_only_verifiable_source_downloads():
         assert unsafe not in cache_block
     assert "hashFiles(" in cache_block
     assert "buildroot-external/configs/usb_wallet_x86_64_defconfig" in cache_block
-    assert "      - name: Build image and verify reproducibility (two clean builds)" in live
-    assert "run: sh scripts/check_reproducible.sh" in live
+    assert "  clean-builds:" in live
+    assert "        run: [1, 2]" in live
+    assert "      - name: Independently build and statically audit image" in live
+    assert "run: sh scripts/build_image.sh" in live
+    assert "  verify-and-publish:" in live
+    assert "needs: clean-builds" in live
+    assert "Compare two independent SHA-256 manifests and actual image bytes" in live
     assert "      - name: Boot generated USB image using UEFI OVMF/QEMU (TCG)" in live
+
+
+def test_parallel_live_usb_requires_two_independent_clean_runners_and_real_bytes():
+    """No cached compiler output or self-reported hash may bypass the release gate."""
+    from pathlib import Path
+
+    live = (Path(__file__).resolve().parents[1] /
+            ".github/workflows/live-usb-build.yml").read_text(encoding="utf-8")
+    builds = live.split("\n  clean-builds:\n", 1)[1].split(
+        "\n  verify-and-publish:\n", 1
+    )[0]
+    verify = live.split("\n  verify-and-publish:\n", 1)[1]
+
+    assert "matrix:\n        run: [1, 2]" in builds
+    assert "    runs-on: ubuntu-24.04" in builds
+    assert "    if: inputs.smoke_only != true" in builds
+    assert "sh scripts/build_image.sh" in builds
+    assert "sha256sum usb-cold-wallet.img bzImage" in builds
+    assert "live-usb-clean-hashes-${{ matrix.run }}" in builds
+    assert "if: matrix.run == 2" in builds
+    assert "live-usb-second-clean-image" in builds
+    assert "build/output/images/usb-cold-wallet.img" in builds
+    assert "build/output/images/bzImage" in builds
+
+    assert "needs: clean-builds" in verify
+    assert "actions/download-artifact@" in verify
+    assert "merge-multiple: true" in verify
+    assert "cmp -s build/reproducibility/run-1.sha256 build/reproducibility/run-2.sha256" in verify
+    assert "sha256sum -c ../../reproducibility/run-2.sha256" in verify
+    assert "run: sh scripts/verify_uefi_boot.sh" in verify
+    assert "Upload verified testnet-only boot image (NOT A RELEASE)" in verify
+    assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in verify
+    assert "test \"$(git rev-parse HEAD)\" = \"$EXPECTED_HEAD_SHA\"" in verify
+
+    # Build and publication outputs are never cached as a shortcut.
+    for blocked in ("build/output\n", "build/verified-artifact\n",
+                    "build/reproducibility\n"):
+        assert blocked not in builds.split(
+            "      - name: Restore verified source downloads", 1
+        )[1].split("      - name: Prepare authenticated offline sources", 1)[0]
