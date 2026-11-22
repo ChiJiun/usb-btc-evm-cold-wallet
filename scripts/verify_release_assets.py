@@ -18,7 +18,10 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 REPOSITORY = "ChiJiun/usb-btc-evm-cold-wallet"
-RELEASE_WORKFLOW = f"{REPOSITORY}/.github/workflows/release.yml"
+RELEASE_CANDIDATE_WORKFLOW = f"{REPOSITORY}/.github/workflows/release.yml"
+RELEASE_FINALIZE_WORKFLOW = f"{REPOSITORY}/.github/workflows/release-finalize.yml"
+# Build provenance is minted only by the trusted default-branch finalizer.
+RELEASE_WORKFLOW = RELEASE_FINALIZE_WORKFLOW
 TAG_RE = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?")
 SHA_RE = re.compile(r"[a-fA-F0-9]{40}")
 ASSET_RE = re.compile(
@@ -287,6 +290,7 @@ def verify_repository_release_controls(*, run: Run = _gh) -> None:
                 and pr_params["required_approving_review_count"] >= 1
                 and pr_params.get("require_last_push_approval") is True
                 and "CI / Required" in check_names
+                and {"deletion", "non_fast_forward"}.issubset(by_type)
             ) or main_ok
 
         if (
@@ -298,7 +302,8 @@ def verify_repository_release_controls(*, run: Run = _gh) -> None:
     missing = []
     if not main_ok:
         missing.append(
-            "active main ruleset with >=1 approval, last-push approval, and CI / Required"
+            "active main ruleset with >=1 approval, last-push approval, CI / Required, "
+            "deletion protection, and non-fast-forward protection"
         )
     if not tag_ok:
         missing.append(
@@ -308,6 +313,49 @@ def verify_repository_release_controls(*, run: Run = _gh) -> None:
         raise ReleaseVerificationError(
             "Repository release controls are not enforced: " + "; ".join(missing)
         )
+
+
+def verify_workflow_run_identity(
+    run_id: int | str,
+    expected_head_sha: str,
+    *,
+    expected_run_attempt: int | str | None = None,
+    run: Run = _gh,
+) -> dict:
+    """Require a successful manual candidate run from the exact protected-main commit."""
+    run_id_text = str(run_id)
+    if not run_id_text.isdigit():
+        raise ReleaseVerificationError("Workflow run id must be numeric")
+    if not SHA_RE.fullmatch(expected_head_sha):
+        raise ReleaseVerificationError("Workflow head SHA must be a full 40-character SHA")
+    expected_head_sha = expected_head_sha.lower()
+
+    data = _json(run, ["api", f"repos/{REPOSITORY}/actions/runs/{run_id_text}"])
+    repository = data.get("repository")
+    head_repository = data.get("head_repository")
+    path = data.get("path")
+    normalized_path = path.split("@", 1)[0] if isinstance(path, str) else None
+
+    if (
+        data.get("id") != int(run_id_text)
+        or data.get("event") != "workflow_dispatch"
+        or data.get("status") != "completed"
+        or data.get("conclusion") != "success"
+        or data.get("head_branch") != "main"
+        or str(data.get("head_sha", "")).lower() != expected_head_sha
+        or normalized_path != ".github/workflows/release.yml"
+        or not isinstance(repository, dict)
+        or repository.get("full_name") != REPOSITORY
+        or not isinstance(head_repository, dict)
+        or head_repository.get("full_name") != REPOSITORY
+    ):
+        raise ReleaseVerificationError("Untrusted or mismatched candidate workflow run")
+
+    if expected_run_attempt is not None:
+        attempt = str(expected_run_attempt)
+        if not attempt.isdigit() or data.get("run_attempt") != int(attempt):
+            raise ReleaseVerificationError("Candidate workflow run attempt mismatch")
+    return data
 
 
 def _attest_args(image: Path, workflow_sha: str) -> list[str]:
@@ -356,6 +404,7 @@ def _verify_metadata(
         "workflow_sha": workflow_sha,
         "tag_object_sha": tag_object_sha,
         "workflow": ".github/workflows/release.yml",
+        "attestation_workflow": ".github/workflows/release-finalize.yml",
         "asset": asset,
         "compression": "xz -6 --threads=1 --check=crc64 --no-sparse",
         "reproducibility_runs": 2,
@@ -382,6 +431,8 @@ def _verify_metadata(
         value = metadata.get(key)
         if not isinstance(value, str) or not value or len(value) > 120:
             raise ReleaseVerificationError(f"Release metadata has invalid {key}")
+    if not isinstance(metadata.get("publish_requested"), bool):
+        raise ReleaseVerificationError("Release metadata has invalid publish_requested flag")
     for key in ("workflow_run_id", "workflow_run_attempt"):
         value = metadata.get(key)
         if not isinstance(value, str) or not value.isdigit():
@@ -409,7 +460,7 @@ def _verify_build_provenance(
         run(_attest_args(_safe_file(directory, name), workflow_sha))
 
 
-def verify_local_artifacts(
+def verify_candidate_artifacts(
     tag: str,
     commit: str,
     asset: str,
@@ -419,8 +470,10 @@ def verify_local_artifacts(
     run: Run = _gh,
     authorized_tagger_emails: frozenset[str] = DEFAULT_AUTHORIZED_RELEASE_TAGGER_EMAILS,
     expected_tag_object_sha: str | None = None,
+    expected_run_id: int | str | None = None,
+    expected_run_attempt: int | str | None = None,
 ) -> str:
-    """Verify the exact staged bytes after attestation and before publish."""
+    """Verify staged candidate bytes before any privileged attestation or publish step."""
     tag, commit = _validate_identity(tag, commit, asset)
     tag_object_sha = _verify_signed_tag(
         run,
@@ -447,28 +500,62 @@ def verify_local_artifacts(
         if actual_digest != expected_digest:
             raise ReleaseVerificationError(f"Staged release digest mismatch: {name}")
 
-    image = _safe_file(root, asset)
+    metadata_path = _safe_file(root, "release-metadata.json")
     _verify_metadata(
-        _safe_file(root, "release-metadata.json"),
+        metadata_path,
         tag,
         commit,
         workflow_sha,
         tag_object_sha,
         asset,
     )
-    _verify_spdx(_safe_file(root, "SBOM.spdx.json"))
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ReleaseVerificationError("Invalid release-metadata.json") from exc
 
-    # Every published byte set is independently bound to the same signed tag,
-    # source commit and release workflow. A substituted manifest/SBOM/metadata
-    # therefore cannot authenticate a different image.
+    if expected_run_id is not None and metadata.get("workflow_run_id") != str(expected_run_id):
+        raise ReleaseVerificationError("Release metadata workflow run id mismatch")
+    if (
+        expected_run_attempt is not None
+        and metadata.get("workflow_run_attempt") != str(expected_run_attempt)
+    ):
+        raise ReleaseVerificationError("Release metadata workflow run attempt mismatch")
+
+    _verify_spdx(_safe_file(root, "SBOM.spdx.json"))
+    return _sha256(_safe_file(root, asset))
+
+
+def verify_local_artifacts(
+    tag: str,
+    commit: str,
+    asset: str,
+    directory: str | Path,
+    *,
+    workflow_sha: str,
+    run: Run = _gh,
+    authorized_tagger_emails: frozenset[str] = DEFAULT_AUTHORIZED_RELEASE_TAGGER_EMAILS,
+    expected_tag_object_sha: str | None = None,
+) -> str:
+    """Verify the exact staged bytes after attestation and before publish."""
+    digest = verify_candidate_artifacts(
+        tag,
+        commit,
+        asset,
+        directory,
+        workflow_sha=workflow_sha,
+        run=run,
+        authorized_tagger_emails=authorized_tagger_emails,
+        expected_tag_object_sha=expected_tag_object_sha,
+    )
+    root = Path(directory)
     _verify_build_provenance(
         run,
         root,
         ["SHA256SUMS", asset, *REQUIRED_STAGED_FILES],
         workflow_sha,
     )
-    return _sha256(image)
-
+    return digest
 
 def require_successful_jobs(job_results: Mapping[str, str]) -> None:
     """Fail closed unless every required release job completed successfully."""
@@ -598,11 +685,16 @@ def main() -> int:
         action="store_true",
         help="Verify only signed tag -> exact source commit binding",
     )
+    parser.add_argument(
+        "--candidate-only",
+        action="store_true",
+        help="Verify staged candidate bytes before privileged attestation",
+    )
     args = parser.parse_args()
 
     try:
         if args.source_only:
-            if args.asset or args.local_dir:
+            if args.asset or args.local_dir or args.candidate_only:
                 raise ReleaseVerificationError(
                     "--source-only cannot be combined with artifact verification options"
                 )
@@ -622,7 +714,18 @@ def main() -> int:
         if not args.workflow_sha:
             raise ReleaseVerificationError("--workflow-sha is required for artifact verification")
 
-        if args.local_dir:
+        if args.candidate_only:
+            if not args.local_dir:
+                raise ReleaseVerificationError("--candidate-only requires --local-dir")
+            digest = verify_candidate_artifacts(
+                args.tag,
+                args.commit,
+                args.asset,
+                args.local_dir,
+                workflow_sha=args.workflow_sha,
+                expected_tag_object_sha=args.expected_tag_object_sha,
+            )
+        elif args.local_dir:
             digest = verify_local_artifacts(
                 args.tag,
                 args.commit,
