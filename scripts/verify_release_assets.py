@@ -233,13 +233,20 @@ def _active_ruleset_details(run: Run) -> list[dict]:
 
 
 def _ruleset_includes(detail: dict, ref_pattern: str) -> bool:
+    """Require an exact include with no exclusions or explicit bypass identities."""
     conditions = detail.get("conditions")
     ref_name = conditions.get("ref_name") if isinstance(conditions, dict) else None
     includes = ref_name.get("include") if isinstance(ref_name, dict) else None
     excludes = ref_name.get("exclude") if isinstance(ref_name, dict) else None
-    if not isinstance(includes, list) or ref_pattern not in includes:
-        return False
-    return not isinstance(excludes, list) or ref_pattern not in excludes
+    bypass_actors = detail.get("bypass_actors")
+    return (
+        isinstance(includes, list)
+        and ref_pattern in includes
+        and isinstance(excludes, list)
+        and not excludes
+        and isinstance(bypass_actors, list)
+        and not bypass_actors
+    )
 
 
 def verify_repository_release_controls(*, run: Run = _gh) -> None:
@@ -302,12 +309,14 @@ def verify_repository_release_controls(*, run: Run = _gh) -> None:
     missing = []
     if not main_ok:
         missing.append(
-            "active main ruleset with >=1 approval, last-push approval, CI / Required, "
-            "deletion protection, and non-fast-forward protection"
+            "active main ruleset with no excludes/bypass actors, >=1 approval, "
+            "last-push approval, CI / Required, deletion protection, and "
+            "non-fast-forward protection"
         )
     if not tag_ok:
         missing.append(
-            "active refs/tags/v* ruleset restricting creation, update, and deletion"
+            "active refs/tags/v* ruleset with no excludes/bypass actors and "
+            "creation/update/deletion restrictions"
         )
     if missing:
         raise ReleaseVerificationError(
