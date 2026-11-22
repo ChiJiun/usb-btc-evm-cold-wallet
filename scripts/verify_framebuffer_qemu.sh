@@ -159,6 +159,24 @@ if width < 320 or height < 240 or len(pixels) != width * height * 3:
     raise SystemExit("unexpected QEMU screendump geometry")
 if len(set(pixels)) < 4:
     raise SystemExit("QEMU screendump is visually uniform")
+
+# Verify actual framebuffer POC palette at fixed, text-free locations.
+# A generic VGA console screenshot is insufficient GUI evidence.
+def at(x, y):
+    i = (y * width + x) * 3
+    return tuple(pixels[i:i + 3])
+
+def near(actual, expected):
+    return all(abs(a - b) <= 10 for a, b in zip(actual, expected))
+
+if not (near(at(0, 0), (28, 49, 76))
+        and near(at(0, 60), (17, 25, 39))
+        and near(at(0, height - 1), (28, 49, 76))):
+    raise SystemExit("QEMU image does not show expected framebuffer GUI regions")
+
+amber = (255, 222, 147)
+if sum(near(tuple(pixels[i:i + 3]), amber) for i in range(0, len(pixels), 3)) < 40:
+    raise SystemExit("QEMU image lacks expected GUI label pixels")
 PY
 cp "$TMP/framebuffer-gui.ppm" "$SCREENSHOT"
 printf '%s\n' "actual QEMU screendump captured" >> "$ACTIONS"
