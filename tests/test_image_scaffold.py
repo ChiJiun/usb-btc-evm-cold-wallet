@@ -107,7 +107,19 @@ def test_uefi_smoke_uses_matched_flash_firmware_and_serial_audit():
     assert "loglevel=7" in grub
     assert 'grep \'^FAIL:\' "$CHECKS" > /dev/ttyS0' in boot_audit
     assert "USB_WALLET_UEFI_AUDIT_LOCKDOWN" in boot_audit
+    assert "USB_WALLET_CONSOLE_READY" in script
+    assert "guest audit marker present but required evidence is missing" in script
+    assert "boot partition is not mounted in cold runtime" in script
     assert "-net none" in script
+
+
+def test_target_exposes_only_single_purpose_appliance_on_interactive_tty():
+    defconfig = (ROOT / "buildroot-external/configs/usb_wallet_x86_64_defconfig").read_text()
+    postbuild = (ROOT / "buildroot-external/board/usb-wallet/post-build.sh").read_text()
+    assert 'BR2_TARGET_GENERIC_GETTY_PORT=""' in defconfig
+    assert "tty1::respawn:/usr/bin/usb-wallet-gui-session" in postbuild
+    assert "interactive getty or shell survived appliance lockdown" in postbuild
+    assert ":(askfirst|respawn):.*\\/bin\\/(a|ba|z)?sh" in postbuild
 
 
 def test_image_generation_is_deterministic():
