@@ -347,6 +347,7 @@ def test_repository_release_controls_require_protected_main_and_release_tags():
         {"main_bypass": ({"actor_id": 1, "actor_type": "RepositoryRole"},)},
         {"tag_excludes": ("refs/tags/v0.*",)},
         {"tag_bypass": ({"actor_id": 1, "actor_type": "RepositoryRole"},)},
+        {"tag_rules": ("creation", "update", "deletion")},
         {"tag_rules": ("deletion",)},
         {"tag_rules": ("update",)},
     ],
