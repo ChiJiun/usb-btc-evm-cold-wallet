@@ -3,28 +3,59 @@
 `.github/workflows/ci.yml` 是主要驗證流程。分流程式為
 `scripts/ci_checks.py`，固定合併門檻為 `CI / Required`。
 
-## 驗證範圍
+## 驗證範圍（以 Repository 原始碼及依賴白名單為準）
 
-| 變更或觸發條件 | 必要驗證 |
+固定合併檢查是 `CI / Required`，由 `scripts/ci_checks.py`
+分析完整 PR diff（刪除與重新命名的舊路徑也納入）。另外使用
+`scripts/ci_workloads.py` 判定昂貴整合驗證；新增、不認識或比較
+失敗的可執行路徑 **全部驗證（fail closed）**。Docs-only PR
+仍執行 Secret scan、Scope、Required。README.md 另建 wheel
+檢查其 Metadata。
+
+| 變更範圍 | 必跑整合測試 |
 | --- | --- |
-| 純文件（README.en、`SECURITY.md`、docs） | 變更分類、完整歷史 Secret scan、Required |
-| README.md | 以上檢查，以及一次 wheel build 與 Python package metadata 驗證 |
-| Python／其他程式碼、QR Transport JS／MetaMask QR JS | Python 3.12/3.13 pytest、可重現 wheel 雙次建置、QR Transport Node 24 單元測試／bundle build／Python↔QR 互通、選用 MetaMask QR Node 24／Keyring／Chromium CSP／Python 簽章互通、Required |
-| 依賴 manifest、lockfile、任何 `.github/workflows/*.yml/.yaml` | 上述程式碼驗證，另執行 Python `pip-audit`；PR 必須通過實際 GitHub Dependency Review |
-| npm manifest／lockfile 或 CI workflow 變更 | 額外執行全部 tracked npm 專案的 production `npm ci --ignore-scripts`、`npm audit --omit=dev --audit-level=high` |
-| 每日 schedule（02:20 UTC） | Secret scan、Python `pip-audit`、所有 npm lockfile 的 production 及 dev/build dependency audit；QR 建置等其他昂貴檢查不執行 |
-| workflow_dispatch | 完整驗證（包含 QR Transport、Python/Node 稽核） |
+| `src/usb_cold_wallet/` 離線白名單模組 | 完整 Live USB；BTC/EVM/QR/共用 API 另跑直接或間接使用者的 Windows、QR、Native QR、Snap、Core/Fuzz/VFAT |
+| `src/usb_cold_wallet/companion_*.py`、`companion_static/**` | Windows Portable EXE；不重建 Live USB |
+| `qr-transport/**`、`qr-metamask/**`、`metamask-snap/**` | 各自的 QR／Native QR／Snap；不重建 Live USB |
+| `buildroot-external/**`、`infra/**`、映像相關 `scripts/**` | 完整 Live USB |
+| Windows 專用 `scripts/**` | Windows EXE |
+| BTC Core／Fuzz／VFAT 測試工具 | 各自的真實整合工作 |
+| `tests/**` 單純新增或修改測試 | Python pytest，加上相關的互通/外部 Oracle；測試檔不會被打包進 Live USB，不重建映像 |
+| `requirements/**`、`pyproject.toml` | 依賴稽核與受影響平台／打包驗證；若另修改冷端程式則完整 Live USB |
+| `Makefile`、`ci.yml`、CI 分類器、`live-usb-build.yml` | 全套必要安全檢查與完整 Live USB |
+| 不認識的可執行程式／Workflow 路徑 | 全部驗證，不自動略過 |
 
-QR Transport 與選用 MetaMask Native QR 的功能驗證在程式碼變更時不能被跳過，且
-`CI / Required` 必須確認兩個 QR job 都實際成功。純文件及每日依賴稽核時兩者可跳過，
-但對 QR 修改、CI workflow 及依賴修改，缺少 lockfile、失敗或被取消均不得放行。
-MetaMask Native QR 的 Chromium 測試包含正式 bundle、CSP、交易 JSON 下載、簽章回覆與頁面恢復失效；
-實體 MetaMask Extension／雙機相機／Sepolia 廣播仍屬獨立產品驗收。
-QR 的建置工作還額外
-對 **dev/build dependencies** 執行 `npm audit --audit-level=high`；
-Node 排程稽核則先分別檢查 production 相依，再針對**完整 lockfile（含 dev/build dependencies）** 執行 `npm audit --audit-level=high`，避免每日不跑 QR bundle 時遺漏建置工具的新增漏洞。完整 Node 稽核目前
-使用 npm lockfile；雖然 pnpm/yarn 依賴檔會觸發檢查，尚未支援
-pnpm/yarn 的獨立 audit，沒有可用 npm lockfile 時會拒絕通過。
+Python 3.12/3.13 測試、可重現 wheel 建置仍依
+`scripts/ci_checks.py` 的粗粒度 `code` 範圍執行。
+所有 PR 都保留歷史 Secret scan；變更依賴、Workflow Actions 時
+執行 Dependency Review 與適用的 Python/Node 稽核；每天 02:20 UTC
+仍跑完整依賴弱點掃描（含 Node dev/build 套件）。
+
+### 完整 Live USB 合併門檻
+
+`scripts/install_target_python.py` 僅將
+`scripts/build_offline_wheel.py` 的 `ALLOWED_OFFLINE_MODULES`
+複製至冷端 rootfs，明確排除 Online Companion。分類器有測試比對
+兩份白名單；新增、移除或搬動模組時必須先更新安全稽核。
+單純 README/一般測試修改不會改變冷端映像內容。
+
+`live-usb-build.yml` 透過 `workflow_call` 由主 CI 的
+`live_usb` Job 條件式呼叫；不使用 PR `paths` 省略整個 Workflow。
+該 Job 執行兩次 Clean Build，比對原始映像 SHA-256，並以
+QEMU/OVMF 開機驗證。其他 BTC Core、PSBT Fuzz、VFAT 亦從主 CI
+條件式呼叫；同一項驗證不再另由獨立 PR Workflow 重複觸發。
+手動診斷與 PSBT Fuzz 原有定期排程可保留。
+
+`CI / Required` 的 `needs` 明確包含上述 Job。若分類器認定某
+Job 必跑，該 Job 的 `success` 才可通過；缺失、`skipped`、
+`cancelled`、`failure` 一律拒絕。正常不適用的 Job 必須為
+`skipped`；不使用其他 PR HEAD 或單獨歷史 Action 成功取代
+最新 HEAD 的證據。Live USB 快速單次開機診斷是選用的開發輔助，
+不取代正式雙重可重現建置。
+
+**GitHub 伺服器端設定仍須檢查：** 請在 `main-protection` Ruleset
+明確指定 `CI / Required` 為 required status check。若該清單
+仍為空，Workflow 內的 fail-closed 邏輯無法阻止人員直接合併。
 
 ## Dependency Review 的失敗政策
 
