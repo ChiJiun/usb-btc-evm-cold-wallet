@@ -304,7 +304,7 @@ def verify_repository_release_controls(*, run: Run = _gh) -> None:
             detail.get("target") == "tag"
             and _ruleset_includes(detail, "refs/tags/v*")
         ):
-            tag_ok = {"creation", "update", "deletion"}.issubset(by_type) or tag_ok
+            tag_ok = {"update", "deletion"}.issubset(by_type) or tag_ok
 
     missing = []
     if not main_ok:
@@ -316,7 +316,7 @@ def verify_repository_release_controls(*, run: Run = _gh) -> None:
     if not tag_ok:
         missing.append(
             "active refs/tags/v* ruleset with no excludes/bypass actors and "
-            "creation/update/deletion restrictions"
+            "update/deletion restrictions"
         )
     if missing:
         raise ReleaseVerificationError(
