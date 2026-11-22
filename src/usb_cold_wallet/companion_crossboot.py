@@ -310,6 +310,14 @@ class CrossBootManager:
             if request["requestId"] != request_id:
                 raise ValueError("Request filename does not match v2 requestId")
             snap = store.get(request_id)
+            if snap is not None and (
+                snap.request_digest != request["sha256"]
+                or snap.transaction_digest != request["transactionDigest"]
+            ):
+                # The exchange file may be replaced with a separately valid,
+                # rehashed envelope.  Journaled immutable facts remain binding
+                # even before a signed response exists.
+                raise ValueError("Exchange request differs from authoritative online journal binding")
             if snap is None:
                 # The exchange is attacker-writable. A missing authoritative
                 # journal is indistinguishable from deletion/rollback, so never
@@ -359,6 +367,10 @@ class CrossBootManager:
             payload = _verify_response_public(
                 request, response, expected_account=expected, allow_no_trusted_clock=True
             )
+            if snap.metadata.get("responseDigest") != response["sha256"]:
+                # Re-encoding a valid signed payload does not permit replacing
+                # the exact response committed before the previous reboot.
+                raise ValueError("Signed response differs from durable import journal")
             owner.accept_signed(canonical(payload))
             if snap.state == "BROADCAST_REQUESTED":
                 owner.pending["stage"] = "broadcast_unknown"
