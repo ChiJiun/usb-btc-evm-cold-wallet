@@ -51,6 +51,9 @@ class TransactionIntent:
     max_fee_per_gas: int | None = None
     max_priority_fee_per_gas: int | None = None
     fee_rate: float | None = None
+    contract: str | None = None
+    method: str | None = None
+    deadline: int | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,8 @@ def default_profile(root) -> dict:
             "btc_max_fee_rate_sat_vb": DEFAULT_BTC_MAX_FEE_RATE,
         },
         "verified_addresses": [],
+        "contract_rules": [],
+        "typed_rules": [],
     }
 
 
@@ -109,7 +114,7 @@ def _bounded_integer(value: object, maximum: int) -> bool:
 
 
 def validate_profile(profile: object, root) -> dict:
-    if not isinstance(profile, dict) or set(profile) != {"version", "wallet_binding", "limits", "verified_addresses"}:
+    if not isinstance(profile, dict) or not {"version", "wallet_binding", "limits", "verified_addresses"} <= set(profile) or set(profile) - {"version", "wallet_binding", "limits", "verified_addresses", "contract_rules", "typed_rules"}:
         raise ValueError("Invalid policy profile shape")
     if type(profile["version"]) is not int or profile["version"] != VERSION:
         raise ValueError("Unsupported policy version")
@@ -145,6 +150,47 @@ def validate_profile(profile: object, root) -> dict:
         if key in seen:
             raise ValueError("Duplicate verified address")
         seen.add(key)
+    # Contract permissions are wallet-bound, encrypted profile data, never RPC metadata.
+    from .evm_erc20 import checked_address, checked_uint
+    rules = profile.get("contract_rules", [])
+    if type(rules) is not list or len(rules) > 32:
+        raise ValueError("Invalid offline contract rules")
+    rule_ids = set()
+    for rule in rules:
+        if type(rule) is not dict or set(rule) != {"contract", "method", "counterparty", "max_amount", "expected_nonce"}:
+            raise ValueError("Invalid contract rule shape")
+        contract = checked_address(rule["contract"], "approved contract")
+        counterparty = checked_address(rule["counterparty"], "approved counterparty")
+        if contract != rule["contract"] or counterparty != rule["counterparty"]:
+            raise ValueError("Contract rule addresses must use checksum form")
+        if rule["method"] not in ("transfer", "approve"):
+            raise ValueError("Unsupported contract method")
+        checked_uint(rule["max_amount"], "contract maximum amount")
+        checked_uint(rule["expected_nonce"], "contract expected nonce")
+        identity = (contract, rule["method"], counterparty)
+        if identity in rule_ids:
+            raise ValueError("Duplicate contract rule")
+        rule_ids.add(identity)
+    typed_rules = profile.get("typed_rules", [])
+    if type(typed_rules) is not list or len(typed_rules) > 32:
+        raise ValueError("Invalid offline EIP-712 rules")
+    typed_ids = set()
+    for rule in typed_rules:
+        if type(rule) is not dict or set(rule) != {"contract", "schema", "counterparty", "max_amount", "expected_nonce", "deadline"}:
+            raise ValueError("Invalid EIP-712 rule shape")
+        contract = checked_address(rule["contract"], "typed verifying contract")
+        party = checked_address(rule["counterparty"], "typed counterparty")
+        if contract != rule["contract"] or party != rule["counterparty"]:
+            raise ValueError("EIP-712 policy addresses must be checksummed")
+        if rule["schema"] not in ("WalletTransferIntent", "WalletApprovalIntent"):
+            raise ValueError("Unsupported EIP-712 policy schema")
+        checked_uint(rule["max_amount"], "typed maximum amount")
+        checked_uint(rule["expected_nonce"], "typed expected nonce")
+        checked_uint(rule["deadline"], "typed policy deadline", minimum=1)
+        identity = (contract, rule["schema"], party)
+        if identity in typed_ids:
+            raise ValueError("Duplicate EIP-712 rule")
+        typed_ids.add(identity)
     return profile
 
 
@@ -456,3 +502,78 @@ def decide(profile: dict, root, intent: TransactionIntent) -> PolicyDecision:
     if label is None:
         return PolicyDecision("REQUIRE_EXTRA_CONFIRMATION", ("Unverified recipient; compare full address offline",), None)
     return PolicyDecision("ALLOW_FOR_REVIEW", ("Verified address label; compare full address anyway",), label)
+
+
+def decide_erc20(profile: dict, root, payload: dict) -> tuple[dict | None, PolicyDecision]:
+    """Review raw calldata using independently configured wallet-bound offline rules.
+
+    This returns a manual-review decision only; native sign_evm remains unchanged.
+    """
+    from .evm_erc20 import parse_erc20_calldata, review_erc20_transaction, checked_address
+    try:
+        validate_profile(profile, root)
+        decoded = parse_erc20_calldata(payload["data"])
+        contract = checked_address(payload["to"], "transaction contract")
+        method = decoded["method"]
+        party = decoded["recipient"] if method == "transfer" else decoded["spender"]
+        quantity = decoded["amount"] if method == "transfer" else decoded["allowance"]
+        matching = [r for r in profile.get("contract_rules", []) if
+                    (r["contract"], r["method"], r["counterparty"]) == (contract, method, party)]
+        if len(matching) != 1:
+            raise ValueError("No matching independently configured offline contract rule")
+        rule = matching[0]
+        if quantity > rule["max_amount"]:
+            raise ValueError("Token amount or allowance exceeds offline rule")
+        review = review_erc20_transaction(
+            payload, expected_contract=rule["contract"],
+            expected_counterparty=rule["counterparty"], expected_amount=quantity,
+            expected_method=rule["method"], expected_nonce=rule["expected_nonce"],
+            trusted_contracts=sorted({r["contract"] for r in profile["contract_rules"]}),
+            max_fee_wei=profile["limits"]["evm_max_fee_wei"])
+        return review, PolicyDecision(
+            "REQUIRE_EXTRA_CONFIRMATION",
+            ("Allowlisted ERC-20 operation requires full offline human review; contract signing remains disabled",),
+            None)
+    except (ValueError, TypeError, KeyError, OverflowError) as exc:
+        return None, PolicyDecision("DENY", (str(exc),), None)
+
+
+def decide_eip712(profile: dict, root, typed_data: dict, *, now_timestamp: int) -> tuple[dict | None, PolicyDecision]:
+    """Use only wallet-bound offline typed rules for review; signing is forbidden."""
+    from .evm_eip712 import review_eip712_intent
+    from .evm_erc20 import checked_address, checked_uint
+    try:
+        validate_profile(profile, root)
+        # Clock must be provided by the trusted offline side; it cannot be taken
+        # from exchange JSON, RPC responses, or untrusted online metadata.
+        checked_uint(now_timestamp, "trusted offline timestamp")
+        domain = typed_data["domain"]
+        message = typed_data["message"]
+        contract = checked_address(domain["verifyingContract"], "verifying contract")
+        schema = typed_data["primaryType"]
+        if schema not in ("WalletTransferIntent", "WalletApprovalIntent"):
+            raise ValueError("Unknown EIP-712 schema")
+        party_field = "recipient" if schema == "WalletTransferIntent" else "spender"
+        amount_field = "amount" if schema == "WalletTransferIntent" else "allowance"
+        party = checked_address(message[party_field], "typed counterparty")
+        quantity = checked_uint(message[amount_field], "typed amount")
+        matches = [r for r in profile.get("typed_rules", []) if
+                   (r["contract"], r["schema"], r["counterparty"]) == (contract, schema, party)]
+        if len(matches) != 1:
+            raise ValueError("No matching independent offline EIP-712 policy rule")
+        rule = matches[0]
+        if quantity > rule["max_amount"]:
+            raise ValueError("Typed amount exceeds offline policy cap")
+        reviewed = review_eip712_intent(
+            typed_data, expected_contract=contract,
+            expected_owner=evm_account(root).address, expected_primary_type=rule["schema"],
+            expected_counterparty=rule["counterparty"], expected_amount=quantity,
+            expected_nonce=rule["expected_nonce"], expected_deadline=rule["deadline"],
+            trusted_contracts=sorted({r["contract"] for r in profile["typed_rules"]}),
+            now_timestamp=now_timestamp)
+        return reviewed, PolicyDecision(
+            "REQUIRE_EXTRA_CONFIRMATION",
+            ("EIP-712 schema review only; nonce consumption and signature authorization unavailable",),
+            None)
+    except (ValueError, KeyError, TypeError, OverflowError) as exc:
+        return None, PolicyDecision("DENY", (str(exc),), None)
