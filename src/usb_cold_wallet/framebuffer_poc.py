@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import re
 import select
+import stat
 import struct
 import time
 import termios
@@ -529,8 +530,27 @@ def _discover_framebuffer(fb_path: str | None = None, dev_root: Path = Path("/de
     return candidates[0]
 
 
-def present(surface: Surface, fb_path: str = "/dev/fb0") -> None:
-    with open(fb_path, "r+b", buffering=0) as device:
+def _open_framebuffer(fb_path: str, expected_identity: tuple[int, int, int] | None = None):
+    """Pin the character device across every draw and final blank operation."""
+    flags = os.O_RDWR | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(fb_path, flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISCHR(info.st_mode):
+            raise OSError("Framebuffer must be a character device")
+        identity = (info.st_dev, info.st_ino, info.st_rdev)
+        if expected_identity is not None and identity != expected_identity:
+            raise OSError("Framebuffer device identity changed during review")
+        return os.fdopen(fd, "r+b", buffering=0), identity
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def present(surface: Surface, fb_path: str = "/dev/fb0", *,
+            expected_identity: tuple[int, int, int] | None = None) -> None:
+    device, _ = _open_framebuffer(fb_path, expected_identity)
+    with device:
         width, height, bpp, stride = _fb_geometry(device.fileno())
         if (width, height) != (surface.width, surface.height):
             raise ValueError("Framebuffer dimensions changed")
@@ -549,8 +569,10 @@ def present(surface: Surface, fb_path: str = "/dev/fb0") -> None:
                     memory[out:out + len(row)] = row
 
 
-def _clear_framebuffer(fb_path: str) -> None:
-    with open(fb_path, "r+b", buffering=0) as device:
+def _clear_framebuffer(fb_path: str, *,
+                       expected_identity: tuple[int, int, int] | None = None) -> None:
+    device, _ = _open_framebuffer(fb_path, expected_identity)
+    with device:
         width, height, bpp, stride = _fb_geometry(device.fileno())
         row = bytes(width * (bpp // 8))
         with mmap.mmap(device.fileno(), stride * height, access=mmap.ACCESS_WRITE) as memory:
@@ -666,7 +688,8 @@ def run_vt(
         return ReviewIntent(plan.review_digest, False, "audit_failed")
     font = load_psf2(font_path)
     fb_path = _discover_framebuffer(fb_path)
-    with open(fb_path, "r+b", buffering=0) as fb:
+    fb, framebuffer_identity = _open_framebuffer(fb_path)
+    with fb:
         width, height, _, _ = _fb_geometry(fb.fileno())
     display = Surface(width, height, font)
     controller = ReviewController(plan, audit=audit)
@@ -711,7 +734,7 @@ def run_vt(
                 visible = max(1, (height - 160) // (font[1] + 3))
                 controller.scroll_bottom = max(0, total - visible)
                 controller.offset = min(controller.offset, controller.scroll_bottom)
-                present(display, fb_path)
+                present(display, fb_path, expected_identity=framebuffer_identity)
                 if discard_queued_input:
                     inputs.drain()
                     termios.tcflush(fd, termios.TCIFLUSH)
@@ -726,6 +749,9 @@ def run_vt(
                     break
                 before = (controller.page, controller.offset, frozenset(controller.seen))
                 if controller.action(key):
+                    # A device swap after the last draw must never authorize.
+                    check, _ = _open_framebuffer(fb_path, framebuffer_identity)
+                    check.close()
                     return ReviewIntent(plan.review_digest, True, "reviewed")
                 after = (controller.page, controller.offset, frozenset(controller.seen))
                 if after != before:
@@ -735,7 +761,7 @@ def run_vt(
         finally:
             # A reviewed result is suppressed if secure cleanup cannot complete.
             try:
-                _clear_framebuffer(fb_path)
+                _clear_framebuffer(fb_path, expected_identity=framebuffer_identity)
             except Exception as exc:
                 cleanup_error = exc
             try:

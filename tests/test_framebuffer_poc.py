@@ -417,3 +417,23 @@ def test_framebuffer_resolution_and_pixel_format_fail_closed(monkeypatch):
         ),
     )
     assert fb._fb_geometry(3) == (800, 600, 16, 1600)
+
+
+def test_framebuffer_open_rejects_regular_file_and_symlink(tmp_path: Path):
+    fake = tmp_path / "fb0"
+    fake.write_bytes(b"not a device")
+    with pytest.raises(OSError, match="character device"):
+        fb._open_framebuffer(str(fake))
+    link = tmp_path / "fb1"
+    link.symlink_to(fake)
+    with pytest.raises(OSError):
+        fb._open_framebuffer(str(link))
+
+
+def test_framebuffer_identity_comparison_rejects_unpinned_device(monkeypatch):
+    # A real character device is sufficient to test a changed expected inode.
+    import os
+    device = "/dev/null"
+    identity = os.stat(device)
+    with pytest.raises(OSError, match="identity changed"):
+        fb._open_framebuffer(device, (identity.st_dev, identity.st_ino + 1, identity.st_rdev))
