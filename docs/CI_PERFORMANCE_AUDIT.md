@@ -82,3 +82,25 @@
 7. 由獨立 Review 檢查完整 Diff、CI Logs 與安全邊界；未解除的實體 USB／GUI 驗收不得被描述為 CI 已完成。
 
 **完成判定**：上述證據全部齊備才標為 Done；缺 Ready 雙建置、Ruleset 或實測資料時，明確標為 BLOCKED／NOT VERIFIED。禁止為追求綠燈而降低安全 Gate。
+
+## Lead Time 優先方案（PR #88 後續修訂）
+
+為縮短「第一個 Commit → Merge」時間，**Draft PR 預設不執行完整 Live USB Clean Build**。Draft 仍執行 Scope、Python、受影響的跨平台／整合測試、Live USB reusable workflow contract smoke 與 Required Gate；`live_usb` 在 Draft 被跳過屬預期結果，Ready／main／手動完整驗證時，若該工作應執行卻 skipped、failed、cancelled，Required Gate 必須拒絕。
+
+**Ready PR** 在最新 HEAD 上直接平行執行兩次獨立 Clean Build，SHA-256 完全一致後才驗證實際映像、QEMU/OVMF、封裝與 Artifact。此時必須完成獨立 Security Review；不得拿 Draft 的快速 CI 代替完整安全驗收。Draft 開發若需要實際 GUI／映像證據，可使用獨立的手動完整 Workflow，但該結果不能代替 Ready 最新 HEAD 的 Gate。
+
+### 時間預估（尚非實測，包含 Runner 排隊的不確定性）
+
+| 情境 | CI 回饋／驗收預估 | 合併 Lead Time 影響 |
+| --- | --- | --- |
+| 純文件 | 2–6 分鐘 | 免 Buildroot，仍需 Review |
+| Python／小範圍程式 | 5–20 分鐘 | 可在短測試期間同步 Review |
+| Windows／Node／QR／Snap | 10–30 分鐘 | 瀏覽器、跨語言與 Windows Job 可平行 |
+| Draft 冷端／Buildroot | 5–30 分鐘（快速 CI，不包含映像驗證） | 省下每輪約 40–90 分鐘的完整映像建置等待；估計值不能當實測 |
+| Ready 冷端／Buildroot | 45–110 分鐘（雙 Clean Build＋比對＋QEMU＋封裝） | 一次正式驗收，Review 可同步進行 |
+| 修正後再次 Push Ready | 45–110 分鐘／輪（若變更仍影響映像） | 每次新 HEAD 必須重跑；減少返工比快取更重要 |
+| 正式 Release | 60–150+ 分鐘 | 與 PR Merge Gate 分開，保留簽章與 Provenance 驗證 |
+
+以上時間是規劃區間，未以相同變更類型實際比較 before／after。若 Review 未完成、出現衝突、Actions 排隊或驗證失敗，總 Lead Time 會增加。應追蹤 median／P90 PR Lead Time、每 PR CI 輪數、失敗至修復時間、Runner 分鐘數，避免只最佳化單一 Job。
+
+**既有文件若仍提及「Draft 每次必做一次 Clean Build」，以本節最新策略為準。** 本次變更需等待最新 HEAD 的 CI 與 Ready 事件實際驗證後才可標 Done。
