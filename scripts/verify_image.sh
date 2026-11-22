@@ -60,8 +60,8 @@ test -x "$OUT/target/usr/bin/usb-wallet-console"
 test -x "$OUT/target/usr/bin/usb-cold-wallet"
 test -x "$OUT/target/usr/libexec/usb-wallet-framebuffer-demo"
 test -s "$OUT/target/usr/share/usb-cold-wallet/font8x16.psf"
-# The experimental GUI must remain manual; normal tty1 boot stays on the
-# existing single-purpose appliance.
+# The experimental framebuffer POC is manual only. The default tty1 session
+# must remain the existing single-purpose appliance.
 grep -q '^tty1::respawn:/usr/bin/usb-wallet-consolefor tool in ip ifconfig route ping wget nc netcat udhcpc telnet; do
 	for dir in bin sbin usr/bin usr/sbin; do
 		test ! -e "$OUT/target/$dir/$tool" || {
