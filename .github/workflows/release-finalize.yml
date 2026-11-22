@@ -429,6 +429,14 @@ jobs:
           )"
           test "$current_tag_object_sha" = "$EXPECTED_TAG_OBJECT_SHA"
 
+          # Administrator-read endpoint: any 403/404/missing/false result blocks publication.
+          # A default GITHUB_TOKEN cannot attest the effective repository setting.
+          immutable="$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq .enabled)"
+          if [[ "$immutable" != "true" ]]; then
+            echo "::error::Immutable Releases is not verifiably enabled"
+            exit 1
+          fi
+
           extra=()
           case "$TAG" in *-*) extra+=(--prerelease) ;; esac
           gh release create "$TAG"             "release/$ASSET"             release/SHA256SUMS             release/SBOM.spdx.json             release/release-metadata.json             release/build-host-packages.txt             --repo "$GITHUB_REPOSITORY"             --verify-tag             --title "$TAG"             --notes "Release provenance candidate. Do not claim production safety without the #24/#43 acceptance evidence."             "${extra[@]}"
