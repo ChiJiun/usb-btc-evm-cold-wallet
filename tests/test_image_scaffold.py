@@ -238,11 +238,15 @@ def test_no_network_runtime_uses_socket_free_vt_fbcon_session():
     kernel = (ROOT / "buildroot-external/board/usb-wallet/linux.config").read_text()
     external = (ROOT / "buildroot-external/external.mk").read_text()
     postbuild = (ROOT / "buildroot-external/board/usb-wallet/post-build.sh").read_text()
-    launcher = (
+    launcher_path = (
         ROOT
         / "buildroot-external/board/usb-wallet/rootfs-overlay/usr/bin/usb-wallet-gui-session"
-    ).read_text()
+    )
+    launcher = launcher_path.read_text()
 
+    # Buildroot preserves rootfs-overlay file modes. Losing this executable bit
+    # makes the fail-closed post-build launcher check abort target-finalize.
+    assert launcher_path.stat().st_mode & 0o111
     assert "# CONFIG_NET is not set" in kernel
     for symbol in (
         "CONFIG_VT=y",
