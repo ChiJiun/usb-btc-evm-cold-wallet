@@ -59,7 +59,8 @@ def test_native_qr_required_ci_guard_fails_if_manifest_or_lockfile_missing(tmp_p
     assert "      - metamask_native_qr\n" in workflow
     gate = (Path(__file__).resolve().parents[1] / "scripts/ci_checks.py").read_text()
     assert 'NATIVE_QR: ${{ needs.metamask_native_qr.result }}' in workflow
-    assert 'require("NATIVE_QR", "success" if code == "true" else "skipped")' in gate
+    assert 'require("NATIVE_QR", "success" if env.get("NATIVE_REQUIRED") == "true" else "skipped")' in gate
+    assert 'NATIVE_REQUIRED: ${{ needs.changes.outputs.native_qr }}' in workflow
     assert "steps.native-qr.outputs.present" not in workflow
     match = re.search(
         r"      - name: Require native MetaMask QR app files \(fail closed\)\n"
