@@ -10,6 +10,7 @@ param(
     [string]$ImagePath,
     [string]$ExpectedSha256,
     [string]$ExpectedModel,
+    [string]$ExpectedDiskGuid,
     [switch]$Json
 )
 $ErrorActionPreference = 'Stop'
@@ -34,6 +35,21 @@ try {
         }
     }
     $removable = ($disk.BusType -eq 'USB')
+    $diskGuid = [string]$disk.Guid
+    $diskGuidMatches = (!$ExpectedDiskGuid -or $diskGuid.Trim('{}').ToLowerInvariant() -eq $ExpectedDiskGuid.Trim('{}').ToLowerInvariant())
+    $expectedTypes = @(
+        'c12a7328-f81f-11d2-ba4b-00a0c93ec93b',
+        '0fc63daf-8483-4772-8e79-3d69d8477de4',
+        'ebd0a0a2-b9e5-4433-87c0-68b6b72699c7'
+    )
+    $isSingleUsbLayout = ($disk.PartitionStyle -eq 'GPT' -and $volumes.Count -eq 3)
+    if ($isSingleUsbLayout) {
+        for ($i = 0; $i -lt 3; $i++) {
+            if ($volumes[$i].gptType.Trim('{}').ToLowerInvariant() -ne $expectedTypes[$i]) {
+                $isSingleUsbLayout = $false
+            }
+        }
+    }
     $modelMatches = (!$ExpectedModel -or $disk.FriendlyName -eq $ExpectedModel)
     $sha = $null
     $hashMatches = $null
@@ -55,6 +71,9 @@ try {
         busType = [string]$disk.BusType
         sizeBytes = [int64]$disk.Size
         partitionStyle = [string]$disk.PartitionStyle
+        diskGuid = $diskGuid
+        expectedDiskGuidMatches = [bool]$diskGuidMatches
+        singleUsbPartitionTypesMatch = [bool]$isSingleUsbLayout
         isReadOnly = [bool]$disk.IsReadOnly
         isOffline = [bool]$disk.IsOffline
         logicalSectorSize = [int]$disk.LogicalSectorSize
@@ -63,10 +82,11 @@ try {
         expectedModelMatches = [bool]$modelMatches
         imageSha256 = $sha
         imageMatchesExpected = $hashMatches
-        result = if (!$removable -or !$modelMatches -or ($ExpectedSha256 -and !$ImagePath) -or ($hashMatches -eq $false)) { 'FAIL' } else { 'PASS' }
+        result = if (!$removable -or !$modelMatches -or !$diskGuidMatches -or !$isSingleUsbLayout -or ($ExpectedSha256 -and !$ImagePath) -or ($hashMatches -eq $false)) { 'FAIL' } elseif (!$ExpectedDiskGuid -or !$ExpectedSha256 -or !$ImagePath) { 'BLOCKED' } else { 'PASS' }
     }
     if ($Json) { $result | ConvertTo-Json -Depth 8 } else { $result | ConvertTo-Json -Depth 8 }
     if ($result.result -eq 'FAIL') { exit 2 }
+    if ($result.result -eq 'BLOCKED') { exit 3 }
 } catch {
     [ordered]@{schemaVersion=1; result='BLOCKED'; reason=$_.Exception.Message} | ConvertTo-Json -Compress
     exit 3
