@@ -491,7 +491,7 @@ def test_release_workflow_has_pinned_actions_and_separated_permissions():
     assert "contents: write" not in verify
 
     assert "contents: write" in publish
-    assert "needs: gate" in publish
+    assert "needs:\n      - validate\n      - gate" in publish
     assert "github.ref == 'refs/heads/main'" in publish
     assert "needs.gate.result == 'success'" in publish
     assert "--clobber" not in publish
