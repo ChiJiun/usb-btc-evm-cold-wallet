@@ -98,7 +98,7 @@ def classify_workloads(paths: list[str]) -> Workloads:
                 add("btc_fuzz")
         elif path.startswith("src/usb_cold_wallet/"):
             relative = path[len("src/usb_cold_wallet/"):]
-            if relative.startswith("companion_static/") or relative in ONLINE_MODULES:
+            if (relative.startswith("companion_static/") or relative in ONLINE_MODULES\n                    or (relative.startswith("companion_") and relative.endswith(".py"))):
                 add("windows")
             elif relative in OFFLINE_MODULES:
                 add("live_usb")
