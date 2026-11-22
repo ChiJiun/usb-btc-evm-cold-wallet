@@ -685,7 +685,9 @@ def test_live_workflow_body_change_forces_full_build(monkeypatch):
     def fake_output(args, **kwargs):
         if args[1] == 'diff':
             return b'.github/workflows/live-usb-build.yml\0'
-        return b'on:\n  workflow_dispatch:\n'
+        return (b'on:\n  workflow_dispatch:\n\njobs:\n  build:\n    steps:\n      - run: echo old\n'
+                if args[2].startswith('a' * 40 + ':')
+                else b'on:\n  workflow_dispatch:\n\njobs:\n  build:\n    steps:\n      - run: echo changed\n')
     monkeypatch.setattr(ci_checks.subprocess, 'run', lambda *a, **kw: None)
     monkeypatch.setattr(ci_checks.subprocess, 'check_output', fake_output)
     scope, workloads = ci_checks.select_scopes('pull_request', pr_base_sha='a' * 40)
