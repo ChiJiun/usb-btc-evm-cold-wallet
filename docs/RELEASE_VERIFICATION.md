@@ -27,7 +27,7 @@ Candidate 的 signed annotated tag 必須精確指向 input source SHA；GitHub 
 1. signed tag → exact source SHA 驗證。
 2. 同一來源做兩次 clean Buildroot image build，分別使用 `O=build/output-repro-1` 與 `O=build/output`，不共用 generated output tree；`scripts/check_reproducible.sh` 比對完整 raw `usb-cold-wallet.img` 與 `bzImage` SHA-256。兩次建置可共用已驗證且 hash-locked 的 source/download cache，但不共用 Buildroot output state。
 3. 對兩次 raw image 的 SHA-256 再做顯式相等檢查，將共同 digest 寫入 `release-metadata.json`；使用該 Buildroot 版本所固定的 host `xz`，以 `-6 --threads=1 --check=crc64 --no-sparse` 壓縮兩次並 byte-for-byte 比對。
-4. 由最後 root filesystem 產生 SPDX JSON SBOM；保存 `build-host-packages.txt`、`release-metadata.json` 與 `SHA256SUMS`。manifest 精確涵蓋最後 image、SBOM、metadata、host dependency evidence。
+4. 由最後 Buildroot target root filesystem 產生 SPDX JSON SBOM；metadata 明確固定 `sbom_scope=buildroot-target-rootfs`，不宣稱這份 SPDX 已完整盤點 EFI partition／kernel。另記錄 `efi_partition_sha256` 與 `kernel_sha256`，完整 raw image 則由 `raw_image_sha256` 綁定。保存 `build-host-packages.txt`、`release-metadata.json` 與 `SHA256SUMS`；manifest 精確涵蓋最後壓縮 image、SBOM、metadata、host dependency evidence。
 5. Candidate workflow 將這批 bytes 上傳成名稱綁定 `run_id` / `run_attempt` 的 Actions artifact，並先做無特權的本機 digest／metadata／tag-object 驗證。
 6. Default-branch `release-finalize.yml` 由 `workflow_run` 啟動；preflight 重新驗證前置 run 身分、protected main SHA、repository rulesets、唯一 artifact 名稱、signed tag、source SHA、tag object、manifest、SPDX 與 metadata。main 已前進或 artifact/run 不一致即 fail closed。
 7. Finalizer 先由 trusted metadata 產生 deterministic SLSA v1 predicate，再對 image、SBOM、metadata、host dependency evidence 與 `SHA256SUMS` 建立由 `release-finalize.yml` protected-main SHA 簽發的 provenance；predicate 明確包含 signed source SHA/tag/tag-object、candidate run/attempt 與固定 Buildroot input。另對 image 建立 SPDX SBOM attestation。verify 逐一驗證 subject digest、signer identity，並解析 attestation JSON 要求 predicate 與預期內容完全一致。
@@ -77,7 +77,7 @@ sh scripts/verify_release.sh \
 
 驗證器固定 repository，不接受 URL；它從 GitHub Release 下載 `SHA256SUMS`、指定 image、SPDX SBOM、release metadata 與 host dependency evidence，要求 manifest 精確覆蓋全部 payload 並逐一重算 SHA-256，再對每個檔案要求 Immutable Release asset integrity，以及由 `.github/workflows/release-finalize.yml` 在指定 protected-main SHA 簽發的 SLSA Build Provenance。它會解析已驗證 attestation 的 JSON statement，要求 SLSA predicate 中的 signed source SHA/tag/tag object/candidate run/Buildroot input 與 release metadata、外部指定 workflow SHA 完全一致；任一缺失或不一致均 nonzero exit。
 
-`SHA256SUMS` 只能證明 bytes 與 manifest 一致；其本身仍需 GitHub 的 Release integrity / asset verification。signed tag、Immutable Release、Build Provenance 各自提供不同保證，不能互相替代。
+`SHA256SUMS` 只能證明 bytes 與 manifest 一致；其本身仍需 GitHub 的 Release integrity / asset verification。signed tag、Immutable Release、Build Provenance 各自提供不同保證，不能互相替代。 目前 SPDX SBOM 的元件盤點範圍是 Buildroot rootfs；EFI/kernel 的 byte integrity 由 metadata/provenance digests 與完整 image digest 保護，但它們尚未被宣稱為 SPDX package inventory。
 
 ## Repository admin 必須人工設定
 
