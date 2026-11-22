@@ -25,6 +25,19 @@ Runner 分鐘數以「每個 Job 無條件進位到分鐘」估算（公開 repo
 
 **Critical Path**：`changes`（0.1）→ `live_usb`（72）→ `required`（0.1）。其他 Job 全部與 `live_usb` 平行且遠短於它，因此 Merge 時間只由 Live USB 與「重跑次數」決定。Lead Time 的第二大來源是逐檔 Push 造成的取消與重跑（83% 的 Run 被取消）。
 
+## 量測結果（變更後，PR #88 HEAD `749db83`，n=1）
+
+來源：[#45005164267](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/actions/runs/45005164267)。只有一筆樣本，且兩個建置都未命中來源快取（第一次執行），不足以計算 p50／p90。
+
+| 項目 | 實測 |
+| --- | --- |
+| 含 Live USB 的 CI wall-clock | 53.6 分鐘（變更前 69.0–74.7） |
+| `clean-builds (1)`／`(2)` Job | 50.7／38.5 分鐘（建置 Step 47.6／35.4）；兩台 Runner 映像版本不同，相差約 12 分鐘 |
+| `verify-and-publish` Job | 1.3 分鐘（SHA 比對、位元組核對、QEMU、封裝） |
+| Runner 分鐘 | 約 111（變更前 94–97）；兩台 Runner 各自重做 apt 與來源準備，另加驗證 Job |
+
+平行後的 wall-clock 由較慢的那台 Runner 決定，所以實際縮短幅度（約 20 分鐘）小於下方方案比較的估算（以單次建置約 36 分鐘推算）。
+
 ## 方案比較（推論：以上述實測 Step 時間推算，未實測者標示估算）
 
 | 方案 | 首次失敗回饋 | Draft 單次（含映像變更） | 最終驗收 | 轉 Ready 額外等待 | Runner 分鐘／映像 Push | 安全性 |
@@ -32,9 +45,11 @@ Runner 分鐘數以「每個 Job 無條件進位到分鐘」估算（公開 repo
 | A. 變更前（同 Job 依序兩次建置） | Python 1.5；映像 ~36；可重現性 ~73 | ~73 | ~73 | 0 | ~95 | 基準 |
 | B. PR #88 先前版本（Draft 不建映像、Ready 才雙建置、`ready_for_review` 重跑） | Python 1.5；映像錯誤延到 Ready 才發現 | ~2（無映像驗證） | ~42（估算） | ~42（同 SHA 重跑） | Draft 0；Ready ~95 | Draft 的 Required 成功不代表映像已驗證；轉 Ready 到新 Run 建立前有競態窗口 |
 | C. Draft 單建置、Ready 雙建置 | 同 D | ~40（與雙建置相同，平行） | ~42 | ~42 | Draft ~55；Ready ~95 | 同 B 的語意問題 |
-| **D. 最終採用：所有 PR／main 同一 Gate，平行雙建置，不因 Ready 重跑** | Python 1.5；映像 ~36；可重現性 ~40 | ~42（估算） | ~42（估算） | **0** | ~95 | Required 成功 = 該 SHA 完整驗證；無競態 |
+| **D. 最終採用：所有 PR／main 同一 Gate，平行雙建置，不因 Ready 重跑** | Python 1.5；映像 ~36（估算，實際取決於失敗那台 Runner）；可重現性實測 53.6 | 實測 53.6（n=1；估算原為 ~42） | 實測 53.6（n=1） | **0** | 實測約 111（估算原為 ~95） | Required 成功 = 該 SHA 完整驗證；無競態 |
 
-Lead Time（推論，含映像變更、Review 與 CI 平行、2 次 Push）：A ≈ 2×73 = 146 分鐘；B ≈ 2×2 + 42 + 42 = 88 分鐘，但若映像在 Ready 才失敗，每輪再加 42；D ≈ 2×42 = 84 分鐘，且映像錯誤在第一次 Push 就回報。非映像變更所有方案都約 2 分鐘。
+B、C 欄位的 ~40／~42 是以單次建置約 36 分鐘推算；實測單次建置 Job 為 38.5–50.7 分鐘，實際值應會更高。
+
+Lead Time（推論，含映像變更、Review 與 CI 平行、2 次 Push）：A ≈ 2×73 = 146 分鐘；B ≈ 2×2 + 42 + 42 = 88 分鐘（估算，偏樂觀），但若映像在 Ready 才失敗，每輪再加一次雙建置；D 以實測單筆推算 ≈ 2×54 = 108 分鐘，且映像錯誤在第一次 Push 就回報。非映像變更所有方案都約 2 分鐘。
 
 ## 最終架構
 
@@ -44,7 +59,7 @@ Lead Time（推論，含映像變更、Review 與 CI 平行、2 次 Push）：A 
 4. **觸發**：`pull_request` 只用 `opened`／`synchronize`／`reopened`；轉 Ready 不重跑。
 5. **Concurrency**：只取消同一 PR 的舊 Run；main／手動以 `run_id` 分組。
 6. **快取**：只快取來源下載（不可信輸入，每次驗證雜湊與簽章）；實測只省約 1.5 分鐘，不是主要收益。
-7. **Timeout**：建置 120 分鐘（實測約 36 分鐘）、驗證 30 分鐘，卡住時更早失敗。
+7. **Timeout**：建置 120 分鐘（實測 Job 38.5–50.7 分鐘，n=1 次 Run）、驗證 30 分鐘，卡住時更早失敗。
 8. **Merge**：Ruleset 只要求 `CI / Required`、`strict=false`（不要求 PR 與 main 同步，避免無謂重跑；合併後 main Push 會再跑完整 CI）。個人帳號 repo 不支援 Merge Queue；repo 已關閉 Auto-merge。
 
 ### 驗證矩陣
