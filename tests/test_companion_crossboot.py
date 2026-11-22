@@ -415,11 +415,13 @@ def test_unknown_broadcast_recovers_status_only_after_restart(tmp_path):
         assert code == 400
         assert rpc.sent == []
         code, reconciled = _http(server3, token3, "POST", "/api/crossboot/reconcile", {})
-        assert code == 200
-        assert reconciled["state"] == "BROADCASTED"
-        assert session3.pending["stage"] == "broadcasted"
+        assert code == 400
+        assert "advisory only" in reconciled["error"]
+        assert session3.pending["stage"] == "broadcast_unknown"
         assert rpc.sent == []
-        assert PendingRequestStore(manager3.state_root).get(request_id).state == "BROADCASTED"
+        assert PendingRequestStore(manager3.state_root).get(request_id).state == "BROADCAST_REQUESTED"
+        assert manager3._request_path(request_id).is_file()
+        assert manager3._response_path(request_id).is_file()
     finally:
         _stop(server3, worker3)
 
