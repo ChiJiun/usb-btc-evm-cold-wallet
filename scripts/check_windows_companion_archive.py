@@ -19,6 +19,7 @@ ALLOW = {
     "usb_cold_wallet.companion_btc",
     "usb_cold_wallet.companion_envelope",
     "usb_cold_wallet.companion_crossboot",
+    "usb_cold_wallet.cross_boot_public",
     "usb_cold_wallet.transaction_state",
     # Exact reviewed, static frontend assets bundled by PyInstaller --add-data.
     "usb_cold_wallet.companion_static.index.html",
