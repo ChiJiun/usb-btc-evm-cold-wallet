@@ -125,9 +125,7 @@ Run:
 make reproducibility-check
 ```
 
-That target performs **two clean Buildroot builds sequentially at the same `O=build/output` path** and requires identical SHA-256 values for both `usb-cold-wallet.img` and `bzImage`. It deletes only generated `build/output` between the two runs.
-
-Buildroot still labels its reproducibility option experimental and documents that identical output paths matter, so a successful two-build check is evidence for this exact configuration, not a general claim that every Buildroot package is reproducible on every host.
+That target performs **two clean Buildroot builds with distinct output directories** (`O=build/output-repro-1` and `O=build/output`) and requires identical SHA-256 values for both `usb-cold-wallet.img` and `bzImage`. The first output tree is removed only after the digests match; the second remains as the verified image consumed by later UEFI/artifact steps.\n\nBoth builds intentionally share the same authenticated source/download cache and fixed Buildroot source tree, but they do not share generated Buildroot output state. A successful two-build check is evidence for this pinned environment, not a claim of independent third-party reproducibility.
 
 ## Runtime memory / swap / persistence audit
 
