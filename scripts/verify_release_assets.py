@@ -334,7 +334,14 @@ def _attest_args(image: Path, workflow_sha: str) -> list[str]:
     ]
 
 
-def _verify_metadata(path: Path, tag: str, commit: str, workflow_sha: str, asset: str) -> None:
+def _verify_metadata(
+    path: Path,
+    tag: str,
+    commit: str,
+    workflow_sha: str,
+    tag_object_sha: str,
+    asset: str,
+) -> None:
     try:
         metadata = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
@@ -347,6 +354,7 @@ def _verify_metadata(path: Path, tag: str, commit: str, workflow_sha: str, asset
         "tag": tag,
         "source_sha": commit,
         "workflow_sha": workflow_sha,
+        "tag_object_sha": tag_object_sha,
         "workflow": ".github/workflows/release.yml",
         "asset": asset,
         "compression": "xz -6 --threads=1 --check=crc64 --no-sparse",
@@ -367,9 +375,6 @@ def _verify_metadata(path: Path, tag: str, commit: str, workflow_sha: str, asset
         value = metadata.get(key)
         if not isinstance(value, str) or not value or len(value) > 80:
             raise ReleaseVerificationError(f"Release metadata has invalid {key}")
-    tag_object_sha = metadata.get("tag_object_sha")
-    if not isinstance(tag_object_sha, str) or not SHA_RE.fullmatch(tag_object_sha):
-        raise ReleaseVerificationError("Release metadata has invalid tag object SHA")
     apt_snapshot = metadata.get("apt_snapshot")
     if not isinstance(apt_snapshot, str) or not re.fullmatch(r"[0-9]{8}T[0-9]{6}Z", apt_snapshot):
         raise ReleaseVerificationError("Release metadata has invalid apt snapshot")
@@ -417,7 +422,7 @@ def verify_local_artifacts(
 ) -> str:
     """Verify the exact staged bytes after attestation and before publish."""
     tag, commit = _validate_identity(tag, commit, asset)
-    _verify_signed_tag(
+    tag_object_sha = _verify_signed_tag(
         run,
         tag,
         commit,
@@ -443,7 +448,14 @@ def verify_local_artifacts(
             raise ReleaseVerificationError(f"Staged release digest mismatch: {name}")
 
     image = _safe_file(root, asset)
-    _verify_metadata(_safe_file(root, "release-metadata.json"), tag, commit, workflow_sha, asset)
+    _verify_metadata(
+        _safe_file(root, "release-metadata.json"),
+        tag,
+        commit,
+        workflow_sha,
+        tag_object_sha,
+        asset,
+    )
     _verify_spdx(_safe_file(root, "SBOM.spdx.json"))
 
     # Every published byte set is independently bound to the same signed tag,
@@ -482,7 +494,7 @@ def verify_release(
 ) -> str:
     """Independently download and verify an already-published immutable release."""
     tag, commit = _validate_identity(tag, commit, asset)
-    _verify_signed_tag(
+    tag_object_sha = _verify_signed_tag(
         run,
         tag,
         commit,
@@ -533,7 +545,14 @@ def verify_release(
 
         image = _safe_file(directory, asset)
         actual = _sha256(image)
-        _verify_metadata(_safe_file(directory, "release-metadata.json"), tag, commit, workflow_sha, asset)
+        _verify_metadata(
+            _safe_file(directory, "release-metadata.json"),
+            tag,
+            commit,
+            workflow_sha,
+            tag_object_sha,
+            asset,
+        )
         _verify_spdx(_safe_file(directory, "SBOM.spdx.json"))
 
         # Authenticate every published file with immutable-release integrity
