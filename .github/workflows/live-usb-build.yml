@@ -2,6 +2,11 @@ name: Live USB image verification
 
 on:
   workflow_call:
+    inputs:
+      smoke_only:
+        type: boolean
+        required: false
+        default: false
   workflow_dispatch:
 
 permissions:
@@ -12,7 +17,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  contract-smoke:
+    if: inputs.smoke_only == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Verify real reusable workflow invocation
+        run: |
+          set -euo pipefail
+          test "${{ inputs.smoke_only }}" = "true"
+          echo "Live USB reusable workflow_call contract executed"
+
   build-and-reproduce:
+    if: inputs.smoke_only != true
     runs-on: ubuntu-24.04
     timeout-minutes: 330
     env:
