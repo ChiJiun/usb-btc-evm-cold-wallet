@@ -18,13 +18,13 @@
 
 1. **快速失敗**：`live_usb` 依賴 Python 3.12／3.13 matrix 成功；失敗時不啟動完整建置，`CI / Required` 仍必須失敗。成功的 HEAD 不減少任何必要安全驗證。
 2. **下載快取**：只重用 Buildroot 來源、Buildroot 發行壓縮檔、hash-locked Wheelhouse（`build/dl`、`build/cache`、`build/wheelhouse`）；仍逐次進行 Buildroot 簽章/來源雜湊與 Wheelhouse SHA-256 驗證。編譯輸出、rootfs、映像與通過紀錄不快取。
-3. **雙獨立 Clean Build 平行化**：原本一個 Job 依序重建兩次，改為 `matrix.run=[1,2]` 兩個全新 Ubuntu Runner 同時建置、各自靜態稽核 `usb-cold-wallet.img` 與 `bzImage`；上傳兩份 SHA-256 證據及第二份實際映像。第三個 `verify-and-publish` Job 在**兩次建置均成功**後下載證據，先比對兩份雜湊，再對下載的實際映像與 kernel 執行 `sha256sum -c`；最後執行原本 QEMU/OVMF 開機、原始映像驗證、壓縮結果驗證與 Manifest，才能上傳 testnet-only Artifact。
+3. **分階段 Clean Build**：Draft PR 僅執行一次完整 Buildroot 建置、映像 SHA-256 驗證及 QEMU/OVMF 開機，Artifact 明確標示未通過可重現性驗證；Draft PR 不能合併。PR 轉為 Ready 時，`ready_for_review` 觸發新的 CI，執行兩個獨立 Runner 平行 Clean Build，第三個 Job 比對完整 SHA-256、核對實際映像與 kernel，再執行 QEMU/OVMF；main Push 與手動執行同樣保留雙重驗證。
 4. **縮短測試映像封裝**：測試用途 `.img.xz` 從固定單執行緒 `-9e` 改為 `-6`；保留 `xz --test`、解壓縮後逐位元組 `cmp` 與 SHA-256。
-5. **負向 Gate 回歸測試**：Python 敗退、Live USB 跳過與 `CI / Required` 的 fail-closed；source-only cache；兩個獨立建置與第三階段完整位元組驗證。
+5. **負向 Gate 回歸測試**：Python 失敗、Live USB 跳過與 `CI / Required` fail-closed；source-only cache；Draft 單次與 Ready 雙次建置、實際映像位元組驗證。
 
 ## 安全性與效能權衡
 
-- **沒有**重用舊 Commit 的 CI 結果；每個受影響的 HEAD 仍有兩次完整 Clean Build。
+- **沒有**重用舊 Commit 的 CI 結果；Draft PR 每次受影響的 HEAD 執行一次 Clean Build，Ready PR／main 執行兩次。Draft 的成功不能取代 Ready PR 最新 HEAD 的雙重驗證。
 - 平行 Runner 可減少關鍵路徑，但對 Runner 併發額度較敏感；Runner 分鐘數可能因獨立啟動與 Artifact 傳輸而略增。不可將預估減半視為實測。
 - 雙建置不一致、下載驗證失敗、UEFI 啟動失敗或建置取消時，均不可發行已驗證映像。
 - Release 工作流的簽章、來源 SHA、Provenance 與正式發行驗收維持獨立。
