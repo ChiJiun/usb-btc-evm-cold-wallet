@@ -266,6 +266,16 @@ def test_btc_psbt_v2_roundtrip_survives_restart(tmp_path):
     assert status["stage"] == "verified"
     assert restored_btc.pending["recipient"] == BTC_TARGET
     assert restored_btc.pending["amount_sats"] == 50_000
+    assert restored_btc.pending["fee_rate"] == 2
+    assert restored_btc.pending["change_index"] == 0
+    assert restored_btc.pending["change_address"] == restored_btc._address(1, 0)
+    assert restored_btc.pending["inputs"] == [{
+        "txid": btc_api.txid, "vout": 0, "value": 150_000, "address": BTC_RECEIVE,
+    }]
+    assert len(restored_btc.pending["outputs"]) == 2
+    assert {item["address"] for item in restored_btc.pending["outputs"]} == {
+        BTC_TARGET, restored_btc._address(1, 0),
+    }
 
 
 def _http(server, token, method, path, body=None):
@@ -398,13 +408,80 @@ def test_unknown_broadcast_recovers_status_only_after_restart(tmp_path):
         _stop(server2, worker2)
 
     rpc.fail_send = False
-    _manager3, server3, session3, token3, worker3 = _run_server(rpc, tmp_path)
+    manager3, server3, session3, token3, worker3 = _run_server(rpc, tmp_path)
     try:
         assert session3.pending["stage"] == "broadcast_unknown"
-        code, status = _http(server3, token3, "POST", "/api/status", {})
-        assert code == 200 and status["result"] == "pending"
         code, _ = _http(server3, token3, "POST", "/api/broadcast", {})
         assert code == 400
         assert rpc.sent == []
+        code, reconciled = _http(server3, token3, "POST", "/api/crossboot/reconcile", {})
+        assert code == 200
+        assert reconciled["state"] == "BROADCASTED"
+        assert session3.pending["stage"] == "broadcasted"
+        assert rpc.sent == []
+        assert PendingRequestStore(manager3.state_root).get(request_id).state == "BROADCASTED"
     finally:
         _stop(server3, worker3)
+
+
+def _prepared_imported_evm(tmp_path):
+    manager = CrossBootManager(tmp_path)
+    online, btc, _ = fresh_sessions()
+    prepared = online.prepare(RECIPIENT, "0.01")
+    request_id = prepared["pending"]["request_id"]
+    manager.export_current(online, btc)
+    request = load_request(manager, request_id)
+    response = package_v2_response(
+        request, signed_evm_payload(online.pending["tx"]),
+        expected_account=ADDRESS, allow_no_trusted_clock=True,
+    )
+    write_response(manager, request_id, response)
+    manager.resume_response(online, btc)
+    return manager, online, btc, request_id
+
+
+def _delete_online_journal(manager):
+    for path in manager.state_root.glob("*"):
+        if path.is_file():
+            path.unlink()
+
+
+def test_deleted_online_journal_after_imported_verified_fails_closed(tmp_path):
+    manager, online, btc, _request_id = _prepared_imported_evm(tmp_path)
+    _delete_online_journal(manager)
+    restored, restored_btc, _ = fresh_sessions()
+    restored.pending = None
+    restored_btc.pending = None
+    with pytest.raises(ValueError, match="authoritative online journal missing|fails closed"):
+        CrossBootManager(tmp_path).restore(restored, restored_btc)
+
+
+def test_deleted_online_journal_after_broadcast_requested_fails_closed(tmp_path):
+    manager, online, btc, _request_id = _prepared_imported_evm(tmp_path)
+    txid = online.pending["tx_hash"]
+    manager.mark_broadcast_requested(online, btc, txid)
+    online.pending["stage"] = "broadcast_unknown"
+    _delete_online_journal(manager)
+    restored, restored_btc, _ = fresh_sessions()
+    restored.pending = None
+    restored_btc.pending = None
+    with pytest.raises(ValueError, match="authoritative online journal missing|fails closed"):
+        CrossBootManager(tmp_path).restore(restored, restored_btc)
+
+
+def test_deleted_broadcasted_state_with_restored_old_exchange_fails_closed(tmp_path):
+    manager, online, btc, request_id = _prepared_imported_evm(tmp_path)
+    request_bytes = manager._request_path(request_id).read_bytes()
+    response_bytes = manager._response_path(request_id).read_bytes()
+    txid = online.pending["tx_hash"]
+    manager.mark_broadcast_requested(online, btc, txid)
+    manager.mark_broadcasted(online, btc, txid)
+    _delete_online_journal(manager)
+    manager.exchange.mkdir(parents=True, exist_ok=True)
+    manager._request_path(request_id).write_bytes(request_bytes)
+    manager._response_path(request_id).write_bytes(response_bytes)
+    restored, restored_btc, _ = fresh_sessions()
+    restored.pending = None
+    restored_btc.pending = None
+    with pytest.raises(ValueError, match="authoritative online journal missing|fails closed"):
+        CrossBootManager(tmp_path).restore(restored, restored_btc)
