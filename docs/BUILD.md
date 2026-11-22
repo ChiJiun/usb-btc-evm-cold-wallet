@@ -96,7 +96,7 @@ make verify
 Checks include:
 
 - generated image SHA-256;
-- protective MBR + GPT header;
+- protective MBR plus primary/backup GPT headers, partition tables, CRCs and geometry consistency;
 - exactly three GPT partitions for the single-USB image;
 - deterministic GPT disk and partition UUIDs;
 - first partition is an EFI System Partition and is marked GPT read-only;
@@ -150,7 +150,7 @@ Any failure creates `/run/usb-wallet/lockdown`. The appliance console then disab
 
 The Devspace VM is ARM64 and intentionally lacks the normal Buildroot host compiler toolchain, so it is used for unit/static tests, source/hash verification and cross-platform wheelhouse validation only. The repository also includes an x86_64 GitHub Actions workflow that performs the authoritative full Buildroot image build, two-clean-build reproducibility comparison and OVMF/QEMU UEFI boot smoke test.
 
-The automated UEFI smoke test validates firmware → bootloader → kernel/initramfs → startup-audit execution for the generated image. It is still not a substitute for physically booting a removable USB on representative hardware before any future real-asset release.
+The automated UEFI smoke test validates firmware → bootloader → kernel/initramfs → startup-audit execution for the generated image. It does not claim graphical UI startup because CI currently runs QEMU with `-display none`; framebuffer-native UI interaction and physical removable-media acceptance remain separate evidence gates.
 
 
 ## Single-USB development image
