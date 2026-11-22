@@ -501,9 +501,17 @@ class PendingRequestStore(_Journal):
         the chain by txid and reconcile this record only after confirmation.
         """
         self._check_broadcast_txid(request, txid)
+        current = self.get(request["requestId"])
+        if (current is None or current.state != "IMPORTED_VERIFIED"
+                or type(current.metadata.get("responseDigest")) is not str
+                or HEX64_RE.fullmatch(current.metadata["responseDigest"]) is None):
+            raise ValueError("Broadcast request must preserve a verified response binding")
         return self._transition(
             request["requestId"], "BROADCAST_REQUESTED", request["sha256"],
-            request["transactionDigest"], {"txid": txid},
+            request["transactionDigest"], {
+                "txid": txid,
+                "responseDigest": current.metadata["responseDigest"],
+            },
         )
 
     @staticmethod
