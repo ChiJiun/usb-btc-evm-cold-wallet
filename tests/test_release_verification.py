@@ -267,6 +267,10 @@ def _ruleset_run(
     include_tag=True,
     tag_rules=("creation", "update", "deletion"),
     main_rules=("deletion", "non_fast_forward"),
+    main_excludes=(),
+    main_bypass=(),
+    tag_excludes=(),
+    tag_bypass=(),
 ):
     summaries = [
         {"id": 1, "enforcement": "active"},
@@ -276,7 +280,13 @@ def _ruleset_run(
         "id": 1,
         "target": "branch",
         "enforcement": "active",
-        "conditions": {"ref_name": {"include": ["refs/heads/main"], "exclude": []}},
+        "conditions": {
+            "ref_name": {
+                "include": ["refs/heads/main"],
+                "exclude": list(main_excludes),
+            }
+        },
+        "bypass_actors": list(main_bypass),
         "rules": [
             {
                 "type": "pull_request",
@@ -298,7 +308,13 @@ def _ruleset_run(
         "id": 2,
         "target": "tag",
         "enforcement": "active",
-        "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
+        "conditions": {
+            "ref_name": {
+                "include": ["refs/tags/v*"],
+                "exclude": list(tag_excludes),
+            }
+        },
+        "bypass_actors": list(tag_bypass),
         "rules": [{"type": name} for name in tag_rules],
     }
 
@@ -327,6 +343,10 @@ def test_repository_release_controls_require_protected_main_and_release_tags():
         {"include_tag": False},
         {"main_rules": ("deletion",)},
         {"main_rules": ("non_fast_forward",)},
+        {"main_excludes": ("refs/heads/release-*",)},
+        {"main_bypass": ({"actor_id": 1, "actor_type": "RepositoryRole"},)},
+        {"tag_excludes": ("refs/tags/v0.*",)},
+        {"tag_bypass": ({"actor_id": 1, "actor_type": "RepositoryRole"},)},
         {"tag_rules": ("creation", "deletion")},
         {"tag_rules": ("update", "deletion")},
         {"tag_rules": ("creation", "update")},
