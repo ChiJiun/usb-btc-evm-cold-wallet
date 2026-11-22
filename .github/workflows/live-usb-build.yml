@@ -38,7 +38,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        run: [1, 2]
+        run: ${{ fromJSON(github.event_name == 'pull_request' && github.event.pull_request.draft && '[1]' || '[1,2]') }}
     env:
       DEBIAN_FRONTEND: noninteractive
       BR2_JLEVEL: "2"
@@ -110,11 +110,11 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-      - name: Stage exact image and kernel from second independent build
-        if: matrix.run == 2
+      - name: Stage exact image and kernel for boot verification
+        if: matrix.run == 2 || (github.event_name == 'pull_request' && github.event.pull_request.draft && matrix.run == 1)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: UNVERIFIED-live-usb-second-clean-image
+          name: UNVERIFIED-live-usb-selected-clean-image
           path: |
             build/output/images/usb-cold-wallet.img
             build/output/images/bzImage
@@ -156,21 +156,26 @@ jobs:
       - name: Download second clean-build image
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: UNVERIFIED-live-usb-second-clean-image
+          name: UNVERIFIED-live-usb-selected-clean-image
           path: build/output/images
 
       - name: Compare two independent SHA-256 manifests and actual image bytes
         run: |
           set -euo pipefail
           test -s build/reproducibility/run-1.sha256
-          test -s build/reproducibility/run-2.sha256
-          if ! cmp -s build/reproducibility/run-1.sha256 build/reproducibility/run-2.sha256; then
-            echo "::error::Independent clean builds produced different image/kernel SHA-256"
-            diff -u build/reproducibility/run-1.sha256 build/reproducibility/run-2.sha256 || true
-            exit 1
+          selected=2
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ github.event.pull_request.draft }}" = "true" ]; then
+            test ! -e build/reproducibility/run-2.sha256
+            selected=1
+          else
+            test -s build/reproducibility/run-2.sha256
+            if ! cmp -s build/reproducibility/run-1.sha256 build/reproducibility/run-2.sha256; then
+              echo "::error::Independent clean builds produced different image/kernel SHA-256"
+              diff -u build/reproducibility/run-1.sha256 build/reproducibility/run-2.sha256 || true
+              exit 1
+            fi
           fi
-          (cd build/output/images && sha256sum -c ../../reproducibility/run-2.sha256)
-          echo "PASS: two independently compiled clean images and kernels match"
+          (cd build/output/images && sha256sum -c "../../reproducibility/run-${selected}.sha256")
 
       - name: Boot generated USB image using UEFI OVMF/QEMU (TCG)
         run: sh scripts/verify_uefi_boot.sh
@@ -191,17 +196,19 @@ jobs:
           evidence="build/reproducibility"
           mkdir -p "$ARTIFACT_DIR"
 
-          # Bind the published bytes to the second clean build that was boot-audited.
+          selected=2
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ github.event.pull_request.draft }}" = "true" ]; then selected=1; fi
           (
             cd build/output/images
-            sha256sum -c ../../reproducibility/run-2.sha256
+            sha256sum -c "../../reproducibility/run-${selected}.sha256"
             sha256sum usb-cold-wallet.img > usb-cold-wallet.img.sha256
             sha256sum -c usb-cold-wallet.img.sha256
           )
 
           cp "$image" "$ARTIFACT_DIR/usb-cold-wallet.img"
           cp build/output/images/usb-cold-wallet.img.sha256 "$ARTIFACT_DIR/"
-          cp "$evidence/run-1.sha256" "$evidence/run-2.sha256" "$ARTIFACT_DIR/"
+          cp "$evidence/run-1.sha256" "$ARTIFACT_DIR/"
+          if [ "$selected" = 2 ]; then cp "$evidence/run-2.sha256" "$ARTIFACT_DIR/"; fi
 
           # xz does not embed timestamps. Single-threaded fixed parameters make
           # the compressed representation independently reproducible.
@@ -219,6 +226,7 @@ jobs:
           test "$actual" = "$EXPECTED_HEAD_SHA"
           {
             echo "classification=TESTNET ONLY / NOT A RELEASE"
+            echo "clean_build_count=$selected"
             echo "repository=${{ github.repository }}"
             echo "commit_sha=$actual"
             echo "event_head_sha=$EXPECTED_HEAD_SHA"
@@ -237,7 +245,7 @@ jobs:
           } > "$ARTIFACT_DIR/ARTIFACT-MANIFEST.txt"
 
           # Manifest and evidence must all describe the exact same raw image.
-          expected="$(awk '$2 == "usb-cold-wallet.img" {print $1}' "$evidence/run-2.sha256")"
+          expected="$(awk '$2 == "usb-cold-wallet.img" {print $1}' "$evidence/run-${selected}.sha256")"
           test -n "$expected"
           test "$expected" = "$(awk '{print $1}' "$ARTIFACT_DIR/usb-cold-wallet.img.sha256")"
           test "$expected" = "$(sed -n 's/^image_sha256=//p' "$ARTIFACT_DIR/ARTIFACT-MANIFEST.txt")"
