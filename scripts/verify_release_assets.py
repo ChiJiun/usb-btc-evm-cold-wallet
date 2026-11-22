@@ -33,6 +33,8 @@ MAX_MANIFEST_BYTES = 128 * 1024
 REQUIRED_STAGED_FILES = ("SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt")
 DEFAULT_AUTHORIZED_RELEASE_TAGGER_EMAILS = frozenset({"0311gino@gmail.com"})
 DEFAULT_AUTHORIZED_RELEASE_ACTORS = frozenset({"ChiJiun"})
+# GitHub Actions App ID; a check from any other integration must not satisfy the release gate.
+GITHUB_ACTIONS_APP_ID = 15368
 SLSA_PREDICATE_TYPE = "https://slsa.dev/provenance/v1"
 SLSA_BUILD_TYPE_PREFIX = f"https://github.com/{REPOSITORY}/blob/"
 SLSA_BUILDER_ID = f"https://github.com/{REPOSITORY}/actions/workflows/release-finalize.yml"
@@ -300,12 +302,13 @@ def verify_repository_release_controls(*, run: Run = _gh) -> None:
                 isinstance(pr_params, dict)
                 and isinstance(pr_params.get("required_approving_review_count"), int)
                 and pr_params["required_approving_review_count"] >= 1
+                and pr_params.get("dismiss_stale_reviews_on_push") is True
+                and pr_params.get("required_review_thread_resolution") is True
                 and pr_params.get("require_last_push_approval") is True
                 and isinstance(check_params, dict)
                 and check_params.get("strict_required_status_checks_policy") is True
                 and isinstance(required_ci, dict)
-                and isinstance(required_ci.get("integration_id"), int)
-                and required_ci["integration_id"] > 0
+                and required_ci.get("integration_id") == GITHUB_ACTIONS_APP_ID
                 and {"deletion", "non_fast_forward"}.issubset(by_type)
             ) or main_ok
 
@@ -322,7 +325,8 @@ def verify_repository_release_controls(*, run: Run = _gh) -> None:
     if not main_ok:
         missing.append(
             "active main ruleset with no excludes/bypass actors, >=1 approval, "
-            "last-push approval, strict app-bound CI / Required, deletion protection, "
+            "dismiss stale approvals, resolve review threads, last-push approval, "
+            "strict GitHub-Actions-bound CI / Required, deletion protection, 
             "and non-fast-forward protection"
         )
     if not tag_ok:
