@@ -82,7 +82,7 @@ def classify_workloads(paths: list[str]) -> Workloads:
             # Validate actual reusable workflow_call wiring without rebuilding
             # unchanged image inputs. All other platform jobs remain required.
             add(*(name for name in Workloads.__dataclass_fields__
-                  if name != "live_usb"), "live_usb_smoke"
+                  if name != "live_usb"), "live_usb_smoke")
         elif path in {"scripts/ci_checks.py", "scripts/ci_workloads.py"}:
             # Scope/gate logic is covered by mandatory Python regression tests.
             # Do not rebuild an unchanged offline image just to test a selector.
