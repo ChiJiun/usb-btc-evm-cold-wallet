@@ -114,13 +114,13 @@ jobs:
         if: matrix.run == 2
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: live-usb-second-clean-image
+          name: UNVERIFIED-live-usb-second-clean-image
           path: |
             build/output/images/usb-cold-wallet.img
             build/output/images/bzImage
           if-no-files-found: error
           compression-level: 0
-          retention-days: 3
+          retention-days: 1
 
   verify-and-publish:
     # A failed/cancelled/missing clean build prevents any verified artifact.
@@ -156,7 +156,7 @@ jobs:
       - name: Download second clean-build image
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: live-usb-second-clean-image
+          name: UNVERIFIED-live-usb-second-clean-image
           path: build/output/images
 
       - name: Compare two independent SHA-256 manifests and actual image bytes
