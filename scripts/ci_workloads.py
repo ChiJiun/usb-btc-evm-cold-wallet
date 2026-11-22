@@ -77,9 +77,16 @@ def classify_workloads(paths: list[str]) -> Workloads:
             add("live_usb")
         elif path == ".github/workflows/live-usb-build.yml":
             add("live_usb")
-        elif path in {".github/workflows/ci.yml", "scripts/ci_checks.py",
-                      "scripts/ci_workloads.py"}:
+        elif path == ".github/workflows/ci.yml":
+            # The orchestration graph can change any job's actual behavior.
             add(*Workloads.__dataclass_fields__)
+        elif path in {"scripts/ci_checks.py", "scripts/ci_workloads.py"}:
+            # Scope/gate logic is covered by mandatory Python regression tests.
+            # Do not rebuild an unchanged offline image just to test a selector.
+            # Unknown paths still fail closed and image/workflow edits still
+            # require the full two-clean-build Live USB verification.
+            add(*(name for name in Workloads.__dataclass_fields__
+                  if name != "live_usb"))
         elif path.startswith(".github/workflows/"):
             name = path.split("/")[-1]
             if name not in SAFE_WORKFLOWS and name != "release.yml":
