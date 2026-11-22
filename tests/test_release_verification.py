@@ -57,6 +57,9 @@ def _metadata_bytes(*, tag: str = TAG, commit: str = COMMIT, asset: str = ASSET)
             "xz_version": "5.8.1",
             "compression": "xz -6 --threads=1 --check=crc64 --no-sparse",
             "raw_image_sha256": "2" * 64,
+            "efi_partition_sha256": "3" * 64,
+            "kernel_sha256": "4" * 64,
+            "sbom_scope": "buildroot-target-rootfs",
             "reproducibility_runs": 2,
             "tag_object_sha": TAG_OBJECT_SHA,
             "apt_snapshot": "20261121T000000Z",
@@ -586,6 +589,7 @@ def test_checksums_are_not_themselves_claimed_to_authenticate_release():
         "metadata_attestation_workflow",
         "metadata_tag_object",
         "metadata_publish_requested",
+        "metadata_sbom_scope",
         "sbom",
         "extra_file",
     ],
@@ -664,6 +668,20 @@ def test_staged_asset_substitution_wrong_sha_source_or_manifest_fails_closed(
             (tmp_path / "release-metadata.json").read_text(encoding="utf-8")
         )
         metadata["publish_requested"] = "true"
+        (tmp_path / "release-metadata.json").write_text(
+            json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        names = [ASSET, "SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt"]
+        lines = []
+        for name in sorted(names):
+            digest = hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+            lines.append(f"{digest}  {name}")
+        (tmp_path / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="ascii")
+    elif mutation == "metadata_sbom_scope":
+        metadata = json.loads(
+            (tmp_path / "release-metadata.json").read_text(encoding="utf-8")
+        )
+        metadata["sbom_scope"] = "whole-disk"
         (tmp_path / "release-metadata.json").write_text(
             json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
         )
