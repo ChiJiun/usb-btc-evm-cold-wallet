@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+
+export HOME=/root
+export HISTFILE=/dev/null
+export TMPDIR=/tmp
+umask 077
+
+# This session intentionally uses the kernel VT/fbcon path. X11/Tk cannot run
+# with CONFIG_NET=n because AF_UNIX is unavailable. The existing appliance
+# reuses the reviewed signer/runtime-audit code and exposes no general shell.
+if [ -e /run/usb-wallet/lockdown ]; then
+    exec /usr/bin/usb-wallet-console
+fi
+
+# Prefer a real framebuffer-backed VT when firmware exposes one. QEMU may use
+# simpledrm/fbcon; a missing /dev/fb0 is not itself a security failure because
+# the VT can still be rendered by DRM console helpers.
+test -c /dev/tty1 || {
+    echo "LOCKDOWN: tty1 unavailable" >&2
+    exec /usr/bin/usb-wallet-console
+}
+
+exec /usr/bin/usb-wallet-console

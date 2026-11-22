@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from usb_cold_wallet import appliance
 
 
-SAFE = {"rw", "nodev", "noexec", "nosuid", "sync"}
+SAFE = {"rw", "nodev", "noexec", "nosuid", "sync", "fmask=0177", "dmask=0077"}
 
 
 def _identity(monkeypatch, device="/dev/sdb1"):
@@ -12,13 +12,23 @@ def _identity(monkeypatch, device="/dev/sdb1"):
     return device
 
 
-def _identity_files(monkeypatch, tmp_path, boot_parent="sda", vault_device="/dev/sda2"):
+def _identity_files(
+    monkeypatch,
+    tmp_path,
+    boot_parent="sda",
+    vault_device="/dev/sda2",
+    transfer_device=None,
+):
     boot_file = tmp_path / "boot-parent"
     vault_file = tmp_path / "vault-device"
+    transfer_file = tmp_path / "transfer-device"
     boot_file.write_text(boot_parent + "\n", encoding="utf-8")
     vault_file.write_text(vault_device + "\n", encoding="utf-8")
+    if transfer_device is not None:
+        transfer_file.write_text(transfer_device + "\n", encoding="ascii")
     monkeypatch.setattr(appliance, "BOOT_PARENT_FILE", boot_file)
     monkeypatch.setattr(appliance, "VAULT_DEVICE_FILE", vault_file)
+    monkeypatch.setattr(appliance, "TRANSFER_DEVICE_FILE", transfer_file)
 
 
 def test_transfer_mount_rejects_ambiguous_or_missing_label(monkeypatch, tmp_path):
@@ -32,10 +42,17 @@ def test_unique_transfer_device_rejects_duplicate_label(monkeypatch):
     assert appliance._unique_transfer_device() is None
 
 
-def test_unique_transfer_device_rejects_boot_parent(monkeypatch, tmp_path):
-    _identity_files(monkeypatch, tmp_path)
+def test_unique_transfer_device_same_parent_requires_exact_boot_verified_partition(monkeypatch, tmp_path):
     monkeypatch.setattr(appliance, "_transfer_candidates", lambda: ["/dev/sda3"])
     monkeypatch.setattr(appliance, "_block_parent", lambda _device: "sda")
+
+    _identity_files(monkeypatch, tmp_path)
+    assert appliance._unique_transfer_device() is None
+
+    _identity_files(monkeypatch, tmp_path, transfer_device="/dev/sda3")
+    assert appliance._unique_transfer_device() == "/dev/sda3"
+
+    _identity_files(monkeypatch, tmp_path, transfer_device="/dev/sda4")
     assert appliance._unique_transfer_device() is None
 
 
@@ -116,6 +133,14 @@ def test_transfer_mount_rejects_nonfat_existing_mount(monkeypatch, tmp_path):
     device = _identity(monkeypatch)
     monkeypatch.setattr(appliance, "_mount_info", lambda path: (device, "ext4", SAFE))
     assert appliance.mount_transfer() is False
+
+
+def test_transfer_mount_rejects_insecure_fat_access_masks(monkeypatch, tmp_path):
+    monkeypatch.setattr(appliance, "TRANSFER", tmp_path)
+    device = _identity(monkeypatch)
+    for missing in ("fmask=0177", "dmask=0077"):
+        monkeypatch.setattr(appliance, "_mount_info", lambda _path, missing=missing: (device, "vfat", SAFE - {missing}))
+        assert appliance.mount_transfer() is False
 
 
 def test_transfer_mount_accepts_expected_source_and_flags(monkeypatch, tmp_path):

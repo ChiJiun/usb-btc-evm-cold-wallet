@@ -70,4 +70,11 @@ for tool in ip ifconfig route ping wget nc netcat udhcpc telnet; do
 done
 
 python3 "$ROOT/scripts/verify_image.py" "$IMAGE"
+
+# GitHub-hosted Ubuntu runners provide passwordless sudo. Run the privileged
+# read-only loopback audit when available without weakening local verification.
+if [ "${CI:-}" = "true" ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+	sudo -n sh "$ROOT/scripts/verify_single_usb_loopback.sh" "$IMAGE"
+fi
+
 echo "Static image verification passed."

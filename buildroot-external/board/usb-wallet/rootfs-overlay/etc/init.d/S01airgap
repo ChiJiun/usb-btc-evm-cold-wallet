@@ -6,12 +6,15 @@ LOCKDOWN=/run/usb-wallet/lockdown
 BOOT_DEVICE_FILE=/run/usb-wallet/boot-device
 BOOT_PARENT_FILE=/run/usb-wallet/boot-parent
 VAULT_DEVICE_FILE=/run/usb-wallet/vault-device
+TRANSFER_DEVICE_FILE=/run/usb-wallet/transfer-device
+BOOT_SYSFS_FILE=/run/usb-wallet/boot-sysfs-path
+BOOT_DISKSEQ_FILE=/run/usb-wallet/boot-diskseq
 FAILED=0
 
 mkdir -p /run/usb-wallet /mnt/cold-vault /mnt/transfer
 chmod 0700 /run/usb-wallet /mnt/cold-vault /mnt/transfer
 : > "$CHECKS"
-rm -f "$LOCKDOWN" "$BOOT_DEVICE_FILE" "$BOOT_PARENT_FILE" "$VAULT_DEVICE_FILE"
+rm -f "$LOCKDOWN" "$BOOT_DEVICE_FILE" "$BOOT_PARENT_FILE" "$VAULT_DEVICE_FILE" "$TRANSFER_DEVICE_FILE" "$BOOT_SYSFS_FILE" "$BOOT_DISKSEQ_FILE"
 
 pass() {
 	printf 'PASS: %s\n' "$1" >> "$CHECKS"
@@ -48,20 +51,26 @@ VAULT_PARENT=""
 # The independent Python helper verifies primary GPT CRC, both partition
 # GUIDs, FAT labels and uniqueness across USB disks before returning paths.
 MEDIA_PARENT=""
+TRANSFER_DEVICE=""
 if MEDIA_IDENTITY="$(/usr/bin/python3 /usr/libexec/usb-wallet-identify-media 2>/dev/null)"; then
-    # Intentional word splitting: the helper only emits fixed-format /dev/sdXn
-    # names and a kernel block basename, never shell snippets or user strings.
+    # Helper emits boot, vault, optional same-device transfer ("-" if absent),
+    # then a kernel block basename. None of these fields are shell-controlled.
     set -- $MEDIA_IDENTITY
-    if [ "$#" -eq 3 ]; then
+    if [ "$#" -eq 4 ]; then
         BOOT_DEVICE="$1"
         VAULT_DEVICE="$2"
-        MEDIA_PARENT="$3"
-        pass "unique boot and vault partitions verified by GPT CRC, GUID and FAT label"
+        [ "$3" = "-" ] || TRANSFER_DEVICE="$3"
+        MEDIA_PARENT="$4"
+        if [ -n "$TRANSFER_DEVICE" ]; then
+            pass "unique single-USB boot, vault and transfer layout verified by GPT CRC, GUID, size and FAT label"
+        else
+            pass "unique legacy boot and vault partitions verified by GPT CRC, GUID, size and FAT label"
+        fi
     else
         fail "boot media identifier returned malformed output"
     fi
 else
-    fail "boot/vault media is missing, duplicated or failed GPT/FAT verification"
+    fail "boot/vault/transfer media is missing, duplicated or failed GPT/FAT verification"
 fi
 
 if [ -n "$BOOT_DEVICE" ] && [ -n "$VAULT_DEVICE" ]; then
@@ -72,6 +81,24 @@ if [ -n "$BOOT_DEVICE" ] && [ -n "$VAULT_DEVICE" ]; then
 		printf '%s\n' "$BOOT_DEVICE" > "$BOOT_DEVICE_FILE"
 		printf '%s\n' "$BOOT_PARENT" > "$BOOT_PARENT_FILE"
 		printf '%s\n' "$VAULT_DEVICE" > "$VAULT_DEVICE_FILE"
+		BOOT_SYSFS="$(readlink -f "/sys/class/block/$BOOT_PARENT" 2>/dev/null || true)"
+		BOOT_DISKSEQ="$(cat "/sys/class/block/$BOOT_PARENT/diskseq" 2>/dev/null || true)"
+		if [ -n "$BOOT_SYSFS" ] && [ -n "$BOOT_DISKSEQ" ]; then
+			printf '%s\n' "$BOOT_SYSFS" > "$BOOT_SYSFS_FILE"
+			printf '%s\n' "$BOOT_DISKSEQ" > "$BOOT_DISKSEQ_FILE"
+			pass "boot USB sysfs ancestry and disk sequence pinned for runtime replacement detection"
+		else
+			fail "boot USB sysfs ancestry or disk sequence unavailable"
+		fi
+		if [ -n "$TRANSFER_DEVICE" ]; then
+			TRANSFER_PARENT="$(block_parent_name "$TRANSFER_DEVICE" 2>/dev/null || true)"
+			if [ "$TRANSFER_PARENT" = "$BOOT_PARENT" ]; then
+				printf '%s\n' "$TRANSFER_DEVICE" > "$TRANSFER_DEVICE_FILE"
+				pass "single-USB TX_TRANSFER partition bound to verified boot parent ($BOOT_PARENT)"
+			else
+				fail "verified TX_TRANSFER partition is not on the boot/vault parent"
+			fi
+		fi
 	else
 		fail "boot and vault partitions are not on the same verified block device"
 	fi
@@ -120,7 +147,7 @@ VAULT_TYPE="$(awk '$2 == "/mnt/cold-vault" { print $3; exit }' /proc/mounts 2>/d
 VAULT_OPTS="$(awk '$2 == "/mnt/cold-vault" { print $4; exit }' /proc/mounts 2>/dev/null || true)"
 if [ "$VAULT_TYPE" = "vfat" ] && [ -n "$VAULT_DEVICE" ] && [ "$VAULT_SOURCE" = "$VAULT_DEVICE" ]; then
 	pass "COLD_VAULT mounted from verified PARTUUID device as vfat"
-	for option in rw noexec nodev nosuid sync; do
+	for option in rw noexec nodev nosuid sync fmask=0177 dmask=0077; do
 		case ",$VAULT_OPTS," in
 			*",$option,"*) ;;
 			*) fail "COLD_VAULT missing mount option: $option" ;;
@@ -150,7 +177,7 @@ else
 fi
 
 if [ "$FAILED" -ne 0 ]; then
-	rm -f "$BOOT_DEVICE_FILE" "$BOOT_PARENT_FILE" "$VAULT_DEVICE_FILE"
+	rm -f "$BOOT_DEVICE_FILE" "$BOOT_PARENT_FILE" "$VAULT_DEVICE_FILE" "$TRANSFER_DEVICE_FILE" "$BOOT_SYSFS_FILE" "$BOOT_DISKSEQ_FILE"
 	: > "$LOCKDOWN"
 	printf 'LOCKDOWN: one or more boot security checks failed\n' >> "$CHECKS"
 else
