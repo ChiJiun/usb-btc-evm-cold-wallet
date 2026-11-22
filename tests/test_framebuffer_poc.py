@@ -410,5 +410,10 @@ def test_framebuffer_resolution_and_pixel_format_fail_closed(monkeypatch):
     with pytest.raises(ValueError, match="XRGB8888"):
         fb._fb_geometry(3)
 
-    monkeypatch.setattr(fb.fcntl, "ioctl", _fake_fb_ioctl(bpp=16))
+    monkeypatch.setattr(
+        fb.fcntl, "ioctl",
+        _fake_fb_ioctl(
+            bpp=16, red=(11, 5, 0), green=(5, 6, 0), blue=(0, 5, 0)
+        ),
+    )
     assert fb._fb_geometry(3) == (800, 600, 16, 1600)
