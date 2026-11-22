@@ -179,7 +179,7 @@ def test_core_oracle_cannot_be_reinterpreted_by_online_expectations(mutation):
     maximum_fee = FIXTURE["fee_sats"]
     change_index = 0
     if mutation == "wrong_recipient":
-        recipient = script.address_to_scriptpubkey(recipient).address(networks.NETWORKS["main"])
+        recipient = script.Script(b"\\x00\\x14" + b"\\x99" * 20).address(networks.NETWORKS["test"])
     elif mutation == "wrong_amount":
         amount += 1
     elif mutation == "fee_below_actual":
