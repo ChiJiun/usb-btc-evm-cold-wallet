@@ -22,11 +22,15 @@ SERIAL = Path("/dev/ttyS0")
 
 
 def _serial(message: str) -> None:
+    fd = None
     try:
-        with SERIAL.open("a", encoding="ascii", buffering=1) as stream:
-            stream.write(message + "\n")
+        fd = os.open(SERIAL, os.O_WRONLY | os.O_NONBLOCK | os.O_NOCTTY)
+        os.write(fd, (message + "\n").encode("ascii"))
     except OSError:
         pass
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def _audit() -> bool:
