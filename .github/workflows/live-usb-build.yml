@@ -13,8 +13,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: live-usb-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.smoke_only && 'smoke' || 'full' }}
-  cancel-in-progress: true
+  # Supersede only obsolete pull-request runs. main/manual validations use a
+  # unique run id so a later merge can never cancel an earlier main gate and
+  # turn CI / Required into a false (fail-closed) failure.
+  group: live-usb-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}-${{ inputs.smoke_only && 'smoke' || 'full' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   contract-smoke:
@@ -28,10 +31,21 @@ jobs:
           test "${{ inputs.smoke_only }}" = "true"
           echo "Live USB reusable workflow_call contract executed"
 
-  build-and-reproduce:
+  clean-builds:
+    # Both complete Buildroot builds run on separate clean GitHub-hosted runners.
+    # Independent source/build outputs are NOT cached. Matrix builds execute
+    # concurrently, reducing wall-clock latency without reducing coverage.
+    # Draft and Ready PRs run the SAME dual build: in parallel it costs no
+    # extra wall-clock, and Required success always means full verification
+    # of that exact SHA (no re-run when a draft is marked Ready).
+    # Either build failing already fails the gate, so cancel its twin early.
     if: inputs.smoke_only != true
     runs-on: ubuntu-24.04
-    timeout-minutes: 330
+    timeout-minutes: 120
+    strategy:
+      fail-fast: true
+      matrix:
+        run: [1, 2]
     env:
       DEBIAN_FRONTEND: noninteractive
       BR2_JLEVEL: "2"
@@ -71,11 +85,98 @@ jobs:
           sh scripts/check_host.sh
           df -h .
 
+      # Only download inputs are cached. Never cache build/output, compilers,
+      # rootfs, image files or verification evidence: the two clean builds
+      # must still compile independently on every relevant HEAD.
+      # Restore is untrusted input: Buildroot enforces source hashes and the
+      # fetch scripts verify Buildroot's signed release and every wheel hash.
+      - name: Restore verified source downloads
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4
+        with:
+          path: |
+            build/dl
+            build/cache
+            build/wheelhouse
+          key: live-usb-downloads-v1-${{ runner.os }}-${{ hashFiles('infra/buildroot.env', 'infra/buildroot-release-key.asc', 'infra/embit.env', 'infra/wheelhouse.sha256', 'infra/wheelhouse-requirements.txt', 'buildroot-external/configs/usb_wallet_x86_64_defconfig', 'buildroot-external/package/**', 'scripts/fetch_buildroot.sh', 'scripts/fetch_wheelhouse.sh', 'scripts/fetch_sources.sh') }}
+
       - name: Prepare authenticated offline sources
         run: sh scripts/fetch_sources.sh
 
-      - name: Build image and verify reproducibility (two clean builds)
-        run: sh scripts/check_reproducible.sh
+      - name: Independently build and statically audit image
+        run: |
+          set -euo pipefail
+          sh scripts/build_image.sh
+          mkdir -p build/reproducibility
+          (cd build/output/images && sha256sum usb-cold-wallet.img bzImage) > build/reproducibility/run-${{ matrix.run }}.sha256
+
+      - name: Upload independent build SHA-256 evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: live-usb-clean-hashes-${{ matrix.run }}
+          path: build/reproducibility/run-${{ matrix.run }}.sha256
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Stage exact image and kernel for boot verification
+        if: matrix.run == 2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: UNVERIFIED-live-usb-selected-clean-image
+          path: |
+            build/output/images/usb-cold-wallet.img
+            build/output/images/bzImage
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  verify-and-publish:
+    # A failed/cancelled/missing clean build prevents any verified artifact.
+    if: inputs.smoke_only != true
+    needs: clean-builds
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact checkout identity
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+
+      - name: Install UEFI verification dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf xz-utils
+
+      - name: Download both independent clean-build digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: live-usb-clean-hashes-*
+          merge-multiple: true
+          path: build/reproducibility
+
+      - name: Download second clean-build image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: UNVERIFIED-live-usb-selected-clean-image
+          path: build/output/images
+
+      - name: Compare two independent SHA-256 manifests and actual image bytes
+        run: |
+          set -euo pipefail
+          test -s build/reproducibility/run-1.sha256
+          test -s build/reproducibility/run-2.sha256
+          if ! cmp -s build/reproducibility/run-1.sha256 build/reproducibility/run-2.sha256; then
+            echo "::error::Independent clean builds produced different image/kernel SHA-256"
+            diff -u build/reproducibility/run-1.sha256 build/reproducibility/run-2.sha256 || true
+            exit 1
+          fi
+          (cd build/output/images && sha256sum -c ../../reproducibility/run-2.sha256)
 
       - name: Boot generated USB image using UEFI OVMF/QEMU (TCG)
         run: sh scripts/verify_uefi_boot.sh
@@ -129,6 +230,8 @@ jobs:
           fi
           {
             echo "classification=TESTNET ONLY / NOT A RELEASE"
+            echo "clean_build_count=2"
+            echo "reproducibility_verified=true"
             echo "repository=${{ github.repository }}"
             echo "commit_sha=$actual"
             echo "event_head_sha=$EXPECTED_HEAD_SHA"
