@@ -19,8 +19,15 @@ if [ -f "$TARGET_DIR/etc/inittab" ]; then
 	printf '\ntty1::respawn:/usr/bin/usb-wallet-gui-session\n' >> "$TARGET_DIR/etc/inittab"
 fi
 
-test -x "$TARGET_DIR/usr/bin/usb-wallet-console"
-test -x "$TARGET_DIR/usr/bin/usb-wallet-gui-session"
+for required in \
+    "$TARGET_DIR/usr/bin/usb-wallet-console" \
+    "$TARGET_DIR/usr/bin/usb-wallet-gui-session"; do
+	if [ ! -x "$required" ]; then
+		echo "ERROR: required appliance launcher missing or not executable: $required" >&2
+		ls -l "$required" 2>/dev/null || true
+		exit 1
+	fi
+done
 
 # Fail the build if the impossible X11/Tk path is accidentally reintroduced.
 for path in     "$TARGET_DIR/usr/bin/xinit"     "$TARGET_DIR/usr/bin/Xfbdev"     "$TARGET_DIR/usr/bin/Xorg"; do
