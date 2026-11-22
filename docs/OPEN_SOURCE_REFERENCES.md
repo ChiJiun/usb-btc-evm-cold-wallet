@@ -1,6 +1,6 @@
 # Open-source design references and source licensing
 
-This is an original MIT-licensed CLI with dependencies; **no code copied or vendored** from the projects listed here. Check upstream licenses and provenance before copying or linking any future source.
+This is an original MIT-licensed wallet application with reviewed dependencies. The framebuffer POC additionally derives **bitmap data only** from one pinned Public Domain font file documented below; no wallet/signing implementation is copied from the referenced projects. Check exact-path licenses and provenance before any future source copy.
 
 | Project | Role / applicability | Important caveat |
 |---|---|---|
@@ -26,9 +26,9 @@ These are **real dependency integrations confirmed from repository source/config
 | `pyproject.toml`; `src/usb_cold_wallet/evm.py`; `src/usb_cold_wallet/companion_core.py` | `eth-account==0.14.0` | Dependency | Ethereum signing / transaction encoding; keep local chain/account/policy validation |
 | `qr-transport/package.json`; `qr-transport/package-lock.json`; `qr-transport/src/typed_registry.mjs`; `qr-transport/src/ur_transport.mjs` | `@blockchaincommons/uniform-resources==1.0.0-beta.5`, `@blockchaincommons/dcbor==1.0.0-beta.5` | Dependency | UR/CBOR machinery |
 | `qr-metamask/package.json`; `qr-metamask/package-lock.json`; `qr-metamask/src/adapter.mjs` | `@keystonehq/bc-ur-registry==0.8.1`, `@keystonehq/bc-ur-registry-eth==0.23.1`, `@ngraveio/bc-ur==1.1.13` | Dependency | Ethereum typed UR and QR registry |
-| `infra/buildroot.env`; `scripts/fetch_buildroot.sh`; `scripts/configure_buildroot.sh` | Buildroot `2026.08.2`, archive SHA-256 pinned in `infra/buildroot.env` | Pinned build input / dependency | Live OS build system |
+| `infra/buildroot.env`; `scripts/fetch_buildroot.sh`; `scripts/configure_buildroot.sh` | Buildroot `2026.08.2`, archive SHA-256 pinned in `infra/buildroot.env` | Pinned build input / dependency | Live OS build system |\n| `scripts/generate_framebuffer_font.py`; `buildroot-external/package/usb-wallet-app/usb-wallet-app.mk` | `dhepper/font8x8@8e279d2d864e79128e96188a6b9526cfa3fbfef9`, exact path `font8x8_basic.h` | Copied/derived data: exact file header and upstream README state **Public Domain** | 1024 bytes of 8x8 Basic Latin bitmap data only; rows are bit-reversed and vertically doubled into deterministic PSF2; 0 executable source LOC copied |
 
-**Source-copy status:** no confirmed wallet source-copy from Specter-DIY, AirGap, BlueWallet, Keystone or SignerOS in this inspection. These remain Candidate/Reference sources unless a PR records the exact upstream commit, exact copied path/lines, path-level license coverage, required notices and local test evidence. `scripts/fetch_sources.sh` prepares authenticated build inputs; it is not evidence that wallet source was ported.
+**Source-copy status:** no wallet/signing source-copy from Specter-DIY, AirGap, BlueWallet, Keystone or SignerOS is present in this inspection. PR #79 copies only the 1024-byte bitmap table from the exact Public Domain `dhepper/font8x8` path above and transforms it into PSF2 at build time. The other projects remain Candidate/Reference sources unless a PR records the exact upstream commit, copied path/lines, path-level license coverage, required notices and local test evidence. `scripts/fetch_sources.sh` prepares authenticated build inputs; it is not evidence that wallet source was ported.
 
 ## Concrete upstream porting procedure
 
