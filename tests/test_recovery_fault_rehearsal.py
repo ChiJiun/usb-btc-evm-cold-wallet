@@ -121,14 +121,17 @@ def test_wrong_bitcoin_network_or_account_is_rejected(private_dir):
     with pytest.raises(ValueError, match="testnet"):
         verify_paper_recovery(MNEMONIC, "", mainnet, recorded["evm"]["address"])
     target = private_dir / "wrong-account.vault"
-    # Account 0, next address index: valid but not the independently recorded
-    # first receive address. A wrong account/path is likewise not an identity.
+    # Both the next address and an address from account 1 are valid testnet
+    # addresses, but neither matches the recorded account-0 first address.
     other_index = btc_address(root, 0, 1)
-    assert other_index != first
-    with pytest.raises(ValueError, match="disagree"):
-        restore_paper_wallet(target, MNEMONIC, "", other_index,
-                             recorded["evm"]["address"], PASSWORD)
-    assert not target.exists()
+    other_account = script.p2wpkh(root.derive("m/84h/1h/1h/0/0").key).address(
+        networks.NETWORKS["test"])
+    assert len({first, other_index, other_account}) == 3
+    for unexpected in (other_index, other_account):
+        with pytest.raises(ValueError, match="disagree"):
+            restore_paper_wallet(target, MNEMONIC, "", unexpected,
+                                 recorded["evm"]["address"], PASSWORD)
+        assert not target.exists()
 
 
 def test_missing_vault_is_rejected_without_writing(private_dir):
