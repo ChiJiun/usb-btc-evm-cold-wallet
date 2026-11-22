@@ -778,8 +778,6 @@ def test_release_workflows_pin_actions_and_isolate_privileges():
     assert finalizer.count("predicate-path:") == 2
     assert "contents: write" in finalizer
     assert "needs.preflight.outputs.publish_requested == 'true'" in finalizer
-    assert 'for issue in 24 43' in finalizer
-    assert "gh issue view 48" in finalizer
     assert "--clobber" not in finalizer
     assert 'test "$current_main" = "$GITHUB_SHA"' in finalizer
     assert "gh release create" in finalizer
@@ -793,6 +791,10 @@ def test_release_workflows_pin_actions_and_isolate_privileges():
     attest = finalizer.split("\n  attest:\n", 1)[1].split("\n  verify:\n", 1)[0]
     verify = finalizer.split("\n  verify:\n", 1)[1].split("\n  gate:\n", 1)[0]
     publish = finalizer.split("\n  publish:\n", 1)[1]
+
+    assert 'for issue in 24 43 48' in publish
+    assert 'for issue in 24 43;' not in publish
+    assert 'gh issue view 48' not in publish
 
     assert 'gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq .enabled' in publish
     assert '[[ "$immutable" != "true" ]]' in publish

@@ -16,7 +16,7 @@ Candidate 的 signed annotated tag 必須精確指向 input source SHA；GitHub 
 - finalizer preflight：`actions: read` + `contents: read`，只下載並解析前置 run 的 artifact，不執行 artifact 內程式碼。
 - finalizer attest：`id-token: write`、`attestations: write`、`artifact-metadata: write`，但沒有 `contents: write`。
 - finalizer verify：`contents: read` + `attestations: read`。
-- finalizer publish：只有 candidate metadata 明確記錄 `publish_requested=true`、所有 privileged gates 成功、#24/#43（stable 另含 #48）通過時才取得 `contents: write`。既有 Release 一律拒絕覆寫。
+- finalizer publish：只有 candidate metadata 明確記錄 `publish_requested=true`、所有 privileged gates 成功、#24/#43/#48 全部通過時才取得 `contents: write`。既有 Release 一律拒絕覆寫。
 
 所有 `uses:` 都釘選完整 40-hex action commit。Buildroot 版本、來源 SHA-256、簽章與 release key 由 `infra/buildroot.env` 固定；target wheelhouse 由 `infra/wheelhouse-requirements.txt` 與 `infra/wheelhouse.sha256` 固定；Node release runtime 固定為 `24.22.3` 並以 lockfile 執行 `npm ci`。SBOM action 固定 commit，Syft 固定版本。Release host 的 APT 現改用固定 Ubuntu Snapshot ID，並把每個安裝套件解析成 `package=version` 後驗證實際 dpkg version；`build-host-packages.txt` 仍保留作證據。GitHub-hosted `ubuntu-24.04` runner image 與 host kernel 仍是 GitHub 管理的可變輸入，因此目前只能稱為 **APT snapshot-pinned、runner-recorded**，不能宣稱 hermetic build。
 
@@ -36,11 +36,11 @@ Candidate 的 signed annotated tag 必須精確指向 input source SHA；GitHub 
 ## 發行等級與可宣稱範圍
 
 - **測試映像 / candidate artifact**：只存在 GitHub Actions artifact，可供 CI、QEMU 或實體 testnet 驗收；不得建立公開 Release，也不得宣稱 production-safe。
-- **Beta (`vX.Y.Z-beta.N`)**：至少 #24 與 #43 的該版本實體 USB/testnet gate 已完成，仍標示 testnet-only、實驗性、未正式安全稽核。
+- **Beta (`vX.Y.Z-beta.N`)**：必須 #24/#43/#48 的安全驗收全部完成，仍標示 testnet-only、實驗性、未正式安全稽核。
 - **RC (`vX.Y.Z-rc.N`)**：Beta gate 全部保留，另完成預定 v1.0 功能矩陣、回歸與 release checklist；未通過主網安全 gate 仍不得開放真實資產。
-- **v1.0**：除了 #24/#43，還必須完成 #48 的 BTC/Ethereum mainnet 隔離與最小金額 E2E、獨立安全審查及明確 release decision。CI、QEMU、attestation 或關閉 Issue 本身都不能替代這些證據。
+- **v1.0**：需完成 #24/#43/#48，包含 BTC/Ethereum mainnet 隔離與最小金額 E2E、獨立安全審查及明確 release decision。CI、QEMU、attestation 或關閉 Issue 本身都不能替代這些證據。
 
-目前 #24、#43 都仍為 open，因此此 workflow 只能產生 candidate evidence，`publish=true` 仍必須 fail closed。所有公開 Beta/RC 都至少要求 #24/#43 closed；沒有 prerelease suffix 的 stable tag 另外要求 #48 closed，避免在主網驗收完成前發布 v1.0/stable 資產。
+目前 #24、#43、#48 都仍為 open，因此此 workflow 只能產生 candidate evidence，`publish=true` 仍必須 fail closed。所有公開 Release（含 Beta/RC 與 stable）均要求三項 Issue 全部 closed；此要求是公開發布共同安全 Gate。
 ## 獨立驗證已發布 Release
 
 前置條件：

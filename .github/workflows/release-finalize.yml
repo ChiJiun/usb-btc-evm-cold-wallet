@@ -374,23 +374,14 @@ jobs:
       - name: Require hardware and product release gates to be closed
         run: |
           set -euo pipefail
-          for issue in 24 43; do
+          # Every public release (including prereleases) requires all three security acceptances.
+          for issue in 24 43 48; do
             state="$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
             if [[ "$state" != "CLOSED" ]]; then
               echo "::error::Issue #$issue is still $state; release remains blocked"
               exit 1
             fi
           done
-          case "$TAG" in
-            *-*) ;;
-            *)
-              state="$(gh issue view 48 --repo "$GITHUB_REPOSITORY" --json state --jq .state)"
-              if [[ "$state" != "CLOSED" ]]; then
-                echo "::error::Issue #48 is still $state; stable/mainnet release remains blocked"
-                exit 1
-              fi
-              ;;
-          esac
 
       - name: Refuse replacement of an existing Release
         run: |
