@@ -32,6 +32,7 @@ CHECKSUM_RE = re.compile(r"([a-fA-F0-9]{64}) [ *]([A-Za-z0-9][A-Za-z0-9._+-]*)")
 MAX_MANIFEST_BYTES = 128 * 1024
 REQUIRED_STAGED_FILES = ("SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt")
 DEFAULT_AUTHORIZED_RELEASE_TAGGER_EMAILS = frozenset({"0311gino@gmail.com"})
+DEFAULT_AUTHORIZED_RELEASE_ACTORS = frozenset({"ChiJiun"})
 Run = Callable[[list[str]], str]
 
 
@@ -332,6 +333,7 @@ def verify_workflow_run_identity(
     expected_head_sha: str,
     *,
     expected_run_attempt: int | str | None = None,
+    authorized_actor_logins: frozenset[str] = DEFAULT_AUTHORIZED_RELEASE_ACTORS,
     run: Run = _gh,
 ) -> dict:
     """Require a successful manual candidate run from the exact protected-main commit."""
@@ -345,6 +347,8 @@ def verify_workflow_run_identity(
     data = _json(run, ["api", f"repos/{REPOSITORY}/actions/runs/{run_id_text}"])
     repository = data.get("repository")
     head_repository = data.get("head_repository")
+    actor = data.get("actor")
+    triggering_actor = data.get("triggering_actor")
     path = data.get("path")
     normalized_path = path.split("@", 1)[0] if isinstance(path, str) else None
 
@@ -360,6 +364,11 @@ def verify_workflow_run_identity(
         or repository.get("full_name") != REPOSITORY
         or not isinstance(head_repository, dict)
         or head_repository.get("full_name") != REPOSITORY
+        or not authorized_actor_logins
+        or not isinstance(actor, dict)
+        or actor.get("login") not in authorized_actor_logins
+        or not isinstance(triggering_actor, dict)
+        or triggering_actor.get("login") not in authorized_actor_logins
     ):
         raise ReleaseVerificationError("Untrusted or mismatched candidate workflow run")
 
