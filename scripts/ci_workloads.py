@@ -20,6 +20,7 @@ OFFLINE_MODULES = frozenset((
 ONLINE_MODULES = frozenset((
     "companion_core.py", "companion_btc.py", "companion_web.py",
     "companion_portable.py", "companion_envelope.py",
+    "companion_crossboot.py",
 ))
 IMAGE_SCRIPTS = frozenset((
     "build_image.sh", "build_offline_wheel.py", "check_host.sh",
