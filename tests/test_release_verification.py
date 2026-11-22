@@ -365,7 +365,7 @@ def test_checksums_are_not_themselves_claimed_to_authenticate_release():
         verify_release(TAG, COMMIT, ASSET, workflow_sha=WORKFLOW_SHA, run=fake)
 
 
-@pytest.mark.parametrize("mutation", ["asset", "sha", "metadata_commit", "sbom", "extra_file"])
+@pytest.mark.parametrize("mutation", ["asset", "sha", "metadata_commit", "metadata_workflow", "sbom", "extra_file"])
 def test_staged_asset_substitution_wrong_sha_source_or_manifest_fails_closed(
     tmp_path, mutation
 ):
@@ -384,6 +384,20 @@ def test_staged_asset_substitution_wrong_sha_source_or_manifest_fails_closed(
             (tmp_path / "release-metadata.json").read_text(encoding="utf-8")
         )
         metadata["source_sha"] = "0" * 40
+        (tmp_path / "release-metadata.json").write_text(
+            json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        names = [ASSET, "SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt"]
+        lines = []
+        for name in sorted(names):
+            digest = hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+            lines.append(f"{digest}  {name}")
+        (tmp_path / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="ascii")
+    elif mutation == "metadata_workflow":
+        metadata = json.loads(
+            (tmp_path / "release-metadata.json").read_text(encoding="utf-8")
+        )
+        metadata["workflow_sha"] = "d" * 40
         (tmp_path / "release-metadata.json").write_text(
             json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
         )
@@ -482,6 +496,8 @@ def test_release_workflow_has_pinned_actions_and_separated_permissions():
     assert 'RAW_IMAGE_SHA256' in build
     assert 'build-host-packages.txt' in build
     assert 'release/build-host-packages.txt' in publish
+    assert 'for issue in 24 43' in publish
     assert 'gh issue view 48' in publish
     assert "expected_tag_object_sha" in publish
     assert "verify_source" in publish
+    assert "verify_repository_release_controls" in workflow
