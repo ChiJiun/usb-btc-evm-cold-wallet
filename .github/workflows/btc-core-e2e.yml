@@ -5,6 +5,10 @@ on:
   pull_request:
     paths:
       - 'src/usb_cold_wallet/btc.py'
+      - 'src/usb_cold_wallet/cross_boot.py'
+      - 'src/usb_cold_wallet/cross_boot_public.py'
+      - 'src/usb_cold_wallet/companion_crossboot.py'
+      - 'tests/test_companion_crossboot.py'
       - 'tools/generate_core_bip84_psbt_e2e.py'
       - '.github/workflows/btc-core-e2e.yml'
 
