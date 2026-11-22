@@ -1,44 +1,88 @@
 # ADR: framebuffer-native offline review POC (Issues #19/#20/#37)
 
-Status: **EXPERIMENTAL / BLOCKED for product integration**. Independent from PR #76.
-Baseline: main `3aa32d5f9bd785bd64c83c2b2599d05c59653c6b`; PR #76 `057aed238ceac805a1a90acd297dfc38cd873359` at study time.
+Status: **EXPERIMENTAL / DRAFT — exact-head CI and SignerSession E2E still required**. Independent from PR #76.
 
 ## Decision
 
-Investigate direct Linux **fbdev** (`/dev/fb0`) + dedicated kernel virtual terminal (`/dev/tty1`) input using Python stdlib. No `AF_UNIX`, `CONFIG_NET`, X11, Tk, Wayland, SDL or remote IPC. Framebuffer open/mmap and kernel VT keyboard do not require socket syscalls. PSF2 raw bitmap font provided as a separately verified Buildroot image input; no unreviewed font is bundled by this POC. The application rejects incompatible geometry, pixel channel layout, font headers and unsupported format. This implementation is a **POC only**; a production GUI may instead use direct DRM/KMS and evdev, provided corresponding display/input drivers and package provenance are tested.
+Ship the reviewed `framebuffer_poc.py` module in the offline image under the existing fail-closed module allowlist, but keep it dormant behind a manual **public test-vector demo**. The normal Live OS continues to boot the text appliance. The POC uses direct Linux fbdev (`/dev/fb0`) plus the active kernel VT (`/dev/tty1`) and therefore needs no `AF_UNIX`, X11, Wayland, SDL, network socket, or `CONFIG_NET`.
 
-`src/usb_cold_wallet/framebuffer_poc.py` draws independently generated fields from the existing `ReviewPlan.pages`; no signer, transaction parser, private keys, blockchain library or policy is reimplemented. A caller may use `run_vt(plan, font_path, audit=runtime_audit_callback)` to present review screens and receive **authorization intent only**. It never calls the signing backend.
+The renderer accepts only the existing immutable `review.ReviewPlan`. It does not parse a transaction, build or mutate transaction fields, load a vault, handle wallet secrets, call `SignerSession`, or invoke a signer. The only successful result is `ReviewIntent(review_digest, reviewed=True, reason="reviewed")`; this is explicitly **not signing authorization**.
 
-The existing `review.build_review_plan`, `review.review_policy_decision`, `SignerSession`, `gui.runtime_audit` and `appliance.mount_transfer` remain authoritative. An eventual adapter must independently reparse/rebuild the payload snapshot and revalidate review digest, chain, account, recipient, amount, fee, policy and the current runtime audit **after** UI confirmation and **before** `SignerSession.approve` / `signing`; any mismatch locks/aborts. This POC's return value is not evidence of authorization for a signer. Avoid displaying secrets and never send a private key to the framebuffer renderer.
+## Runtime security boundary
 
-## Scope and acceptance
+- `CONFIG_NET=n` remains mandatory. Buildroot also keeps networking clients absent.
+- The framebuffer module imports only Python stdlib plus `ReviewPlan`; it has no `socket`, X11/Tk, subprocess, RPC, or signer dependency.
+- Before entering graphics, the caller must pass the existing `gui.runtime_audit()`. The audit is repeated during interaction.
+- `/dev/ttyN` must be the active VT. The POC uses `VT_LOCKSWITCH`, switches to `KD_GRAPHICS`, checks the active VT every loop, and fail-closes if focus/audit is lost.
+- Cleanup blanks the framebuffer, restores the prior KD mode, unlocks VT switching, and restores termios. Cleanup failure discards a positive intent.
+- Keyboard input is raw VT input only. Split ANSI cursor sequences are parsed byte-by-byte; malformed/truncated escape input cancels rather than approves.
+- Mouse input is intentionally unsupported in this POC; no `/dev/input` mouse device is opened, so mouse events cannot approve a review.
+- Every ReviewPlan field is wrapped without ellipsis. Each page must reach its final wrapped line before Enter can acknowledge it, and every page must be acknowledged.
+- Review fields whose key/source suggests mnemonic, passphrase, seed, xprv or private-key material are rejected before rendering. The display plan is capped at 256 KiB and 64 pages.
+- The POC never writes transaction data or review contents to logs or disk. QEMU serial evidence contains only fixed status/metrics markers.
 
-- Native framebuffer pixel drawing and left/right page navigation, up/down scroll, Enter per-page acknowledgement and Escape cancellation.
-- Every transaction field is wrapped, not ellipsized. Lengthy fields require scrolling to the final line before acknowledgement. The POC does not yet enforce that each byte was visually inspected.
-- Runtime audit failure disables approval; terminal errors fail closed. Unrecognized input does not grant approval.
-- **Not included:** interactive vault password entry, mouse/evdev, signed output, per-keystroke cryptographic challenge, complete SignerSession wiring, idle timeout, automatic lock on VT change, true QEMU GUI evidence, robust PSF Unicode mapping, and production-ready input protection. These are mandatory integration work, not accepted functionality.
-- The raw VT must be protected from kernel console text overwriting framebuffer pixels; verify `KD_GRAPHICS`, VT allocation/release and focus on actual hardware/QEMU. The prototype currently does **not** switch to `KD_GRAPHICS` and so may have fbcon competition. This is an explicit blocker.
-- Current `run_vt` handles common escape sequences as one read, not a complete keyboard parser. Malformed or split escape sequences are ignored. Input correctness needs real QEMU/USB testing.
+## Font provenance
 
-## Why this path
+The image includes one deterministic PSF2 font generated from the 1024-byte bitmap table in:
 
-Tk needs X11, whose local protocol uses AF_UNIX unavailable under `CONFIG_NET=n`. A terminal-oriented launcher is a functional fallback but does not prove graphic UI delivery. A direct fbdev POC has no extra GUI runtime dependencies, preserves the present kernel policy and reuses the wallet's existing immutable offline review data model. It also allows a small renderer without copying source from an upstream project.
+- upstream: `dhepper/font8x8`
+- commit: `8e279d2d864e79128e96188a6b9526cfa3fbfef9`
+- exact path: `font8x8_basic.h`
+- license evidence: the exact file header and upstream README both state **Public Domain**
 
-Upstream source copied: **0 LOC**. Upstream pinned/ported font: **none**. Existing modules reused: `review.ReviewPlan` data contract, `signer_session.SignerSession` integration contract, runtime audit contract. Implementation: new local POC, not a third-party dependency.
+No executable renderer source is copied. `scripts/generate_framebuffer_font.py` bit-reverses the upstream LSB-left rows, doubles them vertically to 8x16, pads slots 128..255 blank, and emits the single accepted PSF2 layout.
 
-## Buildroot integration proposal for PR #76 (do not modify #76 here)
+## Actual guest acceptance path
 
-1. Keep `CONFIG_NET=n` and all existing runtime audits. Verify `CONFIG_FB`, `CONFIG_FB_EFI` or simpledrm fbdev emulation, `CONFIG_VT`, `CONFIG_VT_CONSOLE`, USB HID keyboard drivers in the **actual** kernel config and QEMU guest.
-2. Add a pinned-license-reviewed ASCII-indexed PSF2 font to the image, with a SHA-256 pinned source and attribution as needed. Copy this module into the existing `usb-wallet-app` package; avoid an entire GUI framework.
-3. Replace the tty-only launcher only after a guest integration flow exists: audit -> trusted wallet unlock -> verified request and policy -> ReviewPlan -> controlled framebuffer review -> digest-bound fresh validation -> SignerSession approval/signing -> signed output; always provide a fail-closed lock screen.
-4. Add `KD_GRAPHICS` / `KD_TEXT` transitions, strict exclusive VT ownership, mouse optional evdev support, keyboard event framing, secure passphrase entry, fixed visible focus, idle lock, and atomic request observation.
-5. Produce QEMU/OVMF screenshot/video of **actual guest pixels**, raw image hash and guest logs; demonstrate keyboard input transitions/cancellation and an audit-failure screen. A static PPM fixture is insufficient.
-6. Execute all #76 negative USB identity/mount checks plus the standalone UI cancel, malicious field length, changed-request, stale review, audit failure and lock tests. Require exact-head CI and whole image reproducibility before merge.
+`scripts/verify_framebuffer_qemu.sh` boots the exact generated GPT image through OVMF with `-net none`, waits for the normal audited appliance, and manually selects option 8. The demo uses the repository's published compromised BIP39 test vector and constructs a fixed Sepolia `ReviewPlan` via `exchange.package()` + `review.build_review_plan()`.
 
-## Measurement protocol / presently unavailable measurements
+Acceptance requires:
 
-Use the same pinned Buildroot host, QEMU version and fixed 1-vCPU / 512 MiB guest. Record image raw byte count and compressed size both before/after the module+font; inspect guest `/proc/<pid>/status` VmRSS/VmHWM for the UI and system `/proc/meminfo`; timestamp UEFI start, guest init, first framebuffer draw and first interactive input, repeat >=3 clean boots. Also confirm `/proc/config.gz` or compiled config has `CONFIG_NET=n`. **No measured image-size delta, memory RSS or boot time is claimed by this research branch** because no full Buildroot/QEMU build was executed.
+1. the normal startup audit to pass with `CONFIG_NET=n`;
+2. the POC to reach first framebuffer draw;
+3. QEMU HMP `screendump` to capture actual guest pixels, not a host mock/PPM renderer;
+4. keyboard navigation plus explicit acknowledgement of all five backend-generated EVM review pages to emit a positive **Review Intent**;
+5. a second launch where Escape emits only a cancelled intent;
+6. evidence artifact containing the QEMU PPM screenshot, actions log and metrics.
 
-## Verification status
+The default appliance never auto-launches this demo.
 
-Host unit tests provided in `tests/test_framebuffer_poc.py`. No guest framebuffer session, PSF2 font packaging, QEMU/OVMF screenshot, real keyboard/mouse demonstration, two clean builds or security audit has been completed. Therefore **BLOCKED** for the requested true-graphics acceptance gate. Keep PR #76 Draft and do not merge this branch on host tests alone.
+## Passphrase design
+
+Passphrase entry is **not implemented** in this POC and remains a production blocker. The integration design is: enter on the already locked active VT, disable echo, keep the value only in process memory for the shortest possible unlock call, never place it in `ReviewPlan`, framebuffer text, serial/stdout, environment variables, command-line arguments, crash dumps, swap or persistent files, and clear mutable buffers where possible. Python cannot guarantee complete memory zeroization of immutable string copies, so product integration must minimize copies and treat process lifetime/lock as the stronger boundary.
+
+No screenshot or test evidence may contain a real passphrase. The current QEMU demo does not request one.
+
+## PR #76 integration contract
+
+PR #76 remains authoritative for Live OS media/runtime policy:
+
+- `appliance.mount_transfer()` controls accepted `TX_TRANSFER` mounts.
+- `gui.runtime_audit()` controls RAM-root/network/swap/mount/device checks.
+- `/run/usb-wallet/lockdown` and `/run/usb-wallet/*-device` identity files remain fail-closed.
+- PR #79 must not alter PR #76's branch.
+
+Future real signer integration must load the untrusted request through the existing exchange path, build the `ReviewPlan` in the existing signer backend, render it here, then independently rebuild/revalidate the plan/digest and policy before calling `SignerSession.start_review()` / `approve()` / `signing()`. Any changed request, review digest, account, chain, amount, fee, policy or runtime audit must reset/lock. Until that adapter and full BTC/Sepolia E2E exist, this PR remains Draft and must not merge.
+
+## Performance evidence
+
+The QEMU evidence records:
+
+- exact raw image byte count;
+- guest `/proc/uptime` at first framebuffer draw;
+- Python process `ru_maxrss` at first draw;
+- host QEMU start → appliance ready;
+- appliance ready → first GUI frame;
+- screenshot SHA-256.
+
+Raw image geometry is fixed by `genimage.cfg`; compressed-size delta versus the last exact-main image is evaluated only after a successful exact-head artifact exists. No performance number is claimed before the workflow actually reports it.
+
+## Remaining acceptance blockers
+
+- exact-head Python CI, Offline Wheel and full Live USB workflows must succeed;
+- actual QEMU screenshot/keyboard evidence must be produced by that exact head;
+- real BTC and Sepolia requests are not yet connected to this UI;
+- `SignerSession`/policy/fresh-plan binding is not yet connected;
+- real passphrase entry is not implemented;
+- mouse is unsupported rather than security-reviewed as an input method;
+- physical USB/UEFI display and keyboard behavior remains separate hardware acceptance.
