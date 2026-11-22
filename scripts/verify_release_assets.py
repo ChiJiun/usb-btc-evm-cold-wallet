@@ -822,7 +822,7 @@ def verify_release(
                     REPOSITORY,
                 ]
             )
-                try:
+        try:
             metadata = json.loads(
                 _safe_file(directory, "release-metadata.json").read_text(encoding="utf-8")
             )
