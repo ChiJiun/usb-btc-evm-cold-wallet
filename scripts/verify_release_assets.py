@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import lzma
 import re
 import subprocess
 import sys
@@ -30,6 +31,7 @@ ASSET_RE = re.compile(
 )
 CHECKSUM_RE = re.compile(r"([a-fA-F0-9]{64}) [ *]([A-Za-z0-9][A-Za-z0-9._+-]*)")
 MAX_MANIFEST_BYTES = 128 * 1024
+MAX_RAW_IMAGE_BYTES = 16 * 1024 * 1024 * 1024
 REQUIRED_STAGED_FILES = ("SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt")
 DEFAULT_AUTHORIZED_RELEASE_TAGGER_EMAILS = frozenset({"0311gino@gmail.com"})
 DEFAULT_AUTHORIZED_RELEASE_ACTORS = frozenset({"ChiJiun"})
@@ -78,6 +80,28 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             sha.update(chunk)
     return sha.hexdigest()
+
+
+def _raw_image_sha256(image: Path) -> str:
+    """Verify the compressed delivery bytes bind the claimed raw disk image."""
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        opener = lzma.open if image.name.endswith(".xz") else open
+        with opener(image, "rb") as source:
+            while True:
+                block = source.read(1024 * 1024)
+                if not block:
+                    break
+                size += len(block)
+                if size > MAX_RAW_IMAGE_BYTES:
+                    raise ReleaseVerificationError("Raw image exceeds safety size limit")
+                digest.update(block)
+    except (lzma.LZMAError, EOFError, OSError) as exc:
+        raise ReleaseVerificationError("Release image is not a complete valid xz/raw image") from exc
+    if size == 0:
+        raise ReleaseVerificationError("Raw image is empty")
+    return digest.hexdigest()
 
 
 def _safe_file(directory: Path, name: str) -> Path:
@@ -487,6 +511,10 @@ def build_slsa_predicate(metadata: Mapping[str, object], workflow_sha: str) -> d
         "asset",
         "buildroot_version",
         "buildroot_sha256",
+        "raw_image_sha256",
+        "efi_partition_sha256",
+        "kernel_sha256",
+        "sbom_scope",
         "node_version",
         "xz_version",
         "apt_snapshot",
@@ -537,6 +565,7 @@ def build_slsa_predicate(metadata: Mapping[str, object], workflow_sha: str) -> d
     }
     internal = {
         "trustedFinalizerWorkflowSha": workflow_sha,
+        "rawImageSha256": metadata["raw_image_sha256"],
         "runnerImageOS": metadata["runner_image_os"],
         "runnerImageVersion": metadata["runner_image_version"],
         "bootComponentDigests": {
@@ -776,6 +805,8 @@ def verify_candidate_artifacts(
     ):
         raise ReleaseVerificationError("Release metadata workflow run attempt mismatch")
 
+    if _raw_image_sha256(_safe_file(root, asset)) != metadata["raw_image_sha256"]:
+        raise ReleaseVerificationError("Delivered compressed image does not match claimed raw SHA-256")
     _verify_spdx(_safe_file(root, "SBOM.spdx.json"))
     return _sha256(_safe_file(root, asset))
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import lzma
 import re
 from pathlib import Path
 
@@ -33,8 +34,10 @@ COMMIT = "a" * 40
 WORKFLOW_SHA = "c" * 40
 TAG_OBJECT_SHA = "b" * 40
 ASSET = f"usb-cold-wallet-{TAG}.img.xz"
-BINARY = b"fake image bytes, not a real wallet image"
+RAW_IMAGE = b"fake image bytes, not a real wallet image"
+BINARY = lzma.compress(RAW_IMAGE, preset=6)
 DIGEST = hashlib.sha256(BINARY).hexdigest()
+RAW_DIGEST = hashlib.sha256(RAW_IMAGE).hexdigest()
 SBOM = (json.dumps(
     {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "dataLicense": "CC0-1.0"},
     sort_keys=True,
@@ -57,7 +60,7 @@ def _metadata_bytes(*, tag: str = TAG, commit: str = COMMIT, asset: str = ASSET)
             "node_version": "24.22.3",
             "xz_version": "5.8.1",
             "compression": "xz -6 --threads=1 --check=crc64 --no-sparse",
-            "raw_image_sha256": "2" * 64,
+            "raw_image_sha256": RAW_DIGEST,
             "efi_partition_sha256": "3" * 64,
             "kernel_sha256": "4" * 64,
             "sbom_scope": "buildroot-target-rootfs",
@@ -907,3 +910,42 @@ def test_finalizer_uses_pinned_artifact_ids_and_strict_download_digests():
     assert finalizer.count("digest-mismatch: error") == 4
     assert "gh run download" not in finalizer
     assert "select_candidate_artifact(" in finalizer
+
+
+def _recompute_staged_manifest(directory):
+    names = [ASSET, "SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt"]
+    (directory / "SHA256SUMS").write_text(
+        "".join(
+            f"{hashlib.sha256((directory / name).read_bytes()).hexdigest()}  {name}\n"
+            for name in sorted(names)
+        ),
+        encoding="ascii",
+    )
+
+
+def test_compressed_raw_image_must_match_claimed_digest_even_with_valid_manifest(tmp_path):
+    _write_local_release(tmp_path)
+    (tmp_path / ASSET).write_bytes(lzma.compress(b"replaced boot image"))
+    _recompute_staged_manifest(tmp_path)
+    with pytest.raises(ReleaseVerificationError, match="claimed raw SHA-256"):
+        verify_candidate_artifacts(TAG, COMMIT, ASSET, tmp_path, workflow_sha=WORKFLOW_SHA, run=FakeGitHub())
+
+
+def test_corrupt_xz_fails_closed_even_with_updated_sha256sums(tmp_path):
+    _write_local_release(tmp_path)
+    (tmp_path / ASSET).write_bytes(b"corrupted xz")
+    _recompute_staged_manifest(tmp_path)
+    with pytest.raises(ReleaseVerificationError, match="complete valid xz"):
+        verify_candidate_artifacts(TAG, COMMIT, ASSET, tmp_path, workflow_sha=WORKFLOW_SHA, run=FakeGitHub())
+
+
+def test_raw_image_decompression_bomb_is_bounded(tmp_path, monkeypatch):
+    _write_local_release(tmp_path)
+    monkeypatch.setattr("scripts.verify_release_assets.MAX_RAW_IMAGE_BYTES", 4)
+    with pytest.raises(ReleaseVerificationError, match="safety size limit"):
+        verify_candidate_artifacts(TAG, COMMIT, ASSET, tmp_path, workflow_sha=WORKFLOW_SHA, run=FakeGitHub())
+
+
+def test_slsa_provenance_includes_verified_raw_image_digest():
+    predicate = build_slsa_predicate(json.loads(_metadata_bytes()), WORKFLOW_SHA)
+    assert predicate["buildDefinition"]["internalParameters"]["rawImageSha256"] == RAW_DIGEST
