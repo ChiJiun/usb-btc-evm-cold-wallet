@@ -664,3 +664,58 @@ def test_windows_label_only_autodiscovery_is_disabled_until_layout_contract(monk
     monkeypatch.setattr(module.os, "name", "nt")
     with pytest.raises(ValueError, match="validated GPT/layout identity"):
         discover_windows_exchange_root()
+
+
+def test_reboot_rejects_rehashed_exchange_request_with_original_journal(tmp_path):
+    manager = CrossBootManager(tmp_path)
+    online, btc, _ = fresh_sessions()
+    request_id = online.prepare(RECIPIENT, "0.01")["pending"]["request_id"]
+    manager.export_current(online, btc)
+
+    # A hostile Windows process replaces only the exported request with a
+    # different, internally valid v2 envelope under the same requestId.
+    altered_tx = {**online.pending["tx"], "to": "0x1111111111111111111111111111111111111111"}
+    altered = _package_request(
+        "evm-request", altered_tx, request_id=request_id, account=ADDRESS,
+        recipient=altered_tx["to"], amount=altered_tx["value"],
+    )
+    assert verify_v2_request(altered, expected_account=ADDRESS, allow_no_trusted_clock=True)
+    manager._request_path(request_id).write_bytes(canonical(altered) + b"\n")
+
+    restarted_evm, restarted_btc, _ = fresh_sessions()
+    restarted_evm.pending = None
+    with pytest.raises(ValueError, match="authoritative online journal binding"):
+        CrossBootManager(tmp_path).restore(restarted_evm, restarted_btc)
+    assert restarted_evm.pending is None
+    assert PendingRequestStore(manager.state_root).get(request_id).state == "EXPORTED"
+
+
+@pytest.mark.parametrize("ambiguous", [False, True])
+def test_reboot_rejects_rehashed_response_after_durable_import(tmp_path, ambiguous):
+    manager, online, btc, request_id = _prepared_imported_evm(tmp_path)
+    if ambiguous:
+        manager.mark_broadcast_requested(online, btc, online.pending["tx_hash"])
+    request = load_request(manager, request_id)
+    response = json.loads(manager._response_path(request_id).read_text(encoding="ascii"))
+
+    # Same valid signed transaction, but a different canonical response file.
+    # A checksum from the hostile exchange cannot override a durable
+    # IMPORTED_VERIFIED or BROADCAST_REQUESTED responseDigest.
+    signed_raw = response["payload"]["signed_raw_transaction"]
+    response["payload"]["signed_raw_transaction"] = signed_raw[:2] + signed_raw[2:].upper()
+    assert response["payload"]["signed_raw_transaction"] != signed_raw
+    response["signedResultDigest"] = hashlib.sha256(canonical(response["payload"])).hexdigest()
+    response["sha256"] = hashlib.sha256(canonical({
+        k: v for k, v in response.items() if k != "sha256"
+    })).hexdigest()
+    assert verify_v2_response(request, response, expected_account=ADDRESS,
+                              allow_no_trusted_clock=True)
+    write_response(manager, request_id, response)
+
+    restarted_evm, restarted_btc, _ = fresh_sessions()
+    restarted_evm.pending = None
+    with pytest.raises(ValueError, match="Signed response differs from durable import journal"):
+        CrossBootManager(tmp_path).restore(restarted_evm, restarted_btc)
+    assert restarted_evm.pending is None
+    expected_state = "BROADCAST_REQUESTED" if ambiguous else "IMPORTED_VERIFIED"
+    assert PendingRequestStore(manager.state_root).get(request_id).state == expected_state
