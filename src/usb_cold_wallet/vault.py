@@ -66,6 +66,9 @@ def decrypt_mnemonic(data: dict, passphrase: str) -> str:
         raise ValueError("Unexpected KDF parameters")
     if data.get("cipher") != "AES-256-GCM":
         raise ValueError("Unexpected cipher")
+    if (type(kdf["salt"]) is not str or type(data["nonce"]) is not str or
+            type(data["ciphertext"]) is not str):
+        raise ValueError("Malformed wallet")
     salt = base64.b64decode(kdf["salt"], validate=True)
     nonce = base64.b64decode(data["nonce"], validate=True)
     ciphertext = base64.b64decode(data["ciphertext"], validate=True)
