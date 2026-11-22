@@ -120,22 +120,38 @@ def _write_all(fd: int, data: bytes) -> None:
 
 
 def _append_windows(root: Path, name: str, raw: bytes) -> None:
-    """Create-only Windows journal append.
+    """Create-only Windows journal append with write-through publication.
 
-    NTFS os.rename fails when the destination exists. A crash may leave a
-    .partial file; readers ignore bounded .partial files and keep the last
-    fully published immutable record.
+    The staging bytes are flushed first. MoveFileExW with MOVEFILE_WRITE_THROUGH
+    then publishes the immutable name without replacement semantics, and the
+    resulting file handle is flushed again. This materially strengthens Windows
+    metadata durability, but does not claim a physical removable-FAT32 power-loss
+    guarantee; recovery remains fail-closed when a committed record is absent.
     """
+    import ctypes
     import secrets
 
     stage = root / f".{name}.{secrets.token_hex(8)}.partial"
-    fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    final = root / name
+    fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
     try:
         _write_all(fd, raw)
     finally:
         os.close(fd)
     try:
-        os.rename(stage, root / name)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        move = kernel32.MoveFileExW
+        move.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        move.restype = ctypes.c_int
+        MOVEFILE_WRITE_THROUGH = 0x00000008
+        if not move(str(stage), str(final), MOVEFILE_WRITE_THROUGH):
+            error = ctypes.get_last_error()
+            raise OSError(error, "MoveFileExW(MOVEFILE_WRITE_THROUGH) failed", str(final))
+        fd = os.open(final, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
     except Exception:
         try:
             stage.unlink()
