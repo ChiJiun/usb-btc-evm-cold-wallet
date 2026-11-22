@@ -23,6 +23,9 @@ GPT_TABLE_SECTORS = GPT_ENTRY_COUNT * GPT_ENTRY_SIZE // SECTOR
 BOOT_SECTORS = 64 * 1024 * 1024 // SECTOR
 VAULT_SECTORS = 64 * 1024 * 1024 // SECTOR
 TRANSFER_SECTORS = 512 * 1024 * 1024 // SECTOR
+BOOT_START_LBA = 2048
+VAULT_START_LBA = BOOT_START_LBA + BOOT_SECTORS
+TRANSFER_START_LBA = VAULT_START_LBA + VAULT_SECTORS
 
 
 def _fat_label(data: bytes, first_lba: int, *, require_fat32: bool = False) -> str:
@@ -45,7 +48,7 @@ def _parse_header(data: bytes, lba: int) -> dict[str, int | uuid.UUID]:
     if len(header) != SECTOR or header[:8] != b"EFI PART":
         raise SystemExit("GPT header missing")
     revision, size, checksum = struct.unpack_from("<III", header, 8)
-    if revision != 0x00010000 or not 92 <= size <= SECTOR:
+    if revision != 0x00010000 or size != 92 or header[20:24] != bytes(4):
         raise SystemExit("invalid GPT header geometry")
     canonical = bytearray(header[:size])
     canonical[16:20] = bytes(4)
@@ -98,15 +101,16 @@ def main() -> int:
     if data[510:512] != b"\x55\xaa":
         raise SystemExit("protective MBR signature missing")
     first_mbr = data[446:462]
+    last_lba = len(data) // SECTOR - 1
     if (
         first_mbr[0] != 0
         or first_mbr[4] != 0xEE
         or struct.unpack_from("<I", first_mbr, 8)[0] != 1
+        or struct.unpack_from("<I", first_mbr, 12)[0] != min(last_lba, 0xFFFFFFFF)
         or any(data[462:510])
     ):
         raise SystemExit("protective MBR is missing or contains hybrid partitions")
 
-    last_lba = len(data) // SECTOR - 1
     primary = _parse_header(data, 1)
     backup = _parse_header(data, last_lba)
     if (
@@ -173,6 +177,20 @@ def main() -> int:
             raise SystemExit(f"{label} has unexpected fixed size")
         if _fat_label(data, part[2], require_fat32=label == "TX_TRANSFER") != label:
             raise SystemExit(f"{label} FAT volume label mismatch")
+
+    expected_geometry = (
+        (boot, BOOT_START_LBA, VAULT_START_LBA - 1, "USBCOLD_EFI"),
+        (vault, VAULT_START_LBA, TRANSFER_START_LBA - 1, "COLD_VAULT"),
+        (
+            transfer,
+            TRANSFER_START_LBA,
+            TRANSFER_START_LBA + TRANSFER_SECTORS - 1,
+            "TX_TRANSFER",
+        ),
+    )
+    for part, expected_first, expected_last, label in expected_geometry:
+        if part[2] != expected_first or part[3] != expected_last:
+            raise SystemExit(f"{label} GPT LBA geometry mismatch")
 
     if boot[4] != GPT_READ_ONLY:
         raise SystemExit("boot partition GPT attributes are not exactly read-only")

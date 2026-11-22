@@ -29,6 +29,9 @@ TRANSFER_SECTORS = 512 * 1024 * 1024 // SECTOR_SIZE
 GPT_ENTRY_COUNT = 128
 GPT_ENTRY_SIZE = 128
 GPT_TABLE_SECTORS = GPT_ENTRY_COUNT * GPT_ENTRY_SIZE // SECTOR_SIZE
+BOOT_START_LBA = 2048
+VAULT_START_LBA = BOOT_START_LBA + BOOT_SECTORS
+TRANSFER_START_LBA = VAULT_START_LBA + VAULT_SECTORS
 
 
 def _read_header(source, lba: int) -> dict[str, int | uuid.UUID]:
@@ -37,7 +40,7 @@ def _read_header(source, lba: int) -> dict[str, int | uuid.UUID]:
     if len(header) != SECTOR_SIZE or header[:8] != b"EFI PART":
         raise ValueError("missing GPT header")
     revision, size, checksum = struct.unpack_from("<III", header, 8)
-    if revision != 0x00010000 or not 92 <= size <= SECTOR_SIZE:
+    if revision != 0x00010000 or size != 92 or header[20:24] != bytes(4):
         raise ValueError("invalid GPT header geometry")
     canonical = bytearray(header[:size])
     canonical[16:20] = bytes(4)
@@ -95,7 +98,12 @@ def read_gpt(
         if len(mbr) != SECTOR_SIZE or mbr[510:512] != b"\x55\xaa":
             raise ValueError("missing protective MBR")
         first = mbr[446:462]
-        if first[0] != 0 or first[4] != 0xEE or struct.unpack_from("<I", first, 8)[0] != 1:
+        if (
+            first[0] != 0
+            or first[4] != 0xEE
+            or struct.unpack_from("<I", first, 8)[0] != 1
+            or struct.unpack_from("<I", first, 12)[0] != min(last_lba, 0xFFFFFFFF)
+        ):
             raise ValueError("invalid protective MBR")
         if any(mbr[462:510]):
             raise ValueError("hybrid protective MBR")
@@ -215,12 +223,15 @@ def _layout_valid(
         boot[:2] != (EFI_TYPE, BOOT_UUID)
         or boot[2] != READ_ONLY
         or _size(boot) != BOOT_SECTORS
+        or boot[3] != BOOT_START_LBA
+        or boot[4] != VAULT_START_LBA - 1
         or vault[:2] != (
             LINUX_FS_TYPE if len(parts) == 3 else DATA_TYPE, VAULT_UUID
         )
         or vault[2] != 0
         or _size(vault) != VAULT_SECTORS
-        or boot[4] >= vault[3]
+        or vault[3] != VAULT_START_LBA
+        or vault[4] != TRANSFER_START_LBA - 1
     ):
         return False
     if len(parts) == 3:
@@ -229,7 +240,8 @@ def _layout_valid(
             transfer[:2] != (DATA_TYPE, TRANSFER_UUID)
             or transfer[2] != 0
             or _size(transfer) != TRANSFER_SECTORS
-            or vault[4] >= transfer[3]
+            or transfer[3] != TRANSFER_START_LBA
+            or transfer[4] != TRANSFER_START_LBA + TRANSFER_SECTORS - 1
         ):
             return False
     return True

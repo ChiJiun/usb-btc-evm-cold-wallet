@@ -231,6 +231,7 @@ def test_duplicated_cloned_usb_is_denied(tmp_path):
         "wrong_sector_size",
         "extra_partition",
         "hybrid_mbr",
+        "protective_mbr_size_mismatch",
         "kernel_start_mismatch",
         "kernel_size_mismatch",
         "kernel_partition_number_mismatch",
@@ -291,6 +292,10 @@ def test_corruption_and_unexpected_media_fail_closed(tmp_path, mutation):
         with disk.open("r+b") as handle:
             handle.seek(462 + 4)
             handle.write(b"\x07")
+    elif mutation == "protective_mbr_size_mismatch":
+        with disk.open("r+b") as handle:
+            handle.seek(458)
+            handle.write(struct.pack("<I", 1))
     elif mutation == "wrong_sector_size":
         (sys_block / "sda/queue/logical_block_size").write_text("4096\n")
     elif mutation == "kernel_start_mismatch":
@@ -302,6 +307,32 @@ def test_corruption_and_unexpected_media_fail_closed(tmp_path, mutation):
 
     with pytest.raises(ValueError, match="missing|duplicated|inconsistent"):
         media.identify(sys_block, dev)
+
+
+
+def test_layout_rejects_lba_gaps_even_when_partition_sizes_and_ids_match():
+    boot = (
+        media.EFI_TYPE,
+        media.BOOT_UUID,
+        media.READ_ONLY,
+        media.BOOT_START_LBA,
+        media.VAULT_START_LBA - 1,
+    )
+    vault = (
+        media.LINUX_FS_TYPE,
+        media.VAULT_UUID,
+        0,
+        media.VAULT_START_LBA + 1,
+        media.TRANSFER_START_LBA,
+    )
+    transfer = (
+        media.DATA_TYPE,
+        media.TRANSFER_UUID,
+        0,
+        media.TRANSFER_START_LBA + 1,
+        media.TRANSFER_START_LBA + media.TRANSFER_SECTORS,
+    )
+    assert not media._layout_valid([boot, vault, transfer])
 
 
 def test_symlinked_partition_device_is_denied(tmp_path):
