@@ -252,9 +252,11 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                     if data:
                         raise ValueError("Cancel does not accept overrides")
                     request_id = session.pending.get("request_id") if session.pending else None
-                    result = session.cancel()
                     if crossboot is not None and crossboot.available and request_id:
+                        # Refuse to erase an ambiguous durable reservation BEFORE
+                        # clearing the volatile session or any exchange evidence.
                         crossboot.cancel(session, btc_session, request_id)
+                    result = session.cancel()
                 elif self.path == "/api/crossboot/export":
                     if data or crossboot is None:
                         raise ValueError("Cross-boot export requires TX_TRANSFER and accepts no overrides")
@@ -289,9 +291,9 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                         raise ValueError("BTC operation does not accept overrides")
                     if self.path == "/api/btc/cancel":
                         request_id = btc_session.pending.get("request_id") if btc_session.pending else None
-                        result = btc_session.cancel()
                         if crossboot is not None and crossboot.available and request_id:
                             crossboot.cancel(session, btc_session, request_id)
+                        result = btc_session.cancel()
                     elif self.path == "/api/btc/broadcast":
                         if crossboot is not None and crossboot.available:
                             if btc_session.pending is None or btc_session.pending.get("stage") != "verified":

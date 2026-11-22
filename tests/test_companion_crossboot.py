@@ -331,6 +331,25 @@ def _stop(server, worker):
     worker.join(5)
 
 
+def test_cancel_before_export_only_clears_unpersisted_intent(tmp_path):
+    rpc = FakeRpc()
+    manager, server, _session, token, worker = _run_server(rpc, tmp_path)
+    try:
+        assert _http(server, token, "POST", "/api/import", {
+            "raw": canonical(WATCH).decode()
+        })[0] == 200
+        code, prepared = _http(server, token, "POST", "/api/prepare", {
+            "recipient": RECIPIENT, "amount_eth": "0.01", "max_fee_gwei": ""
+        })
+        assert code == 200
+        request_id = prepared["pending"]["request_id"]
+        code, cancelled = _http(server, token, "POST", "/api/cancel", {})
+        assert code == 200 and cancelled["cancelled"]
+        assert PendingRequestStore(manager.state_root).get(request_id) is None
+    finally:
+        _stop(server, worker)
+
+
 def test_http_cancel_records_failed_and_removes_active_exchange(tmp_path):
     rpc = FakeRpc()
     manager, server, _session, token, worker = _run_server(rpc, tmp_path)
@@ -399,6 +418,11 @@ def test_matching_rpc_ack_preserves_reservation_and_never_double_broadcasts(tmp_
         assert code == 400
         assert len(rpc.sent) == 1
         assert PendingRequestStore(manager3.state_root).get(request_id).state == "BROADCAST_REQUESTED"
+        assert manager3._request_path(request_id).is_file()
+        assert manager3._response_path(request_id).is_file()
+        code, cancelled = _http(server3, token3, "POST", "/api/cancel", {})
+        assert code == 400 and "cannot be cancelled" in cancelled["error"]
+        assert session3.pending["stage"] == "broadcast_unknown"
         assert manager3._request_path(request_id).is_file()
         assert manager3._response_path(request_id).is_file()
     finally:
@@ -485,6 +509,10 @@ def test_btc_matching_esplora_ack_keeps_reserved_txid_across_restart(tmp_path):
         assert snap.state == "BROADCAST_REQUESTED"
         assert snap.metadata["txid"] == result["txid"]
         assert manager._request_path(request_id).is_file()
+        assert manager._response_path(request_id).is_file()
+        code, cancelled = _http(server, token, "POST", "/api/btc/cancel", {})
+        assert code == 400 and "cannot be cancelled" in cancelled["error"]
+        assert PendingRequestStore(manager.state_root).get(request_id).state == "BROADCAST_REQUESTED"
         assert manager._response_path(request_id).is_file()
     finally:
         _stop(server, worker)

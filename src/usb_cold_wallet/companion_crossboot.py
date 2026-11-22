@@ -457,14 +457,20 @@ class CrossBootManager:
 
     def cancel(self, session, btc_session, request_id: str | None) -> None:
         if not request_id or REQUEST_ID_RE.fullmatch(request_id) is None:
+            raise ValueError("Invalid request ID for cancellation")
+        store = self._store()
+        snap = store.get(request_id)
+        if snap is None:
+            if self._request_path(request_id).exists():
+                raise ValueError("Unjournaled exchange request cannot be cancelled safely")
+            # A locally prepared request that was never exported has no
+            # durable transaction state or exchange files to remove.
             return
-        try:
+        if snap.state == "BROADCAST_REQUESTED":
+            raise ValueError("Ambiguous broadcast reservation cannot be cancelled")
+        if snap.state in {"DRAFT", "EXPORTED", "IMPORTED_VERIFIED"}:
             request = self._load_request(request_id)
-        except ValueError:
-            return
-        snap = self._store().get(request_id)
-        if snap is not None and snap.state in {"DRAFT", "EXPORTED", "IMPORTED_VERIFIED"}:
-            self._store().failed(request, "cancelled by user")
+            store.failed(request, "cancelled by user")
         self._cleanup_files(request_id)
 
     def _request_from_any(self, session, btc_session):
