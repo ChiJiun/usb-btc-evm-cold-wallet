@@ -93,7 +93,7 @@ def load(path: Path) -> dict:
     if path.is_symlink() or not path.is_file():
         raise ValueError("Evidence file missing or symlink")
     data = json.loads(path.read_text(encoding="utf-8"))
-    if data.get("schemaVersion") != 2 or not isinstance(data.get("cases"), dict):
+    if not isinstance(data, dict) or data.get("schemaVersion") != 2 or not isinstance(data.get("cases"), dict):
         raise ValueError("Unknown journal schema")
     if set(data["cases"]) != set(CASES) or not HEX40.fullmatch(str(data.get("imageCommit", ""))) or not HEX64.fullmatch(str(data.get("imageSha256", ""))):
         raise ValueError("Invalid image binding or incomplete matrix")
@@ -104,7 +104,10 @@ def load(path: Path) -> dict:
         if case["status"] == "PASS":
             if not case["observations"] or case["observations"][-1].get("status") != "PASS":
                 raise ValueError(f"Unaudited PASS for {name}")
-            verify_evidence(path, case["observations"][-1])
+            entry = case["observations"][-1]
+            if entry.get("imageCommit") != data["imageCommit"] or entry.get("imageSha256") != data["imageSha256"] or entry.get("deviceIdentity") != data["deviceIdentity"] or not entry.get("atUtc"):
+                raise ValueError(f"PASS provenance mismatch for {name}")
+            verify_evidence(path, entry)
     return data
 
 
