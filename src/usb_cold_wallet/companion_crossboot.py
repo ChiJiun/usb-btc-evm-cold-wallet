@@ -24,37 +24,22 @@ from eth_utils import to_checksum_address
 
 from .companion_core import canonical, pack_envelope, unpack_envelope
 from .transaction_state import PendingRequestStore
+from .cross_boot_public import (
+    VERSION, FORMAT, REQUEST_ID_RE, HEX64_RE, REQUEST_FIELDS, RESPONSE_FIELDS,
+    NETWORK, REQUEST_TO_RESPONSE, parse_psbt as _parse_psbt,
+    package_v2_request, verify_v2_request as _verify_request_public,
+    verify_v2_response_envelope as _verify_response_public,
+    sha_value as _sha, envelope_sha as _envelope_sha,
+)
 
-VERSION = 2
-FORMAT = "usb-cold-wallet-exchange"
 LABEL = "TX_TRANSFER"
 BASE_DIR = ".usb-cold-wallet"
 EXCHANGE_DIR = "exchange"
 ONLINE_STATE_DIR = "state/online"
 WATCH_FILE = "watch-only.json"
 MAX_BYTES = 200_000
-REQUEST_ID_RE = re.compile(r"^[0-9a-f]{32}$")
-HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
-REQUEST_FIELDS = {
-    "format", "version", "kind", "network", "requestId", "account",
-    "transactionDigest", "intent", "expiry", "payload", "sha256",
-}
-RESPONSE_FIELDS = {
-    "format", "version", "kind", "network", "requestId", "account",
-    "transactionDigest", "requestEnvelopeDigest", "signedResultDigest",
-    "expiryAssurance", "payload", "sha256",
-}
-NETWORK = {"evm-request": "sepolia", "btc-request": "bitcoin-testnet"}
-RESPONSE_KIND = {"evm-request": "evm-signed", "btc-request": "btc-signed"}
+RESPONSE_KIND = REQUEST_TO_RESPONSE
 ACTIVE_STATES = {"DRAFT", "EXPORTED", "IMPORTED_VERIFIED", "BROADCAST_REQUESTED"}
-
-
-def _sha(value) -> str:
-    return hashlib.sha256(canonical(value)).hexdigest()
-
-
-def _envelope_sha(value: dict) -> str:
-    return _sha({k: v for k, v in value.items() if k != "sha256"})
 
 
 def _strict_pairs(pairs):
@@ -150,198 +135,13 @@ def _replace_public(path: Path, value: dict) -> None:
     os.replace(stage, path)
 
 
-def _parse_psbt(value: str):
-    if not isinstance(value, str) or not value or len(value) > 180_000:
-        raise ValueError("BTC PSBT size invalid")
-    try:
-        raw = base64.b64decode(value, validate=True)
-        parsed = psbt.PSBT.parse(raw)
-    except (ValueError, binascii.Error) as exc:
-        raise ValueError("BTC PSBT invalid") from exc
-    except Exception as exc:
-        raise ValueError("BTC PSBT cannot be parsed") from exc
-    if not raw.startswith(b"psbt\xff") or parsed.version is not None or parsed.serialize() != raw:
-        raise ValueError("BTC PSBT must be canonical v0")
-    return parsed, raw
-
-
-def _evm_intent(payload: dict, recipient: str, amount: int) -> dict:
-    if not isinstance(payload, dict):
-        raise ValueError("EVM request payload invalid")
-    required = {"type", "chainId", "nonce", "to", "value", "gas",
-                "maxFeePerGas", "maxPriorityFeePerGas"}
-    if required - payload.keys() or set(payload) - required - {"data", "accessList"}:
-        raise ValueError("Unsupported EVM request fields")
-    if payload["type"] != 2 or payload["chainId"] != 11155111:
-        raise ValueError("Sepolia EIP-1559 request required")
-    for field in ("nonce", "value", "gas", "maxFeePerGas", "maxPriorityFeePerGas"):
-        if type(payload[field]) is not int or payload[field] < 0:
-            raise ValueError(f"Invalid EVM {field}")
-    if payload["gas"] != 21_000 or payload["maxFeePerGas"] < payload["maxPriorityFeePerGas"]:
-        raise ValueError("Unsupported EVM gas policy")
-    if payload.get("data", "0x") not in ("", "0x") or payload.get("accessList", []) != []:
-        raise ValueError("Contract data/access list is not supported")
-    try:
-        actual = to_checksum_address(payload["to"])
-        expected = to_checksum_address(recipient)
-    except (ValueError, TypeError) as exc:
-        raise ValueError("Invalid EVM recipient") from exc
-    if actual != expected or type(amount) is not int or payload["value"] != amount:
-        raise ValueError("EVM recipient/amount mismatch")
-    return {
-        "recipient": actual,
-        "amount": amount,
-        "fee": payload["gas"] * payload["maxFeePerGas"],
-        "nonce": payload["nonce"],
-        "utxos": [],
-    }
-
-
-def _btc_intent(payload: str, account: str, recipient: str, amount: int) -> dict:
-    parsed, _raw = _parse_psbt(payload)
-    if not re.fullmatch(r"^[0-9a-f]{8}$", account or ""):
-        raise ValueError("BTC account fingerprint invalid")
-    if not 1 <= len(parsed.inputs) <= 20:
-        raise ValueError("BTC input count out of bounds")
-    input_total = 0
-    utxos = []
-    for index, scope in enumerate(parsed.inputs):
-        if scope.witness_utxo is None or scope.non_witness_utxo is None:
-            raise ValueError("BTC request requires witness and non-witness UTXO")
-        vin = parsed.tx.vin[index]
-        if scope.non_witness_utxo.txid() != vin.txid or not 0 <= vin.vout < len(scope.non_witness_utxo.vout):
-            raise ValueError("BTC previous transaction mismatch")
-        prev = scope.non_witness_utxo.vout[vin.vout]
-        if (prev.value != scope.witness_utxo.value
-                or prev.script_pubkey.data != scope.witness_utxo.script_pubkey.data):
-            raise ValueError("BTC UTXO metadata mismatch")
-        if len(scope.bip32_derivations) != 1:
-            raise ValueError("BTC request needs one BIP32 origin per input")
-        origin = next(iter(scope.bip32_derivations.values()))
-        if origin.fingerprint.hex() != account:
-            raise ValueError("BTC input account fingerprint mismatch")
-        input_total += prev.value
-        utxos.append({"txid": vin.txid.hex(), "vout": vin.vout, "value": prev.value})
-    output_total = sum(out.value for out in parsed.tx.vout)
-    fee = input_total - output_total
-    if fee < 0:
-        raise ValueError("BTC request has negative fee")
-    hits = 0
-    for out in parsed.tx.vout:
-        try:
-            address = out.script_pubkey.address(networks.NETWORKS["test"])
-        except Exception:
-            continue
-        if address == recipient and out.value == amount:
-            hits += 1
-    if hits != 1:
-        raise ValueError("BTC recipient/amount must occur exactly once")
-    return {"recipient": recipient, "amount": amount, "fee": fee, "nonce": None, "utxos": utxos}
-
-
-def _transaction_digest(kind: str, payload) -> str:
-    if kind == "btc-request":
-        _parsed, raw = _parse_psbt(payload)
-        return hashlib.sha256(raw).hexdigest()
-    return hashlib.sha256(canonical(payload)).hexdigest()
-
-
 def _package_request(kind: str, payload, *, request_id: str, account: str,
                      recipient: str, amount: int) -> dict:
-    if kind not in NETWORK or REQUEST_ID_RE.fullmatch(request_id or "") is None:
-        raise ValueError("Invalid v2 request kind or Request ID")
-    if kind == "evm-request":
-        try:
-            account = to_checksum_address(account)
-        except (ValueError, TypeError) as exc:
-            raise ValueError("Invalid EVM request account") from exc
-        intent = _evm_intent(payload, recipient, amount)
-    else:
-        if not re.fullmatch(r"^[0-9a-f]{8}$", account or ""):
-            raise ValueError("Invalid BTC request account")
-        intent = _btc_intent(payload, account, recipient, amount)
-    content = {
-        "format": FORMAT,
-        "version": VERSION,
-        "kind": kind,
-        "network": NETWORK[kind],
-        "requestId": request_id,
-        "account": account,
-        "transactionDigest": _transaction_digest(kind, payload),
-        "intent": intent,
-        "expiry": {"mode": "no-trusted-clock", "notAfter": None},
-        "payload": payload,
-    }
-    return {**content, "sha256": _sha(content)}
-
-
-def _verify_request_public(data: dict, expected_kind: str | None = None, *,
-                           expected_account: str | None = None,
-                           trusted_time=None, allow_no_trusted_clock: bool = False) -> dict:
-    if type(data) is not dict or set(data) != REQUEST_FIELDS:
-        raise ValueError("Invalid v2 request envelope fields")
-    kind = data.get("kind")
-    if (data.get("format") != FORMAT or data.get("version") != VERSION or kind not in NETWORK
-            or data.get("network") != NETWORK[kind]
-            or (expected_kind is not None and expected_kind != kind)
-            or REQUEST_ID_RE.fullmatch(data.get("requestId", "")) is None):
-        raise ValueError("V2 request format/type/network mismatch")
-    account = data.get("account")
-    if kind == "evm-request":
-        try:
-            if to_checksum_address(account) != account:
-                raise ValueError("EVM request account must be checksummed")
-        except Exception as exc:
-            raise ValueError("Invalid EVM request account") from exc
-    elif not re.fullmatch(r"^[0-9a-f]{8}$", account or ""):
-        raise ValueError("Invalid BTC request account")
-    if expected_account is not None and account != expected_account:
-        raise ValueError("V2 request account does not match expected wallet")
-    expiry = data.get("expiry")
-    if expiry != {"mode": "no-trusted-clock", "notAfter": None} or not allow_no_trusted_clock:
-        raise ValueError("Cross-boot Companion requires explicit no-trusted-clock restricted mode")
-    intent = data.get("intent")
-    if type(intent) is not dict:
-        raise ValueError("Invalid v2 request intent")
-    derived = (_evm_intent(data["payload"], intent.get("recipient"), intent.get("amount"))
-               if kind == "evm-request"
-               else _btc_intent(data["payload"], account, intent.get("recipient"), intent.get("amount")))
-    if intent != derived:
-        raise ValueError("V2 request intent does not match raw transaction")
-    digest = _transaction_digest(kind, data["payload"])
-    if not hmac.compare_digest(data.get("transactionDigest", ""), digest):
-        raise ValueError("V2 request transaction digest mismatch")
-    if not hmac.compare_digest(data.get("sha256", ""), _envelope_sha(data)):
-        raise ValueError("V2 request envelope integrity check failed")
-    return {**data, "expiryAssurance": "unverified"}
-
-
-def _verify_response_public(request: dict, response: dict, *, expected_account: str | None = None,
-                            trusted_time=None, allow_no_trusted_clock: bool = False) -> dict:
-    checked = _verify_request_public(
-        request, expected_account=expected_account,
-        trusted_time=trusted_time, allow_no_trusted_clock=allow_no_trusted_clock,
+    return package_v2_request(
+        kind, payload, request_id=request_id, account=account,
+        recipient=recipient, amount=amount,
+        expiry={"mode": "no-trusted-clock", "notAfter": None},
     )
-    if type(response) is not dict or set(response) != RESPONSE_FIELDS:
-        raise ValueError("Invalid v2 signed response fields")
-    expected_kind = RESPONSE_KIND[request["kind"]]
-    if (response.get("format") != FORMAT or response.get("version") != VERSION
-            or response.get("kind") != expected_kind or response.get("network") != request["network"]
-            or response.get("requestId") != request["requestId"]
-            or response.get("account") != request["account"]
-            or response.get("transactionDigest") != request["transactionDigest"]
-            or response.get("expiryAssurance") != checked["expiryAssurance"]):
-        raise ValueError("Signed response does not match pending request")
-    for field in ("requestEnvelopeDigest", "signedResultDigest", "sha256"):
-        if not isinstance(response.get(field), str) or HEX64_RE.fullmatch(response[field]) is None:
-            raise ValueError(f"Invalid signed response {field}")
-    if not hmac.compare_digest(response["requestEnvelopeDigest"], _sha(request)):
-        raise ValueError("Signed response request digest mismatch")
-    if not hmac.compare_digest(response["signedResultDigest"], _sha(response["payload"])):
-        raise ValueError("Signed response result digest mismatch")
-    if not hmac.compare_digest(response["sha256"], _envelope_sha(response)):
-        raise ValueError("Signed response envelope integrity check failed")
-    return response["payload"]
 
 
 def _windows_volume_label(root: str) -> str:
@@ -477,13 +277,39 @@ class CrossBootManager:
         parsed, _raw = _parse_psbt(request["payload"])
         intent = request["intent"]
         input_total = sum(item["value"] for item in intent["utxos"])
+        inputs = []
+        for index, item in enumerate(intent["utxos"]):
+            scope = parsed.inputs[index]
+            address = scope.witness_utxo.script_pubkey.address(networks.NETWORKS["test"])
+            inputs.append({**item, "address": address})
+        outputs = []
+        change_index = None
+        change_address = None
+        for out in parsed.tx.vout:
+            address = out.script_pubkey.address(networks.NETWORKS["test"])
+            outputs.append({"address": address, "value": out.value})
+            if not (address == intent["recipient"] and out.value == intent["amount"]):
+                matches = [i for i in range(20) if btc_session._address(1, i) == address]
+                if len(matches) != 1 or change_index is not None:
+                    raise ValueError("BTC change output cannot be derived from watch-only account")
+                change_index, change_address = matches[0], address
+        change_sats = input_total - intent["amount"] - intent["fee"]
+        if (change_sats > 0) != (change_index is not None):
+            raise ValueError("BTC change amount/output mismatch after reboot")
+        estimated_vbytes = 12 + 70 * len(parsed.inputs) + 32 * len(parsed.tx.vout)
+        if intent["fee"] % estimated_vbytes:
+            raise ValueError("BTC fee rate is not losslessly recoverable from persisted PSBT")
+        fee_rate = intent["fee"] // estimated_vbytes
+        if not 1 <= fee_rate <= 500:
+            raise ValueError("BTC fee rate outside supported policy")
         btc_session.pending = {
             "stage": "prepared", "request_id": request["requestId"],
             "digest": request["transactionDigest"], "psbt_base64": request["payload"],
             "recipient": intent["recipient"], "amount_sats": intent["amount"],
-            "fee_sats": intent["fee"], "fee_rate": None,
-            "change_sats": input_total - intent["amount"] - intent["fee"],
-            "change_index": None, "input_count": len(parsed.inputs), "unsigned": parsed,
+            "fee_sats": intent["fee"], "fee_rate": fee_rate,
+            "change_sats": change_sats, "change_index": change_index,
+            "change_address": change_address, "inputs": inputs, "outputs": outputs,
+            "input_count": len(parsed.inputs), "unsigned": parsed,
         }
         return btc_session
 
@@ -502,10 +328,10 @@ class CrossBootManager:
                 raise ValueError("Request filename does not match v2 requestId")
             snap = store.get(request_id)
             if snap is None:
-                # Crash after publish but before DRAFT journal append.
-                store.create(request)
-                store.exported(request)
-                active.append(request_id)
+                # The exchange is attacker-writable. A missing authoritative
+                # journal is indistinguishable from deletion/rollback, so never
+                # synthesize state from a request file.
+                raise ValueError("Authoritative online journal missing; recovery fails closed")
             elif snap.state == "DRAFT":
                 store.exported(request)
                 active.append(request_id)
@@ -597,6 +423,30 @@ class CrossBootManager:
         if snap is None or snap.state != "IMPORTED_VERIFIED":
             raise ValueError("Broadcast request is not bound to IMPORTED_VERIFIED state")
         self._store().broadcast_requested(request, txid)
+
+    def broadcast_reservation(self, session, btc_session) -> dict:
+        request, owner, asset = self._request_from_any(session, btc_session)
+        snap = self._store().get(request["requestId"])
+        if snap is None or snap.state != "BROADCAST_REQUESTED":
+            raise ValueError("No ambiguous broadcast reservation is pending")
+        txid = snap.metadata.get("txid")
+        actual = owner.pending.get("tx_hash") if asset == "sepolia" else owner.pending.get("txid")
+        if type(txid) is not str or actual != txid or owner.pending.get("stage") != "broadcast_unknown":
+            raise ValueError("Broadcast reservation does not match retained signed transaction")
+        return {"asset": asset, "txid": txid, "request_id": request["requestId"]}
+
+    def reconcile_broadcast(self, session, btc_session, observed: dict) -> dict:
+        reservation = self.broadcast_reservation(session, btc_session)
+        if (type(observed) is not dict or observed.get("asset") != reservation["asset"]
+                or observed.get("txid") != reservation["txid"]
+                or observed.get("result") not in {"pending", "confirmed", "reverted"}):
+            raise ValueError("Chain reconciliation did not prove the reserved transaction exists")
+        request, owner, _asset = self._request_from_any(session, btc_session)
+        self._store().broadcasted(request, reservation["txid"])
+        owner.pending["stage"] = "broadcasted"
+        owner.pending["result"] = observed["result"]
+        self._cleanup_files(request["requestId"])
+        return self.status(session, btc_session)
 
     def mark_broadcasted(self, session, btc_session, txid: str) -> None:
         request, _owner, _asset = self._request_from_any(session, btc_session)
