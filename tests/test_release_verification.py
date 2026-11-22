@@ -368,7 +368,7 @@ def test_checksums_are_not_themselves_claimed_to_authenticate_release():
         verify_release(TAG, COMMIT, ASSET, workflow_sha=WORKFLOW_SHA, run=fake)
 
 
-@pytest.mark.parametrize("mutation", ["asset", "sha", "metadata_commit", "metadata_workflow", "sbom", "extra_file"])
+@pytest.mark.parametrize("mutation", ["asset", "sha", "metadata_commit", "metadata_workflow", "metadata_tag_object", "sbom", "extra_file"])
 def test_staged_asset_substitution_wrong_sha_source_or_manifest_fails_closed(
     tmp_path, mutation
 ):
@@ -401,6 +401,20 @@ def test_staged_asset_substitution_wrong_sha_source_or_manifest_fails_closed(
             (tmp_path / "release-metadata.json").read_text(encoding="utf-8")
         )
         metadata["workflow_sha"] = "d" * 40
+        (tmp_path / "release-metadata.json").write_text(
+            json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        names = [ASSET, "SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt"]
+        lines = []
+        for name in sorted(names):
+            digest = hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+            lines.append(f"{digest}  {name}")
+        (tmp_path / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="ascii")
+    elif mutation == "metadata_tag_object":
+        metadata = json.loads(
+            (tmp_path / "release-metadata.json").read_text(encoding="utf-8")
+        )
+        metadata["tag_object_sha"] = "d" * 40
         (tmp_path / "release-metadata.json").write_text(
             json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
         )
