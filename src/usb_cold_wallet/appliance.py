@@ -17,6 +17,16 @@ TRANSFER_DEVICE_FILE = Path("/run/usb-wallet/transfer-device")
 SAFE_MOUNT_OPTIONS = "rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077"
 SYS_BLOCK = Path("/sys/class/block")
 DEV_ROOT = Path("/dev")
+SERIAL_DIAGNOSTIC = Path("/dev/ttyS0")
+
+
+def _signal_console_ready() -> None:
+    """Emit only a fixed readiness marker for QEMU/physical diagnostics."""
+    try:
+        with SERIAL_DIAGNOSTIC.open("w", encoding="ascii") as serial:
+            serial.write("USB_WALLET_CONSOLE_READY\n")
+    except OSError:
+        pass
 
 
 def _mount_info(path: Path) -> tuple[str, str, set[str]] | None:
@@ -344,6 +354,9 @@ def main() -> int:
                 subprocess.run(["poweroff"], check=False)
                 return 1
             continue
+        # This is emitted only after the live runtime audit passed and the
+        # single-purpose console reached its attended menu.
+        _signal_console_ready()
         print("\n1) Create encrypted TESTNET wallet")
         print("2) Show public BTC testnet + Sepolia addresses")
         print("3) Sign Sepolia native ETH transaction")
