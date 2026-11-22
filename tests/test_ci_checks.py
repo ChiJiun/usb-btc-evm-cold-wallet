@@ -609,6 +609,8 @@ def test_ci_wiring_uses_real_live_usb_smoke_without_expensive_build():
     assert "LIVE_USB_SMOKE: ${{ needs.live_usb_smoke.result }}" in ci
     assert "  contract-smoke:" in live
     assert "    if: inputs.smoke_only != true" in live
+    # Smoke and full build must never cancel one another via shared concurrency.
+    assert "inputs.smoke_only && 'smoke' || 'full'" in live
 
 
 
