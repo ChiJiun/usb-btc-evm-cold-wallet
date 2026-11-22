@@ -75,7 +75,7 @@ Normal operation requires no Python, Node, CLI, MetaMask, or manual JSON editing
 - Automatic Windows `TX_TRANSFER` discovery is disabled until the exact GPT disk GUID, partition GUID/type/size/layout, parent disk and uniqueness contract from PR #76 is integrated. Volume labels and DRIVE_FIXED/DRIVE_REMOVABLE classification alone are never accepted as identity.
 - Multiple active requests, filename/requestId mismatch, malformed or modified v2 envelopes, account/network mismatch, changed recipient/amount/fee/nonce/UTXO, replay, and stale signatures fail closed.
 - Explicit cancel records `FAILED` and removes only that request's exchange files.
-- Immediately before network I/O, Broadcast durably records `BROADCAST_REQUESTED` with the exact txid. A timeout/crash leaves that reservation in place; restart reconstructs a `broadcast_unknown` session for **status lookup only** and cannot resend it. `/api/crossboot/reconcile` queries only the stored txid and advances to `BROADCASTED` only when the chain response matches that retained signed transaction.
+- Immediately before network I/O, Broadcast durably records `BROADCAST_REQUESTED` with the exact txid. A timeout/crash leaves that reservation in place; restart reconstructs a `broadcast_unknown` session for **status lookup only** and cannot resend it. `/api/crossboot/reconcile` may query only the stored txid, but public RPC/Esplora answers are explicitly untrusted and cannot advance the durable state or delete exchange evidence. The reservation remains fail closed until an independently authenticated chain-proof mechanism is integrated.
 - Completed response + interrupted cold ledger update is recoverable without signing again.
 - SignerSession still provides auto-lock, idle timeout, per-transaction challenge, cancellation, exception locking and attended-session signature quota.
 - Full addresses and values use scrollable character-wrapped read-only fields rather than truncated labels.
@@ -89,7 +89,7 @@ The integration suite uses only the public BIP39 `abandon ... about` test vector
 - malicious changed-recipient signed result rejection even after attacker recomputes public envelope hashes;
 - BTC PSBT v2 round-trip across simulated restart with full input/output/change/fee-rate reconstruction; no-change cases whose original fee rate cannot be proven fail closed;
 - formal online journal transition and explicit cancel cleanup;
-- restart auto-import of a valid response with zero automatic broadcasts;
+- restart auto-import of a valid response with zero automatic broadcasts;\n- ambiguous broadcast restart keeps `BROADCAST_REQUESTED` and exchange evidence when only untrusted RPC/Esplora status is available;
 - successful explicit broadcast followed by restart with duplicate broadcast blocked;
 - ambiguous broadcast restart recovery as status-only plus exact-txid reconciliation without resend;
 - pinned Bitcoin Core regtest `finalizepsbt` / `decoderawtransaction` as an independent BTC signing/finalization oracle;
