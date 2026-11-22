@@ -16,7 +16,7 @@
 從 repo root 開啟 PowerShell；`F:` 只是當次辨識範例，請先從 Explorer 確認該 drive letter 所指裝置：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/physical_usb_inventory.ps1 -DriveLetter F -ExpectedModel "General UDisk" -ImagePath "C:\\wallet-tests\\usb-cold-wallet.img" -ExpectedSha256 "<可信來源 64 hex>" -Json
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/physical_usb_inventory.ps1 -DriveLetter F -ExpectedModel "General UDisk" -ExpectedDiskGuid "<實際預期 GPT disk GUID>" -ImagePath "C:\\wallet-tests\\usb-cold-wallet.img" -ExpectedSha256 "<可信來源 64 hex>" -Json
 ```
 
 輸出 JSON 包含 diskNumber（**只作識別，絕不可用於自動刷寫**）、bus、容量、GPT style、分割區、imageSha256、imageMatchesExpected。結果 FAIL/BLOCKED 時停止實機操作。注意未能讀取 USB 原始 bytes；此步不會驗證 GPT backup CRC，刷寫後必須在 Linux / final image verifier 與實機 mount audit 分別驗證。
@@ -26,14 +26,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/physical_usb_invento
 先在**本機內接固定磁碟**建立 `C:\\wallet-tests\\evidence`（非 USB、非同步分享資料夾），只在人工核對來源後執行：
 
 ```powershell
-py -3 scripts/physical_acceptance.py init --file C:\\wallet-tests\\evidence\\run.json --commit <40-hex-exact-commit> --image-sha256 <64-hex> --hardware "ThinkPad T14" --firmware "UEFI 1.20"
-py -3 scripts/physical_acceptance.py record --file C:\\wallet-tests\\evidence\\run.json --case WIN_USB_ID --status PASS --evidence "inventory-redacted.json"
+py -3 scripts/physical_acceptance.py init --file C:\\wallet-tests\\evidence\\run.json --commit <40-hex-exact-commit> --image-sha256 <64-hex> --hardware "ThinkPad T14" --firmware "UEFI 1.20" --device-identity "redacted-usb-test-a"
+py -3 scripts/physical_acceptance.py record --file C:\\wallet-tests\\evidence\\run.json --case WIN_USB_ID --status PASS --evidence "inventory-redacted.json" --command "physical_usb_inventory.ps1 WIN_USB_ID"
 py -3 scripts/physical_acceptance.py boot --file C:\\wallet-tests\\evidence\\run.json --phase WINDOWS_TO_USB --seconds 78 --evidence "boot-timing-redacted.txt"
 py -3 scripts/physical_acceptance.py tx --file C:\\wallet-tests\\evidence\\run.json --chain sepolia --txhash <0x...64-hex> --evidence "sepolia-explorer-redacted.txt"
 py -3 scripts/physical_acceptance.py show --file C:\\wallet-tests\\evidence\\run.json
 ```
 
-若測試 Windows 沒有 Python，記錄工具可在**另外的測試工程機**執行，傳輸**僅公開、已去識別**的步驟與時間；產品 Companion 在驗收時仍必須證明無 Python/Node 依賴。受測 USB OS 不需要 Python CLI 操作此工具。JSON 的所有 cases 初值為 NOT TESTED；人工判定 PASS 需證據 reference，FAIL / BLOCKED 必須保留原因。重開機時間須由人工實測，不能用命令呼叫時間推算。
+若測試 Windows 沒有 Python，記錄工具可在**另外的測試工程機**執行，傳輸**僅公開、已去識別**的步驟與時間；產品 Companion 在驗收時仍必須證明無 Python/Node 依賴。受測 USB OS 不需要 Python CLI 操作此工具。JSON 的所有 cases 初值為 NOT TESTED；人工判定 PASS 需已存在於 journal 同目錄的非空證據檔、SHA-256 和實際執行的 command/test case；修改或移除證據會使 journal 載入失敗，FAIL / BLOCKED 必須保留原因。重開機時間須由人工實測，不能用命令呼叫時間推算。
 
 ## E2E 測試矩陣
 
@@ -61,6 +61,8 @@ py -3 scripts/physical_acceptance.py show --file C:\\wallet-tests\\evidence\\run
 | REPLACE_REQUEST / REPLACE_RESPONSE | 在**可重建測試交換區**替換內容，拒絕不符 digest/requestId/account，零未授權簽章/廣播 | expected/actual |
 | REPLAY_REQUEST / REPLAY_RESPONSE | 同一請求或 signed response 重播／重開機重送，應拒絕或安全 reconcile，不能重簽／雙重廣播；若缺 trusted monotonic anchor 依 #75 必須 BLOCKED | state/拒絕證據 |
 | WRONG_CHAIN / WRONG_ACCOUNT | 交換 BTC/Sepolia chainId、account、nonce/UTXO，必須 fail closed | expected/actual |
+| WRONG_DISK / USB_REPLUG | 交換 USB 或重新插入後核對裝置 identity，不得沿用舊 disk number／drive letter，錯誤裝置 fail closed | 前後 inventory 與拒絕證據 |
+| MALFORMED_TRANSFER | 可重建交換區注入不合法 JSON／缺少欄位／錯誤 digest，應拒簽、拒匯入 | 輸入摘要與拒絕紀錄 |
 | USB_UNPLUG | 冷端確認前拔除 USB，觀察 lockdown、錯誤、重新插入後重新辨識，不自動簽 | 影片與錯誤 |
 | POWER_INTERRUPTION | 僅測試專用／可重建 USB，分別在 request / vault / response 寫入階段斷電；檢查原子性與可恢復性 | 時點、恢復紀錄 |
 | RECOVERY | 使用專用測試種子演練損毀／恢復，禁止在公開 log 錄下助記詞 | 遮罩紀錄 |
@@ -76,3 +78,7 @@ py -3 scripts/physical_acceptance.py show --file C:\\wallet-tests\\evidence\\run
 ## 重用與來源
 
 僅使用本 repo 的 `scripts/verify_image.py`、`scripts/verify_image.sh`、`scripts/verify_uefi_boot.sh`、`scripts/verify_release_assets.py` 作既有驗證；PowerShell 使用 Microsoft 原生 `Get-Partition` / `Get-Disk` / `Get-Volume` / `Get-FileHash`，Python 使用標準函式庫。沒有複製任何第三方專案原始碼、沒有新增簽章或映像 parser。上游 SeedSigner/Krux/Bitcoin Core 僅作既有 Issue #24/#43 測試場景參考；未主張任何上游測試已通過。
+
+## Journal 與證據限制
+
+Journal schemaVersion 2。`PASS` 需要實際檔案（與 journal 同目錄）、SHA-256、`--command`，每筆 observation 綁定 source commit、image SHA-256、device identity 及 UTC 時間。先以當次 Windows inventory 確認 GPT disk GUID；GUID 與 image digest 未提供時 inventory 回報 BLOCKED。原始 journal 的內文與檔案可由本機使用者整體替換，因此此功能提供可稽核完整性檢查，**不構成不可否認證明或防回滾 trusted anchor**。不得以自行建立的文字檔冒充真實硬體驗收結果。
