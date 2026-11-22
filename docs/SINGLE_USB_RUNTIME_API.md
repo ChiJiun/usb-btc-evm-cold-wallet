@@ -22,6 +22,22 @@ The kernel remains `CONFIG_NET=n`. This also removes AF_UNIX, so X11/Tk is not a
 
 A future graphical frontend must be framebuffer/DRM/input-native and must call the runtime interfaces above. Enabling `CONFIG_NET` requires a separate security ADR and full network-negative re-audit.
 
+## Framebuffer handoff to PR #79
+
+PR #79 may consume the existing `ReviewPlan` and pass `runtime_audit` as the
+framebuffer controller's audit callback. Its controller is an approval-intent
+surface only: it must never receive wallet keys or perform signing.
+
+The eventual adapter must re-parse/rebuild the reviewed transaction, confirm
+the same review digest and policy decision, and run `runtime_audit()` again
+immediately before `SignerSession.approve()/signing()`. USB file access must
+continue through `mount_transfer()`. PR #76 does not copy or reimplement the
+framebuffer frontend.
+
+The ESP's GPT bit 60 is verified exactly and the ESP stays unmounted in the
+cold runtime. This metadata is not hardware write protection against a hostile
+Windows administrator with raw-disk access.
+
 ## Compatibility
 
 The legacy separate TX_TRANSFER USB remains accepted through the existing separate-parent policy. Same-parent TX_TRANSFER is accepted only when boot audit has verified the exact three-partition GPT layout and persisted the exact transfer device. No caller may bypass `mount_transfer()` or `runtime_audit()` to relax this distinction.
