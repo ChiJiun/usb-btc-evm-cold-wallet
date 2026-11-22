@@ -15,8 +15,16 @@ cp "$BOARD_DIR/grub.cfg" "$BINARIES_DIR/efi-part/EFI/BOOT/grub.cfg"
 # -nolisten tcp. tty1 is rendered by the kernel VT/fbcon stack and needs no
 # socket family. Keep the operator on the single-purpose audited appliance.
 if [ -f "$TARGET_DIR/etc/inittab" ]; then
-	sed -i '/tty[1-9].*getty/d' "$TARGET_DIR/etc/inittab"
+	# Remove every interactive login shell/getty, not only tty1. A root shell
+	# would bypass the attended appliance UX even though the signer CLI itself
+	# still has confirmation gates.
+	sed -i -E '/getty|:(askfirst|respawn):.*\/bin\/(a|ba|z)?sh/d' "$TARGET_DIR/etc/inittab"
 	printf '\ntty1::respawn:/usr/bin/usb-wallet-gui-session\n' >> "$TARGET_DIR/etc/inittab"
+	if grep -Eq 'getty|:(askfirst|respawn):.*\/bin\/(a|ba|z)?sh' "$TARGET_DIR/etc/inittab"; then
+		echo "ERROR: interactive getty or shell survived appliance lockdown" >&2
+		grep -E 'getty|:(askfirst|respawn):.*\/bin\/(a|ba|z)?sh' "$TARGET_DIR/etc/inittab" >&2 || true
+		exit 1
+	fi
 fi
 
 for required in \
