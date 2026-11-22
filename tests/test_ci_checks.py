@@ -767,3 +767,44 @@ def test_open_pull_request_security_workload_regressions(pr, changed, must_run):
     selected = classify_workloads(changed)
     for name in must_run:
         assert getattr(selected, name), f"PR #{pr} must not skip {name}"
+
+
+def test_live_usb_heavy_build_requires_successful_python_matrix():
+    """A failed fast test cannot leave a costly Buildroot job running."""
+    from pathlib import Path
+
+    ci = (Path(__file__).resolve().parents[1] /
+          ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    live_job = ci.split("\n  live_usb:\n", 1)[1].split("\n  btc_core:\n", 1)[0]
+    assert "needs: [changes, tests]" in live_job
+    assert "needs.tests.result == 'success'" in live_job
+    assert "needs.changes.outputs.live_usb == 'true'" in live_job
+    assert "uses: ./.github/workflows/live-usb-build.yml" in live_job
+    assert "      - live_usb" in ci.split("\n  required:\n", 1)[1]
+
+    # When selected, a failed prerequisite skips Live USB, but the aggregate
+    # required check must still fail closed rather than treating skip as PASS.
+    rejected = required_env(CODE="true", TESTS="failure",
+                            LIVE_USB_REQUIRED="true", LIVE_USB="skipped")
+    assert any("TESTS" in message for message in ci_checks.gate_errors(rejected))
+    assert any("LIVE_USB" in message for message in ci_checks.gate_errors(rejected))
+
+
+def test_live_usb_cache_reuses_only_verifiable_source_downloads():
+    from pathlib import Path
+
+    live = (Path(__file__).resolve().parents[1] /
+            ".github/workflows/live-usb-build.yml").read_text(encoding="utf-8")
+    cache_block = live.split("      - name: Restore verified source downloads\n", 1)[1].split(
+        "\n      - name: Prepare authenticated offline sources", 1
+    )[0]
+    assert "uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809" in cache_block
+    for path in ("build/dl", "build/cache", "build/wheelhouse"):
+        assert path in cache_block
+    for unsafe in ("build/output", "build/reproducibility", "build/verified-artifact"):
+        assert unsafe not in cache_block
+    assert "hashFiles(" in cache_block
+    assert "buildroot-external/configs/usb_wallet_x86_64_defconfig" in cache_block
+    assert "      - name: Build image and verify reproducibility (two clean builds)" in live
+    assert "run: sh scripts/check_reproducible.sh" in live
+    assert "      - name: Boot generated USB image using UEFI OVMF/QEMU (TCG)" in live
