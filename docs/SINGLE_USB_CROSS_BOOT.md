@@ -89,7 +89,8 @@ The integration suite uses only the public BIP39 `abandon ... about` test vector
 - malicious changed-recipient signed result rejection even after attacker recomputes public envelope hashes;
 - BTC PSBT v2 round-trip across simulated restart with full input/output/change/fee-rate reconstruction; no-change cases whose original fee rate cannot be proven fail closed;
 - formal online journal transition and explicit cancel cleanup;
-- restart auto-import of a valid response with zero automatic broadcasts;\n- ambiguous broadcast restart keeps `BROADCAST_REQUESTED` and exchange evidence when only untrusted RPC/Esplora status is available;
+- restart auto-import of a valid response with zero automatic broadcasts;
+- ambiguous broadcast restart keeps `BROADCAST_REQUESTED` and exchange evidence when only untrusted RPC/Esplora status is available;
 - successful explicit broadcast followed by restart with duplicate broadcast blocked;
 - ambiguous broadcast restart recovery as status-only plus exact-txid reconciliation without resend;
 - pinned Bitcoin Core regtest `finalizepsbt` / `decoderawtransaction` as an independent BTC signing/finalization oracle;
