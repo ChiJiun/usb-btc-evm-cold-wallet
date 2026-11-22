@@ -193,9 +193,15 @@ def main() -> int:
             raise SystemExit(f"{label} GPT LBA geometry mismatch")
 
     if boot[4] != GPT_READ_ONLY:
-        raise SystemExit("boot partition GPT attributes are not exactly read-only")
+        raise SystemExit(
+            "boot partition GPT attributes are not exactly read-only: "
+            f"got 0x{boot[4]:016x}, expected 0x{GPT_READ_ONLY:016x}"
+        )
     if vault[4] != 0 or transfer[4] != 0:
-        raise SystemExit("vault/transfer partition has unexpected GPT attributes")
+        raise SystemExit(
+            "vault/transfer partition has unexpected GPT attributes: "
+            f"vault=0x{vault[4]:016x}, transfer=0x{transfer[4]:016x}"
+        )
     if boot[3] >= vault[2] or vault[3] >= transfer[2]:
         raise SystemExit("GPT partitions overlap or are out of order")
 
