@@ -227,6 +227,7 @@ jobs:
           {
             echo "classification=TESTNET ONLY / NOT A RELEASE"
             echo "clean_build_count=$selected"
+            echo "reproducibility_verified=$([ "$selected" = 2 ] && echo true || echo false)"
             echo "repository=${{ github.repository }}"
             echo "commit_sha=$actual"
             echo "event_head_sha=$EXPECTED_HEAD_SHA"
@@ -253,7 +254,7 @@ jobs:
       - name: Upload verified testnet-only boot image (NOT A RELEASE)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: testnet-only-NOT-A-RELEASE-usb-cold-wallet
+          name: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'DRAFT-SINGLE-BUILD-NOT-REPRODUCIBILITY-VERIFIED' || 'testnet-only-NOT-A-RELEASE-usb-cold-wallet' }}
           path: build/verified-artifact/
           if-no-files-found: error
           compression-level: 0
