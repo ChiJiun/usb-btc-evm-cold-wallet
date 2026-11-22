@@ -806,7 +806,7 @@ def test_live_usb_cache_reuses_only_verifiable_source_downloads():
     assert "hashFiles(" in cache_block
     assert "buildroot-external/configs/usb_wallet_x86_64_defconfig" in cache_block
     assert "  clean-builds:" in live
-    assert "        run: [1, 2]" in live
+    assert "fromJSON(github.event_name == 'pull_request'" in live
     assert "      - name: Independently build and statically audit image" in live
     assert "sh scripts/build_image.sh" in live
     assert "  verify-and-publish:" in live
@@ -826,14 +826,14 @@ def test_parallel_live_usb_requires_two_independent_clean_runners_and_real_bytes
     )[0]
     verify = live.split("\n  verify-and-publish:\n", 1)[1]
 
-    assert "matrix:\n        run: [1, 2]" in builds
+    assert "matrix:\n        run: ${{ fromJSON(" in builds
     assert "    runs-on: ubuntu-24.04" in builds
     assert "    if: inputs.smoke_only != true" in builds
     assert "sh scripts/build_image.sh" in builds
     assert "sha256sum usb-cold-wallet.img bzImage" in builds
     assert "live-usb-clean-hashes-${{ matrix.run }}" in builds
-    assert "if: matrix.run == 2" in builds
-    assert "live-usb-second-clean-image" in builds
+    assert "if: matrix.run == 2 ||" in builds
+    assert "live-usb-selected-clean-image" in builds
     assert "build/output/images/usb-cold-wallet.img" in builds
     assert "build/output/images/bzImage" in builds
 
@@ -841,7 +841,7 @@ def test_parallel_live_usb_requires_two_independent_clean_runners_and_real_bytes
     assert "actions/download-artifact@" in verify
     assert "merge-multiple: true" in verify
     assert "cmp -s build/reproducibility/run-1.sha256 build/reproducibility/run-2.sha256" in verify
-    assert "sha256sum -c ../../reproducibility/run-2.sha256" in verify
+    assert 'sha256sum -c "../../reproducibility/run-${selected}.sha256"' in verify
     assert "run: sh scripts/verify_uefi_boot.sh" in verify
     assert "Upload verified testnet-only boot image (NOT A RELEASE)" in verify
     assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in verify
@@ -853,3 +853,18 @@ def test_parallel_live_usb_requires_two_independent_clean_runners_and_real_bytes
         assert blocked not in builds.split(
             "      - name: Restore verified source downloads", 1
         )[1].split("      - name: Prepare authenticated offline sources", 1)[0]
+
+
+def test_draft_feedback_is_single_build_but_ready_event_requires_dual():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    ci = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    live = (root / ".github/workflows/live-usb-build.yml").read_text(encoding="utf-8")
+    assert "ready_for_review" in ci
+    assert "converted_to_draft" in ci
+    assert "fromJSON(github.event_name == 'pull_request' && github.event.pull_request.draft && '[1]' || '[1,2]')" in live
+    assert 'test ! -e build/reproducibility/run-2.sha256' in live
+    assert 'test -s build/reproducibility/run-2.sha256' in live
+    assert "cmp -s build/reproducibility/run-1.sha256 build/reproducibility/run-2.sha256" in live
+    assert "sh scripts/verify_uefi_boot.sh" in live
+    assert 'echo "clean_build_count=$selected"' in live
