@@ -155,12 +155,11 @@ def classify_workloads(paths: list[str]) -> Workloads:
         elif path.startswith("metamask-snap/"):
             add("snap")
         elif path.startswith("review_only/"):
-            # Review-only decoder modules are not part of the cold target.
-            pass
+            # Review-only tooling is excluded from the cold image, but its\n            # decoders and policies can affect signing and transport safety.\n            add("qr", "native_qr", "windows", "snap")
         elif path in {"pyproject.toml", "Makefile", "requirements/ci.lock"}:
             # Pyproject changes build/runtime dependency contracts; Makefile is
             # conservatively treated as a boot build entry point.
-            if path == "Makefile":
+            if path in {"Makefile", "pyproject.toml"}:
                 add("live_usb")
             add("qr", "native_qr", "windows", "snap", "btc_core", "btc_fuzz", "vfat")
         elif path.startswith("requirements/"):
