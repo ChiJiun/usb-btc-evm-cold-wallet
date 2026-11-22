@@ -35,6 +35,13 @@ jobs:
       metadata: ${{ steps.scope.outputs.metadata }}
       node: ${{ steps.scope.outputs.node }}
       snap: ${{ steps.scope.outputs.snap }}
+      qr: ${{ steps.scope.outputs.qr }}
+      native_qr: ${{ steps.scope.outputs.native_qr }}
+      windows: ${{ steps.scope.outputs.windows }}
+      live_usb: ${{ steps.scope.outputs.live_usb }}
+      btc_core: ${{ steps.scope.outputs.btc_core }}
+      btc_fuzz: ${{ steps.scope.outputs.btc_fuzz }}
+      vfat: ${{ steps.scope.outputs.vfat }}
     steps:
       - name: Check out source and history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -88,7 +95,7 @@ jobs:
 
   qr_transport:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.qr == 'true'
     name: QR transport / Node 24
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -136,7 +143,7 @@ jobs:
 
   metamask_native_qr:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.native_qr == 'true'
     name: MetaMask native QR / Node 24
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -323,8 +330,30 @@ jobs:
   # so the result is available to the SAME CI / Required graph.
   windows_portable:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.windows == 'true'
     uses: ./.github/workflows/windows-companion.yml
+
+  # Called from the same required job graph. An unrelated PR skips the
+  # heavyweight image build, but an expected failure/missing run blocks merge.
+  live_usb:
+    needs: changes
+    if: needs.changes.outputs.live_usb == 'true'
+    uses: ./.github/workflows/live-usb-build.yml
+
+  btc_core:
+    needs: changes
+    if: needs.changes.outputs.btc_core == 'true'
+    uses: ./.github/workflows/btc-core-e2e.yml
+
+  btc_fuzz:
+    needs: changes
+    if: needs.changes.outputs.btc_fuzz == 'true'
+    uses: ./.github/workflows/btc-psbt-fuzz.yml
+
+  vfat:
+    needs: changes
+    if: needs.changes.outputs.vfat == 'true'
+    uses: ./.github/workflows/usb-vfat-atomic.yml
 
   secret_scan:
     name: Secret scan
@@ -447,6 +476,10 @@ jobs:
       - metamask_native_qr
       - metamask_snap
       - windows_portable
+      - live_usb
+      - btc_core
+      - btc_fuzz
+      - vfat
       - dependency_audit
       - node_audit
       - qr_transport
@@ -469,6 +502,17 @@ jobs:
           DEPS: ${{ needs.changes.outputs.deps }}
           NODE: ${{ needs.changes.outputs.node }}
           NODE_AUDIT: ${{ needs.node_audit.result }}
+          QR_REQUIRED: ${{ needs.changes.outputs.qr }}
+          NATIVE_REQUIRED: ${{ needs.changes.outputs.native_qr }}
+          WINDOWS_REQUIRED: ${{ needs.changes.outputs.windows }}
+          LIVE_USB_REQUIRED: ${{ needs.changes.outputs.live_usb }}
+          BTC_CORE_REQUIRED: ${{ needs.changes.outputs.btc_core }}
+          BTC_FUZZ_REQUIRED: ${{ needs.changes.outputs.btc_fuzz }}
+          VFAT_REQUIRED: ${{ needs.changes.outputs.vfat }}
+          LIVE_USB: ${{ needs.live_usb.result }}
+          BTC_CORE: ${{ needs.btc_core.result }}
+          BTC_FUZZ: ${{ needs.btc_fuzz.result }}
+          VFAT: ${{ needs.vfat.result }}
           QR_TRANSPORT: ${{ needs.qr_transport.result }}
           NATIVE_QR: ${{ needs.metamask_native_qr.result }}
           SNAP: ${{ needs.changes.outputs.snap }}
