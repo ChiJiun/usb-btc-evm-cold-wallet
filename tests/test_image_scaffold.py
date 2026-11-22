@@ -1,5 +1,6 @@
 from pathlib import Path
 import re
+import struct
 
 from scripts.install_target_python import (
     TARGET_EMBIT_PREBUILT,
@@ -245,13 +246,14 @@ def test_framebuffer_guest_path_is_explicit_dormant_and_network_free():
     assert "reviewed=0 reason=cancelled" in verifier
     assert "verify_framebuffer_qemu.sh" in workflow
     assert "generate_framebuffer_font.py" in package
-    assert "usb-wallet-framebuffer-demo" not in (ROOT / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/inittab").read_text() if (ROOT / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/inittab").exists() else True
+    assert 'tty1::respawn:/usr/bin/usb-wallet-console' in postbuild
+    assert 'tty1::respawn:/usr/libexec/usb-wallet-framebuffer-demo' not in postbuild
 
 
 def test_generated_framebuffer_font_is_fixed_psf2():
     data = build_psf2()
     assert len(data) == 32 + 256 * 16
-    magic, version, header, flags, length, charsize, height, width = __import__("struct").unpack_from("<8I", data)
+    magic, version, header, flags, length, charsize, height, width = struct.unpack_from("<8I", data)
     assert (magic, version, header, flags) == (0x864AB572, 0, 32, 0)
     assert (length, charsize, height, width) == (256, 16, 16, 8)
     assert any(data[32 + 32 * 16:32 + 128 * 16])
