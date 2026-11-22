@@ -164,3 +164,40 @@ def test_cold_whole_store_rollback_negative_control_requires_external_tip(tmp_pa
     # A USB-local copy of first_tip can be reverted together with the history.
     # Thus this reopened journal has no authenticated knowledge of its past SIGNED state.
     assert reloaded.get(first["requestId"]).state == "COLD_REVIEWED"
+
+
+@pytest.mark.parametrize("mutation", [
+    "wrong_recipient", "wrong_amount", "fee_below_actual",
+    "wrong_change_index", "wrong_network",
+])
+def test_core_oracle_cannot_be_reinterpreted_by_online_expectations(mutation):
+    """The offline parser must independently check economic and network semantics."""
+    from embit import networks, script
+
+    recipient = FIXTURE["recipient_testnet"]
+    amount = FIXTURE["recipient_sats"]
+    maximum_fee = FIXTURE["fee_sats"]
+    change_index = 0
+    if mutation == "wrong_recipient":
+        recipient = script.address_to_scriptpubkey(recipient).address(networks.NETWORKS["main"])
+    elif mutation == "wrong_amount":
+        amount += 1
+    elif mutation == "fee_below_actual":
+        maximum_fee -= 1
+    elif mutation == "wrong_change_index":
+        change_index = 1
+    else:
+        # Even with the same witness program, a mainnet address is not a
+        # valid testnet recipient for this explicitly testnet-only signer.
+        recipient = script.address_to_scriptpubkey(recipient).address(networks.NETWORKS["main"])
+    with pytest.raises(ValueError):
+        review_btc_psbt(ROOT, FIXTURE["enriched_psbt_base64"], recipient,
+                        amount, maximum_fee, change_index)
+
+
+def test_core_request_wrong_account_rejected_by_cold_replay(tmp_path):
+    request = core_request()
+    with pytest.raises(ValueError):
+        ReplayLedger(tmp_path / "cold").review_once(
+            request, expected_account="00" * 4, trusted_time=100
+        )
