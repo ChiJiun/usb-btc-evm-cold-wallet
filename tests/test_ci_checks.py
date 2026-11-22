@@ -656,8 +656,11 @@ def test_full_live_usb_is_called_and_gated_with_no_path_filtered_bypass():
         assert "      - " + job in required
 
 @pytest.mark.parametrize(("pr", "changed", "must_run"), [
+    # Path-only classification cannot inspect a workflow's actual diff.
+    # A trigger-only change uses the real workflow_call smoke; body edits
+    # are upgraded to the full image gate by select_scopes().
     (68, [".github/workflows/live-usb-build.yml",
-          "docs/PHYSICAL_TWO_USB_TESTNET_CHECKLIST.md"], ("live_usb",)),
+          "docs/PHYSICAL_TWO_USB_TESTNET_CHECKLIST.md"], ("live_usb_smoke",)),
     (72, [".github/workflows/release.yml",
           "scripts/verify_release_assets.py",
           "tests/test_release_verification.py"], ("live_usb",)),
