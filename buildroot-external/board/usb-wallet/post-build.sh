@@ -6,36 +6,37 @@ BOARD_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 # Install a stdlib-only, offline GPT/FAT media identifier. The BusyBox
 # blkid applet does not implement util-linux's -t/-o/-s options.
 mkdir -p "$TARGET_DIR/usr/libexec"
-install -m 0755 "$BOARD_DIR/identify_media.py" \
-    "$TARGET_DIR/usr/libexec/usb-wallet-identify-media"
+install -m 0755 "$BOARD_DIR/identify_media.py"     "$TARGET_DIR/usr/libexec/usb-wallet-identify-media"
 
 mkdir -p "$BINARIES_DIR/efi-part/EFI/BOOT"
 cp "$BOARD_DIR/grub.cfg" "$BINARIES_DIR/efi-part/EFI/BOOT/grub.cfg"
 
-# Replace Buildroot's login/getty with the single-purpose offline GUI session.
-# Its launcher falls back to the existing appliance on LOCKDOWN/GUI failure;
-# BusyBox sh is never the normal operator interface.
+# CONFIG_NET=n removes AF_UNIX, so an X11/Tk session cannot work even with
+# -nolisten tcp. tty1 is rendered by the kernel VT/fbcon stack and needs no
+# socket family. Keep the operator on the single-purpose audited appliance.
 if [ -f "$TARGET_DIR/etc/inittab" ]; then
 	sed -i '/tty[1-9].*getty/d' "$TARGET_DIR/etc/inittab"
 	printf '\ntty1::respawn:/usr/bin/usb-wallet-gui-session\n' >> "$TARGET_DIR/etc/inittab"
 fi
 
-# Build must actually contain the runtime required by the already-reviewed
-# tkinter GUI; merely selecting Tk in defconfig is not sufficient evidence.
-test -x "$TARGET_DIR/usr/bin/xinit"
-test -x "$TARGET_DIR/usr/bin/Xfbdev"
-test -x "$TARGET_DIR/usr/bin/usb-cold-wallet-gui"
-test -d "$TARGET_DIR/usr/lib/python3.14/tkinter"
-set -- "$TARGET_DIR"/usr/lib/python3.14/lib-dynload/_tkinter*.so
-[ "$#" -eq 1 ] && [ -s "$1" ] || {
-	echo "ERROR: Python tkinter extension missing from target" >&2
+test -x "$TARGET_DIR/usr/bin/usb-wallet-console"
+test -x "$TARGET_DIR/usr/bin/usb-wallet-gui-session"
+
+# Fail the build if the impossible X11/Tk path is accidentally reintroduced.
+for path in     "$TARGET_DIR/usr/bin/xinit"     "$TARGET_DIR/usr/bin/Xfbdev"     "$TARGET_DIR/usr/bin/Xorg"; do
+	if [ -e "$path" ]; then
+		echo "ERROR: X11 runtime present while CONFIG_NET=n: $path" >&2
+		exit 1
+	fi
+done
+if find "$TARGET_DIR/usr/lib/python3.14" -name '_tkinter*.so' -print -quit 2>/dev/null | grep -q .; then
+	echo "ERROR: tkinter extension present while CONFIG_NET=n" >&2
 	exit 1
-}
+fi
 
 # Build-time guardrail: no common networking clients may survive in the image.
 for tool in ip ifconfig route ping ping6 wget nc netcat udhcpc udhcpd telnet ftpget ftpput; do
-	if [ -e "$TARGET_DIR/bin/$tool" ] || [ -e "$TARGET_DIR/sbin/$tool" ] || \
-	   [ -e "$TARGET_DIR/usr/bin/$tool" ] || [ -e "$TARGET_DIR/usr/sbin/$tool" ]; then
+	if [ -e "$TARGET_DIR/bin/$tool" ] || [ -e "$TARGET_DIR/sbin/$tool" ] || 	   [ -e "$TARGET_DIR/usr/bin/$tool" ] || [ -e "$TARGET_DIR/usr/sbin/$tool" ]; then
 		echo "ERROR: networking tool survived image construction: $tool" >&2
 		exit 1
 	fi
