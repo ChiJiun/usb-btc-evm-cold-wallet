@@ -15,7 +15,7 @@ import re
 import secrets
 from typing import Any
 
-from embit import networks, psbt
+from embit import networks, psbt, script
 from eth_utils import to_checksum_address
 
 VERSION = 2
@@ -25,6 +25,7 @@ MAX_UTXOS = 20
 REQUEST_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 BTC_ACCOUNT_RE = re.compile(r"^[0-9a-f]{8}$")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+BTC_ADDRESS_RE = re.compile(r"^tb1q[023456789acdefghjklmnpqrstuvwxyz]{38}$")
 REQUEST_KINDS = {"btc-request", "evm-request"}
 REQUEST_TO_RESPONSE = {"btc-request": "btc-signed", "evm-request": "evm-signed"}
 NETWORK = {"btc-request": "bitcoin-testnet", "evm-request": "sepolia"}
@@ -92,6 +93,17 @@ def _account(kind: str, value: Any) -> str:
     return value
 
 
+def _btc_address(value: Any) -> str:
+    if type(value) is not str or BTC_ADDRESS_RE.fullmatch(value) is None:
+        raise ValueError("Only canonical Bitcoin testnet BIP84 P2WPKH address allowed")
+    try:
+        if script.address_to_scriptpubkey(value).address(networks.NETWORKS["test"]) != value:
+            raise ValueError("Noncanonical Bitcoin testnet address")
+    except Exception as exc:
+        raise ValueError("Invalid Bitcoin testnet address") from exc
+    return value
+
+
 def _expiry(value: Any, *, trusted_time: int | None, allow_no_trusted_clock: bool) -> str:
     if type(value) is not dict or set(value) != {"mode", "notAfter"}:
         raise ValueError("Invalid expiry policy")
@@ -125,6 +137,8 @@ def _evm_intent(payload: dict, recipient: str, amount: int) -> dict:
     for field in ("nonce", "value", "gas", "maxFeePerGas", "maxPriorityFeePerGas"):
         if type(payload[field]) is not int or payload[field] < 0:
             raise ValueError(f"Invalid EVM {field}")
+    if payload["nonce"] > (1 << 53) - 1:
+        raise ValueError("Invalid EVM nonce")
     if payload["value"] < 1 or payload["gas"] != 21_000:
         raise ValueError("Unsupported EVM value/gas policy")
     if payload["maxFeePerGas"] < 1 or payload["maxFeePerGas"] > 1_000_000_000_000:
@@ -150,6 +164,7 @@ def _evm_intent(payload: dict, recipient: str, amount: int) -> dict:
 
 
 def _btc_intent(payload: str, account: str, recipient: str, amount: int) -> dict:
+    _btc_address(recipient)
     parsed, _raw = parse_psbt(payload)
     if BTC_ACCOUNT_RE.fullmatch(account or "") is None:
         raise ValueError("BTC account fingerprint invalid")
