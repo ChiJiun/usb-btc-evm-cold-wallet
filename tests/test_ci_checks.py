@@ -735,7 +735,7 @@ def test_full_live_usb_is_called_and_gated_with_no_path_filtered_bypass():
     assert "  live_usb:" in ci
     assert "uses: ./.github/workflows/live-usb-build.yml" in ci
     assert "      - live_usb" in required
-    assert "LIVE_USB_REQUIRED: ${{ needs.changes.outputs.live_usb }}" in required
+    assert "LIVE_USB_REQUIRED: ${{ needs.changes.outputs.live_usb == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}" in required
     assert "LIVE_USB: ${{ needs.live_usb.result }}" in required
     assert "workflow_call:" in live
     assert "  pull_request:" not in live
@@ -778,6 +778,7 @@ def test_live_usb_heavy_build_requires_successful_python_matrix():
     live_job = ci.split("\n  live_usb:\n", 1)[1].split("\n  btc_core:\n", 1)[0]
     assert "needs: [changes, tests]" in live_job
     assert "needs.tests.result == 'success'" in live_job
+    assert "(github.event_name != 'pull_request' || !github.event.pull_request.draft)" in live_job
     assert "needs.changes.outputs.live_usb == 'true'" in live_job
     assert "uses: ./.github/workflows/live-usb-build.yml" in live_job
     assert "      - live_usb" in ci.split("\n  required:\n", 1)[1]
@@ -880,3 +881,24 @@ def test_draft_skips_expensive_image_packaging_and_upload():
         job = live.split("      - name: " + name + "\n", 1)[1]
         assert condition in job.split("\n      - name:", 1)[0]
     assert "run: sh scripts/verify_uefi_boot.sh" in live
+
+
+def test_draft_defers_full_image_build_without_weakening_ready_gate():
+    from pathlib import Path
+    ci = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    job = ci.split("\n  live_usb:\n", 1)[1].split("\n  btc_core:\n", 1)[0]
+    required = ci.split("\n  required:\n", 1)[1]
+    ready_only = "(github.event_name != 'pull_request' || !github.event.pull_request.draft)"
+    assert ready_only in job
+    assert "needs.tests.result == 'success'" in job
+    assert "needs.changes.outputs.live_usb == 'true'" in job
+    assert "LIVE_USB_REQUIRED: ${{ needs.changes.outputs.live_usb == 'true' && " + ready_only + " }}" in required
+    assert "LIVE_USB: ${{ needs.live_usb.result }}" in required
+    # Draft: skipped full build is expected. Ready: a skipped build is fatal.
+    draft = required_env(CODE="true", TESTS="success", REPRODUCIBLE_BUILD="success",
+                         QR_TRANSPORT="success", LIVE_USB_REQUIRED="false", LIVE_USB="skipped")
+    assert ci_checks.gate_errors(draft) == []
+    ready = {**draft, "LIVE_USB_REQUIRED": "true"}
+    assert any("LIVE_USB" in e for e in ci_checks.gate_errors(ready))
+    ready["LIVE_USB"] = "success"
+    assert ci_checks.gate_errors(ready) == []
