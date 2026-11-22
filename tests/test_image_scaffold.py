@@ -223,3 +223,16 @@ def test_buildroot_device_manager_preserves_offline_kernel_policy():
     assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV" in validator
     assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y" in verifier
     assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_(MDEV|EUDEV)=y" in verifier
+
+
+def test_reproducibility_builds_use_distinct_buildroot_output_directories():
+    repro = (ROOT / "scripts/check_reproducible.sh").read_text()
+    configure = (ROOT / "scripts/configure_buildroot.sh").read_text()
+    build = (ROOT / "scripts/build_image.sh").read_text()
+    verify = (ROOT / "scripts/verify_image.sh").read_text()
+    assert 'OUT1="$ROOT/build/output-repro-1"' in repro
+    assert 'OUT2="$ROOT/build/output"' in repro
+    assert 'BUILD_OUTPUT_DIR="$out"' in repro
+    assert 'if [ "$OUT1" = "$OUT2" ]' in repro
+    for script in (configure, build, verify):
+        assert 'BUILD_OUTPUT_DIR:-$ROOT/build/output' in script
