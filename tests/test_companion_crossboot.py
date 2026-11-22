@@ -13,7 +13,7 @@ from eth_utils import keccak
 from usb_cold_wallet.btc import sign_btc_psbt
 from usb_cold_wallet.companion_btc import BitcoinCompanion
 from usb_cold_wallet.companion_core import CompanionSession, canonical
-from usb_cold_wallet.companion_crossboot import CrossBootManager
+from usb_cold_wallet.companion_crossboot import CrossBootManager, _package_request, discover_windows_exchange_root
 from usb_cold_wallet.companion_web import create_server
 from usb_cold_wallet.cross_boot import (
     package_v2_response, verify_v2_request, verify_v2_response,
@@ -485,3 +485,23 @@ def test_deleted_broadcasted_state_with_restored_old_exchange_fails_closed(tmp_p
     restored_btc.pending = None
     with pytest.raises(ValueError, match="authoritative online journal missing|fails closed"):
         CrossBootManager(tmp_path).restore(restored, restored_btc)
+
+
+def test_public_v2_codec_preserves_merged_evm_nonce_bound():
+    tx = {
+        "type": 2, "chainId": 11155111, "nonce": 1 << 53,
+        "to": RECIPIENT, "value": 1, "gas": 21000,
+        "maxFeePerGas": 2_000_000_000, "maxPriorityFeePerGas": 1_000_000_000,
+    }
+    with pytest.raises(ValueError, match="nonce"):
+        _package_request(
+            "evm-request", tx, request_id="ab" * 16, account=ADDRESS,
+            recipient=RECIPIENT, amount=1,
+        )
+
+
+def test_windows_label_only_autodiscovery_is_disabled_until_layout_contract(monkeypatch):
+    import usb_cold_wallet.companion_crossboot as module
+    monkeypatch.setattr(module.os, "name", "nt")
+    with pytest.raises(ValueError, match="validated GPT/layout identity"):
+        discover_windows_exchange_root()
