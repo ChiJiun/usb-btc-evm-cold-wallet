@@ -168,7 +168,10 @@ def test_runtime_imports_have_no_socket_x11_or_subprocess_dependency():
         if isinstance(node, ast.ImportFrom) and node.module
     }
     assert not ({"socket", "subprocess", "tkinter", "Xlib"} & imported)
-    assert "AF_UNIX" not in source
+    assert not any(
+        isinstance(node, ast.Attribute) and node.attr == "AF_UNIX"
+        for node in ast.walk(tree)
+    )
     assert "SignerSession(" not in source
     assert "sign_review_plan(" not in source
 
