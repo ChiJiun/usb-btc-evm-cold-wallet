@@ -502,8 +502,12 @@ class PendingRequestStore(_Journal):
         """
         self._check_broadcast_txid(request, txid)
         current = self.get(request["requestId"])
-        if (current is None or current.state != "IMPORTED_VERIFIED"
-                or type(current.metadata.get("responseDigest")) is not str
+        if current is None or current.state != "IMPORTED_VERIFIED":
+            previous_state = None if current is None else current.state
+            raise ValueError(
+                f"Invalid online state transition {previous_state!r} -> 'BROADCAST_REQUESTED'"
+            )
+        if (type(current.metadata.get("responseDigest")) is not str
                 or HEX64_RE.fullmatch(current.metadata["responseDigest"]) is None):
             raise ValueError("Broadcast request must preserve a verified response binding")
         return self._transition(
