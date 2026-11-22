@@ -186,6 +186,9 @@ jobs:
       # Raw image is the audited output; test-only .xz uses a reproducible
       # moderate compression preset to avoid -9e's excessive CPU cost.
       - name: Package and verify exact image artifact
+        # Draft feedback only needs verified image bytes and QEMU; avoid the
+        # expensive raw-image upload and xz packaging until merge-ready.
+        if: github.event_name != 'pull_request' || !github.event.pull_request.draft
         env:
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           ARTIFACT_DIR: build/verified-artifact
@@ -252,6 +255,7 @@ jobs:
           test "$expected" = "$(sed -n 's/^image_sha256=//p' "$ARTIFACT_DIR/ARTIFACT-MANIFEST.txt")"
 
       - name: Upload verified testnet-only boot image (NOT A RELEASE)
+        if: github.event_name != 'pull_request' || !github.event.pull_request.draft
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'DRAFT-SINGLE-BUILD-NOT-REPRODUCIBILITY-VERIFIED' || 'testnet-only-NOT-A-RELEASE-usb-cold-wallet' }}
