@@ -877,6 +877,6 @@ def test_draft_skips_expensive_image_packaging_and_upload():
     condition = "if: github.event_name != 'pull_request' || !github.event.pull_request.draft"
     for name in ("Package and verify exact image artifact",
                  "Upload verified testnet-only boot image (NOT A RELEASE)"):
-        job = live.split("      - name: " + name + "\\n", 1)[1]
+        job = live.split("      - name: " + name + "\n", 1)[1]
         assert job.lstrip().startswith(condition)
     assert "run: sh scripts/verify_uefi_boot.sh" in live
