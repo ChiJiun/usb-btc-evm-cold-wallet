@@ -36,15 +36,15 @@ For the **selected image-producing source SHA**, record both independent runner 
 ```sh
 sha256sum -c usb-cold-wallet.img.sha256
 sha256sum -c usb-cold-wallet.img.xz.sha256
-sha256sum -c run-1.sha256
-sha256sum -c run-2.sha256
+awk '$2 == "usb-cold-wallet.img" {print}' run-1.sha256 | sha256sum -c -
+awk '$2 == "usb-cold-wallet.img" {print}' run-2.sha256 | sha256sum -c -
 cmp run-1.sha256 run-2.sha256
 xz --test usb-cold-wallet.img.xz
 xz -dc usb-cold-wallet.img.xz | cmp - usb-cold-wallet.img
 sha256sum usb-cold-wallet.img usb-cold-wallet.img.xz
 ```
 
-Require the actual `usb-cold-wallet.img` SHA to agree with **both** runner manifests, `usb-cold-wallet.img.sha256`, and the manifest `image_sha256=`; require the compressed SHA to equal `compressed_image_sha256=`. The `bzImage` SHA must match both runner manifests (the verified artifact intentionally does not include `bzImage`; use the independent manifests and the `verify-and-publish` job's verified staging/QEMU logs). Confirm manifest `classification=TESTNET ONLY / NOT A RELEASE`, exact `commit_sha` and `event_head_sha`, run ID/attempt and GitHub workflow identity. An `xz` checksum verifies compressed bytes, while the *raw image* SHA is the identity to be flashed. Missing/expired artifact, mismatched hashes, absent actual raw bytes or untrusted run identity => **BLOCKED**, not PASS. A hash inside the same downloaded bundle alone does not authenticate its origin.
+Require the actual `usb-cold-wallet.img` SHA to agree with **both** runner manifests, `usb-cold-wallet.img.sha256`, and the manifest `image_sha256=`; require the compressed SHA to equal `compressed_image_sha256=`. The `bzImage` SHA must match both runner manifests (the verified artifact intentionally does not include `bzImage`; use the independent manifests and the `verify-and-publish` job's verified staging/QEMU logs). Do not run `sha256sum -c run-{1,2}.sha256` verbatim on this downloaded artifact: each manifest also names the **absent** `bzImage`. Confirm manifest `classification=TESTNET ONLY / NOT A RELEASE`, exact `commit_sha` and `event_head_sha`, run ID/attempt and GitHub workflow identity. An `xz` checksum verifies compressed bytes, while the *raw image* SHA is the identity to be flashed. Missing/expired artifact, mismatched hashes, absent actual raw bytes or untrusted run identity => **BLOCKED**, not PASS. A hash inside the same downloaded bundle alone does not authenticate its origin.
 
 See [the current first-hardware checklist](PHYSICAL_TWO_USB_TESTNET_CHECKLIST.md), [build instructions](BUILD.md), [#88 CI changes](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/88) and [#66 blocker](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/issues/66).
 
@@ -81,6 +81,7 @@ image=build/output/images/usb-cold-wallet.img
 # device=/dev/disk/by-id/<confirmed-whole-USB-A-disk>
 lsblk -o NAME,PATH,TRAN,SIZE,LOG-SEC,FSTYPE,LABEL,PARTUUID,PARTTYPE,PKNAME
 # Run only after assigning device to the verified whole-disk path:
+if [ -z "${device:-}" ]; then echo 'STOP: verify USB-A parent and set device first' >&2; exit 1; fi
 sudo dd if="$device" bs=1M iflag=count_bytes count="$(stat -c %s "$image")" status=none | sha256sum
 ```
 
@@ -161,12 +162,7 @@ Store redacted evidence off both USB devices (e.g. local `evidence/two-usb-m0/<r
       "exit_code": null,
       "request_id": null,
       "transaction_id": null,
-      "evidence": [
-        {
-          "path": "",
-          "sha256": ""
-        }
-      ],
+      "evidence": [],
       "security_decision": "",
       "notes": ""
     }
