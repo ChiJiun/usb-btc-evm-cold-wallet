@@ -175,7 +175,7 @@ class _Journal:
         self._records, self.recovery_warnings = self._load()
         self._validate_chains()
         if expected_tip is not None:
-            if HEX64_RE.fullmatch(expected_tip) is None:
+            if type(expected_tip) is not str or HEX64_RE.fullmatch(expected_tip) is None:
                 raise ValueError("Invalid expected state anchor")
             if self.tip_anchor() != expected_tip:
                 raise RollbackDetected("State journal tip differs from externally pinned anchor")
@@ -286,6 +286,8 @@ class _Journal:
             type(data["previousDigest"]) is not str or HEX64_RE.fullmatch(data["previousDigest"]) is None
         ):
             raise StateCorruptionError("Invalid previous state digest")
+        if type(data["state"]) is not str:
+            raise StateCorruptionError("Invalid state value")
         if type(data["metadata"]) is not dict:
             raise StateCorruptionError("State metadata must be an object")
         content = {key: value for key, value in data.items() if key != "recordDigest"}
@@ -332,7 +334,7 @@ class _Journal:
         )
 
     def get(self, request_id: str) -> StateSnapshot | None:
-        if REQUEST_ID_RE.fullmatch(request_id or "") is None:
+        if type(request_id) is not str or REQUEST_ID_RE.fullmatch(request_id) is None:
             raise ValueError("Invalid requestId")
         records = self._for_request(request_id)
         if not records:
@@ -370,8 +372,10 @@ class _Journal:
         self._reload()
         if state == "BROADCAST_REQUESTED" and self.recovery_warnings:
             raise StateCorruptionError("Unresolved journal write; broadcast is blocked")
-        if REQUEST_ID_RE.fullmatch(request_id or "") is None:
+        if type(request_id) is not str or REQUEST_ID_RE.fullmatch(request_id) is None:
             raise ValueError("Invalid requestId")
+        if type(state) is not str:
+            raise ValueError("Invalid state")
         for value, label in ((request_digest, "request digest"), (transaction_digest, "transaction digest")):
             if type(value) is not str or HEX64_RE.fullmatch(value) is None:
                 raise ValueError(f"Invalid {label}")

@@ -1,7 +1,7 @@
 # Issues #5 / #21 / #24 / #82 — independent acceptance evidence
 
-Baseline: `main` `fa66ecf2d5ea213a2fe5a640c57dd671cef967b6` (2026-11-22).
-These tests are independent of Draft PR #81. Only public, compromised test seeds
+Integrated baseline after #81: `main` `57443941d33abff96e9c804817832f7216a4cb66` (2026-11-23).
+These independent tests complement merged PR #81; this merge does not certify physical or rollback acceptance. Only public, compromised test seeds
 are permitted. Never run fault injection on a user Vault or real-money keys.
 
 ## Reproduction and decision
@@ -26,7 +26,7 @@ broadcasts or asserts physical transfer.
 | Sparrow-generated BIP84 P2WPKH PSBT sign/finalize | **NOT TESTED**; existing shared BIP174 Sparrow/Core parser fixture is incompatible with this wallet's BIP84 signing policy | Generate Sparrow testnet BIP84 PSBT with public test seed, record Sparrow/Drongo version and full unsigned PSBT hash, sign offline, verify independently and record TXID; do not relabel shared parser fixture as E2E |
 | Coverage-guided PSBT fuzz | Bounded Python line-feedback runner and weekly/manual CI workflow exist; **no new run claimed here** | Record exact run, seed, cases, crashes, duration and RSS; preserve sanitized crash SHA corpus |
 | Policy fee and recipient review | New policy-vs-Core fixture assertion; existing policy and GUI tests | Run on integrated GUI with offline independent full address confirmation |
-| BIP39/Vault missing/corrupted/truncated/power-cut | Draft PR #81 has separate public-vector and fault-injection tests | Verify #81 exact HEAD and later integrated SHA; physical FAT32 removal remains **BLOCKED** |
+| BIP39/Vault missing/corrupted/truncated/power-cut | Merged PR #81 contains public-vector and fault-injection tests | Verify #81 exact HEAD and later integrated SHA; physical FAT32 removal remains **BLOCKED** |
 | Whole-store history rollback | New cold-ledger negative control: old valid state reloads without trusted anchor; externally pinned expected tip rejects | **BLOCKED** until independent trusted monotonic anchor and checked lifecycle exist |
 | USB-A + USB-B Windows/UEFI E2E and manual broadcast | **BLOCKED** (no physical result from this PR) | Run #24/#43 acceptance with exact image SHA and equipment record |
 
@@ -39,7 +39,7 @@ The expected policy SHA or journal tip must be preserved independently of
 the rewritable USB and checked before permitting any new signing. If an
 independent current anchor is missing, the integrated cold signer must
 **fail closed**; this PR does not claim that the existing API wiring already
-implements that boundary. Do not merge/release based on a successful
+implements that boundary. Do not approve production acceptance or release based solely on a successful
 negative-control demonstration.
 
 ## Physical fault and interoperability evidence (no implied PASS)
@@ -66,5 +66,5 @@ corresponding artifacts.
 
 No signer or Vault rewrite; no real USB access; no release/mainnet permission.
 The new test changes a malformed-journal metadata parser boundary only.
-Issue #5 recovery fault work remains on PR #81 and must be reviewed at
-its own exact SHA.
+Issue #5 recovery fault work was merged in PR #81; physical FAT32 and trusted
+rollback-anchor acceptance remain blocked.
