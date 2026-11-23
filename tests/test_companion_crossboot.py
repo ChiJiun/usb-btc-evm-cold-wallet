@@ -659,6 +659,45 @@ def test_public_v2_codec_preserves_merged_evm_nonce_bound():
         )
 
 
+def test_windows_exchange_publish_uses_write_through_create_only(monkeypatch, tmp_path):
+    """API-level failure injection; not removable FAT32 hardware evidence."""
+    import usb_cold_wallet.companion_crossboot as module
+
+    observed_flags = []
+
+    def move(source, target, flags):
+        observed_flags.append(flags)
+        source, target = Path(source), Path(target)
+        if target.exists() and not (flags & 0x1):
+            return 0
+        source.replace(target)
+        return 1
+
+    class Kernel32:
+        MoveFileExW = staticmethod(move)
+
+    monkeypatch.setattr(module.ctypes, "WinDLL",
+                        lambda name, use_last_error: Kernel32(), raising=False)
+    monkeypatch.setattr(module.ctypes, "get_last_error", lambda: 183, raising=False)
+    stage, final = tmp_path / ".request.partial", tmp_path / "request.json"
+    stage.write_bytes(b"request")
+    module._windows_publish(stage, final, replace=False)
+    assert observed_flags == [0x8]
+    assert final.read_bytes() == b"request"
+    again = tmp_path / ".second.partial"
+    again.write_bytes(b"hostile replacement")
+    with pytest.raises(FileExistsError):
+        module._windows_publish(again, final, replace=False)
+    assert final.read_bytes() == b"request"
+    assert again.exists()
+
+    replacement = tmp_path / ".watch.partial"
+    replacement.write_bytes(b"public watch-only")
+    module._windows_publish(replacement, final, replace=True)
+    assert observed_flags[-1] == 0x9
+    assert final.read_bytes() == b"public watch-only"
+
+
 def test_windows_label_only_autodiscovery_is_disabled_until_layout_contract(monkeypatch):
     import usb_cold_wallet.companion_crossboot as module
     monkeypatch.setattr(module.os, "name", "nt")
