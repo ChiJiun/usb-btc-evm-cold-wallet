@@ -90,7 +90,11 @@ def main() -> int:
         )
 
     try:
-        intent = run_vt(plan, FONT, audit=_audit, on_ready=ready, on_frame=frame)
+        intent = run_vt(
+            plan, FONT, audit=_audit, on_ready=ready, on_frame=frame,
+            on_lifecycle=lambda phase: _serial(
+                "USB_WALLET_FB_POC_LIFECYCLE phase=" + phase),
+        )
         authorized = authorize_review_intent(
             plan, intent, security, rebuild_plan=_plan, audit=_audit)
         if authorized:
@@ -99,6 +103,9 @@ def main() -> int:
         security.lock("framebuffer_demo_error")
         _serial("USB_WALLET_FB_POC_ERROR class=" + type(exc).__name__)
         return 2
+    finally:
+        # The run_vt context has closed all evdev fds before this marker.
+        _serial("USB_WALLET_FB_POC_LIFECYCLE phase=session_closed")
 
     _serial(
         "USB_WALLET_FB_POC_INTENT "

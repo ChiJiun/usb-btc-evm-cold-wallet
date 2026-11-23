@@ -668,6 +668,27 @@ def authorize_review_intent(
     return True
 
 
+def _restore_tty_input(fd: int, original_settings: list) -> None:
+    """Discard GUI keystrokes before restoring the appliance's line input.
+
+    evdev and tty1 see the same physical key. The last GUI confirmation or
+    cancel key can remain buffered by tty1 even after evdev consumes it;
+    handing those bytes to the menu can corrupt the next menu choice.
+    """
+    flush_error = None
+    try:
+        termios.tcflush(fd, termios.TCIFLUSH)
+    except Exception as exc:
+        flush_error = exc
+    try:
+        # TCSAFLUSH also discards unread input during the mode transition.
+        termios.tcsetattr(fd, termios.TCSAFLUSH, original_settings)
+    except Exception as exc:
+        raise RuntimeError("Unable to restore terminal mode") from exc
+    if flush_error is not None:
+        raise RuntimeError("Unable to clear buffered GUI keyboard input") from flush_error
+
+
 def run_vt(
     plan: ReviewPlan,
     font_path: Path,
@@ -678,6 +699,7 @@ def run_vt(
     input_directory: Path = Path("/dev/input"),
     on_ready: Callable[[], None] | None = None,
     on_frame: Callable[[int, int, int, bool], None] | None = None,
+    on_lifecycle: Callable[[str], None] | None = None,
 ) -> ReviewIntent:
     """Render a verified plan on the active VT and return non-signing intent."""
     _validate_plan(plan)
@@ -705,10 +727,14 @@ def run_vt(
         try:
             if not _vt_is_active(fd, tty_number):
                 raise OSError("Requested VT is not active")
+            if on_lifecycle is not None:
+                on_lifecycle("input_attached")
             fcntl.ioctl(fd, VT_LOCKSWITCH, 0)
             vt_locked = True
             tty.setraw(fd)
             fcntl.ioctl(fd, KDSETMODE, KD_GRAPHICS)
+            if on_lifecycle is not None:
+                on_lifecycle("vt_acquired")
             ready_reported = False
             last_reported_frame: tuple[int, int, int, bool] | None = None
             # Discard any input queued before the first stable frame and after
@@ -754,10 +780,25 @@ def run_vt(
                     key = inputs.read_key()
                 except InputDeviceChanged:
                     controller.fail_closed("input_changed")
+                    if on_lifecycle is not None:
+                        on_lifecycle("input_changed")
                     break
                 before = (controller.page, controller.offset, frozenset(controller.seen))
                 if controller.action(key):
-                    # A device swap after the last draw must never authorize.
+                    # The final approval is also bound to live evdev, VT,
+                    # runtime audit and framebuffer identity, not only the
+                    # previous rendered frame. Any failure discards intent.
+                    try:
+                        inputs._assert_stable()
+                    except InputDeviceChanged:
+                        controller.fail_closed("input_changed")
+                        if on_lifecycle is not None:
+                            on_lifecycle("input_changed")
+                        break
+                    if not _vt_is_active(fd, tty_number):
+                        raise OSError("VT changed before approval")
+                    if not controller._audit_ok():
+                        raise OSError("Runtime audit failed before approval")
                     check, _ = _open_framebuffer(fb_path, framebuffer_identity)
                     check.close()
                     return ReviewIntent(plan.review_digest, True, "reviewed")
@@ -782,8 +823,10 @@ def run_vt(
                 except Exception as exc:
                     cleanup_error = cleanup_error or exc
             try:
-                termios.tcsetattr(fd, termios.TCSANOW, old_termios)
+                _restore_tty_input(fd, old_termios)
             except Exception as exc:
                 cleanup_error = cleanup_error or exc
+            if on_lifecycle is not None:
+                on_lifecycle("vt_released" if cleanup_error is None else "vt_release_failed")
             if cleanup_error is not None:
                 raise RuntimeError("Framebuffer/VT cleanup failed; review intent discarded") from cleanup_error

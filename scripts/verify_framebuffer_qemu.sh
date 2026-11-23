@@ -75,15 +75,28 @@ qemu-system-x86_64 \
     > "$TMP/qemu.log" 2>&1 &
 PID=$!
 
+marker_count() {
+    found="$(grep -F -c "$1" "$TMP/serial.log" 2>/dev/null || true)"
+    case "$found" in
+        ''|*[!0-9]*) found=0 ;;
+    esac
+    printf '%s' "$found"
+}
+
+diagnose_stage() {
+    # All counters correspond to fixed public markers. Never dump request or
+    # keystroke bytes into artifacts.
+    summary="console=$(marker_count USB_WALLET_CONSOLE_READY) start=$(marker_count USB_WALLET_CONSOLE_DEMO_START) return=$(marker_count USB_WALLET_CONSOLE_DEMO_RETURN) gui_ready=$(marker_count USB_WALLET_FB_POC_READY) vt_acquired=$(marker_count 'phase=vt_acquired') vt_released=$(marker_count 'phase=vt_released') invalid_menu=$(marker_count USB_WALLET_CONSOLE_CHOICE_INVALID)"
+    printf 'GUEST_STAGE %s\n' "$summary" | tee -a "$ACTIONS" >&2
+}
+
 wait_count() {
     marker="$1"
     expected="$2"
     limit="$3"
     count=0
     while [ "$count" -lt "$limit" ]; do
-        found="$(grep -F -c "$marker" "$TMP/serial.log" 2>/dev/null || true)"
-        # Missing serial.log can yield an empty grep count; dash requires an integer.
-        [ -n "$found" ] || found=0
+        found="$(marker_count "$marker")"
         if [ "$found" -ge "$expected" ]; then
             return 0
         fi
@@ -99,6 +112,7 @@ wait_count() {
         sleep 1
     done
     echo "ERROR: timed out waiting for $marker count $expected" >&2
+    diagnose_stage
     return 1
 }
 
@@ -135,12 +149,30 @@ client.close()
 PY
 }
 
+launch_demo() {
+    session="$1"
+    wait_count "USB_WALLET_CONSOLE_READY" "$session" 30
+    observed="$(marker_count USB_WALLET_CONSOLE_READY)"
+    if [ "$observed" -ne "$session" ]; then
+        echo "ERROR: unexpected menu return count before session $session: $observed" >&2
+        diagnose_stage
+        return 1
+    fi
+    # Each injection has its own HMP round trip, so key-up and the menu's
+    # canonical line discipline settle before Return is delivered.
+    hmp "sendkey 8"
+    sleep 1
+    hmp "sendkey ret"
+    wait_count "USB_WALLET_CONSOLE_DEMO_START" "$session" 15
+    wait_count "USB_WALLET_FB_POC_LIFECYCLE phase=vt_acquired" "$session" 30
+    wait_count "USB_WALLET_FB_POC_READY" "$session" 30
+}
+
 wait_count "USB_WALLET_CONSOLE_READY" 1 240
 CONSOLE_MS="$(date +%s%3N)"
 printf '%s\n' "console ready" >> "$ACTIONS"
 
-hmp "sendkey 8" "sendkey ret"
-wait_count "USB_WALLET_FB_POC_READY" 1 30
+launch_demo 1
 grep -F 'input=evdev' "$TMP/serial.log" >/dev/null
 GUI_MS="$(date +%s%3N)"
 READY_LINE="$(grep -F 'USB_WALLET_FB_POC_READY' "$TMP/serial.log" | tail -1)"
@@ -219,9 +251,9 @@ printf '%s\n' "positive review intent and SignerSession approval observed" >> "$
 
 # After the demo restores KD_TEXT and returns to the appliance, launch it again
 # and prove that Escape yields only a negative intent.
-wait_count "USB_WALLET_CONSOLE_READY" 2 30
-hmp "sendkey 8" "sendkey ret"
-wait_count "USB_WALLET_FB_POC_READY" 2 30
+wait_count "USB_WALLET_CONSOLE_DEMO_RETURN" 1 30
+wait_count "USB_WALLET_FB_POC_LIFECYCLE phase=vt_released" 1 30
+launch_demo 2
 hmp "sendkey esc"
 wait_count "USB_WALLET_FB_POC_INTENT reviewed=0 reason=cancelled" 1 30
 wait_count "USB_WALLET_FB_POC_SESSION state=LOCKED signing_gate=blocked" 1 30
@@ -229,25 +261,23 @@ printf '%s\n' "cancel intent observed" >> "$ACTIONS"
 
 # A live input-topology change invalidates the attended review. Re-adding the
 # keyboard permits a fresh review only; the old review can never resume.
-wait_count "USB_WALLET_CONSOLE_READY" 3 30
-hmp "sendkey 8"
-sleep 1
-hmp "sendkey ret"
-wait_count "USB_WALLET_FB_POC_READY" 3 30
+wait_count "USB_WALLET_CONSOLE_DEMO_RETURN" 2 30
+wait_count "USB_WALLET_FB_POC_LIFECYCLE phase=vt_released" 2 30
+launch_demo 3
 hmp "device_del inputkbd"
 wait_count "USB_WALLET_FB_POC_INTENT reviewed=0 reason=input_changed" 1 30
 wait_count "USB_WALLET_FB_POC_SESSION state=LOCKED signing_gate=blocked" 2 30
 printf '%s\n' "input removal failed closed" >> "$ACTIONS"
 
-wait_count "USB_WALLET_CONSOLE_READY" 4 30
+wait_count "USB_WALLET_CONSOLE_DEMO_RETURN" 3 30
+wait_count "USB_WALLET_FB_POC_LIFECYCLE phase=vt_released" 3 30
 hmp "device_add usb-kbd,id=inputkbd2,bus=xhci.0"
 sleep 2
-hmp "sendkey 8"
-sleep 1
-hmp "sendkey ret"
-wait_count "USB_WALLET_FB_POC_READY" 4 30
+launch_demo 4
 hmp "sendkey esc"
 wait_count "USB_WALLET_FB_POC_INTENT reviewed=0 reason=cancelled" 2 30
+wait_count "USB_WALLET_CONSOLE_DEMO_RETURN" 4 30
+wait_count "USB_WALLET_FB_POC_LIFECYCLE phase=vt_released" 4 30
 printf '%s\n' "input reappearance accepted only for fresh review" >> "$ACTIONS"
 
 BOOT_MS="$(printf '%s\n' "$READY_LINE" | sed -n 's/.*boot_ms=\([0-9][0-9]*\).*/\1/p')"

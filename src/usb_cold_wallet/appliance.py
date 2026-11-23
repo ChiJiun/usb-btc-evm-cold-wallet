@@ -269,7 +269,11 @@ def _framebuffer_demo() -> None:
     if _security_locked(security_status()):
         print("LOCKDOWN: runtime audit failed; framebuffer demo cancelled.")
         return
-    subprocess.run([sys.executable, str(FRAMEBUFFER_DEMO)], check=False)
+    _serial_marker("USB_WALLET_CONSOLE_DEMO_START")
+    try:
+        subprocess.run([sys.executable, str(FRAMEBUFFER_DEMO)], check=False)
+    finally:
+        _serial_marker("USB_WALLET_CONSOLE_DEMO_RETURN")
 
 
 def _initialize_policy() -> None:
@@ -386,6 +390,7 @@ def main() -> int:
             subprocess.run(["poweroff"], check=False)
             return 0
         else:
+            _serial_marker("USB_WALLET_CONSOLE_CHOICE_INVALID")
             print("Unknown option.")
 
 

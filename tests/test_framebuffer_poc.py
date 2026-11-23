@@ -230,6 +230,39 @@ def test_runtime_imports_have_no_socket_x11_or_subprocess_dependency():
     assert "sign_review_plan(" not in source
 
 
+def test_vt_return_flushes_gui_keystrokes_before_restoring_menu(monkeypatch):
+    calls = []
+    original = ["canonical-menu-state"]
+    monkeypatch.setattr(
+        fb.termios, "tcflush",
+        lambda fd, how: calls.append(("flush", fd, how)),
+    )
+    monkeypatch.setattr(
+        fb.termios, "tcsetattr",
+        lambda fd, when, value: calls.append(("restore", fd, when, value)),
+    )
+    fb._restore_tty_input(17, original)
+    assert calls == [
+        ("flush", 17, fb.termios.TCIFLUSH),
+        ("restore", 17, fb.termios.TCSAFLUSH, original),
+    ]
+
+
+def test_vt_flush_failure_still_restores_tty_but_fails_closed(monkeypatch):
+    calls = []
+    def fail_flush(fd, how):
+        calls.append(("flush", fd, how))
+        raise OSError("input flush failed")
+    monkeypatch.setattr(fb.termios, "tcflush", fail_flush)
+    monkeypatch.setattr(
+        fb.termios, "tcsetattr",
+        lambda fd, when, settings: calls.append(("restore", fd, when)),
+    )
+    with pytest.raises(RuntimeError, match="buffered GUI keyboard"):
+        fb._restore_tty_input(17, ["canonical"])
+    assert calls[-1] == ("restore", 17, fb.termios.TCSAFLUSH)
+
+
 def test_vt_graphics_and_switch_lock_controls_remain_required():
     assert fb.KD_GRAPHICS == 1
     assert fb.KD_TEXT == 0
