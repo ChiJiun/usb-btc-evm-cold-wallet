@@ -235,6 +235,7 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                     if crossboot is not None and crossboot.available:
                         if session.pending is None or session.pending.get("stage") != "verified":
                             raise ValueError("Broadcast requires a verified pending transaction")
+                        crossboot.require_trusted_chain_evidence()
                         crossboot.mark_broadcast_requested(
                             session, btc_session, session.pending["tx_hash"]
                         )
@@ -298,6 +299,7 @@ def handler_for(session: CompanionSession, btc_session: BitcoinCompanion, token:
                         if crossboot is not None and crossboot.available:
                             if btc_session.pending is None or btc_session.pending.get("stage") != "verified":
                                 raise ValueError("BTC broadcast requires a verified pending transaction")
+                            crossboot.require_trusted_chain_evidence()
                             crossboot.mark_broadcast_requested(
                                 session, btc_session, btc_session.pending["txid"]
                             )
