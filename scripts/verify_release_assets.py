@@ -32,6 +32,8 @@ ASSET_RE = re.compile(
 CHECKSUM_RE = re.compile(r"([a-fA-F0-9]{64}) [ *]([A-Za-z0-9][A-Za-z0-9._+-]*)")
 MAX_MANIFEST_BYTES = 128 * 1024
 MAX_RAW_IMAGE_BYTES = 16 * 1024 * 1024 * 1024
+# The download bound is independent of the decompressed-image safety bound.
+MAX_COMPRESSED_IMAGE_BYTES = 16 * 1024 * 1024 * 1024
 REQUIRED_STAGED_FILES = ("SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt")
 DEFAULT_AUTHORIZED_RELEASE_TAGGER_EMAILS = frozenset({"0311gino@gmail.com"})
 DEFAULT_AUTHORIZED_RELEASE_ACTORS = frozenset({"ChiJiun"})
@@ -814,7 +816,7 @@ def verify_candidate_artifacts(
     if {entry.name for entry in root.iterdir()} != expected_names | {"SHA256SUMS"}:
         raise ReleaseVerificationError("Unexpected file or directory in candidate artifact")
     limits = {
-        asset: MAX_RAW_IMAGE_BYTES,
+        asset: MAX_COMPRESSED_IMAGE_BYTES,
         "SBOM.spdx.json": 256 * 1024 * 1024,
         "release-metadata.json": MAX_MANIFEST_BYTES,
         "build-host-packages.txt": 8 * 1024 * 1024,
