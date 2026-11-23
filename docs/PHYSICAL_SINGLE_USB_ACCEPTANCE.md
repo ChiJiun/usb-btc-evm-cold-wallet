@@ -11,15 +11,38 @@
 - Windows 連網／系統權限可以更改普通 USB 的 ESP、Vault、TX_TRANSFER，GPT 只代表結構，沒有 secure boot／防回滾保障。不得把此工具當作 USB 硬體信任證明。
 - 證據只收 public testnet txid、硬體型號、firmware 版本、分割區 label/type/size、timestamp、public image commit/hash 與**經人工去識別**的截圖或文字紀錄位置。禁止助記詞、紙本 policy anchor、密碼、私鑰、vault、完整未遮罩交易請求、可識別裝置序號。實體中斷測試使用無資產測試帳戶與可重建測試 USB。
 
-## Windows 執行（PowerShell 5.1+）
+## Windows 唯讀 inventory 與 media readback（PowerShell 5.1+）
 
-從 repo root 開啟 PowerShell；`F:` 只是當次辨識範例，請先從 Explorer 確認該 drive letter 所指裝置：
+目前尚無 #76 自動發布、具獨立可信來源雜湊的最終 manifest；缺少來源驗證時必須 BLOCKED。先以最終整合版本的 verify_image.py 核對 image 本身的 primary/backup GPT、FAT 與 geometry，再建立以下 JSON manifest，從可信 CI/簽章另行取得 manifest SHA-256、image SHA-256、source commit。不得信任同一個未驗證檔案包自述的 digest。
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/physical_usb_inventory.ps1 -DriveLetter F -ExpectedModel "General UDisk" -ExpectedDiskGuid "<實際預期 GPT disk GUID>" -ImagePath "C:\\wallet-tests\\usb-cold-wallet.img" -ExpectedSha256 "<可信來源 64 hex>" -Json
-```
+Manifest schemaVersion 1 的三分割區內容如下（sourceCommit、imageSha256、imageSizeBytes、model 需填入最終 exact-image 驗證結果）：
 
-輸出 JSON 包含 diskNumber（**只作識別，絕不可用於自動刷寫**）、bus、容量、GPT style、分割區、imageSha256、imageMatchesExpected。結果 FAIL/BLOCKED 時停止實機操作。注意未能讀取 USB 原始 bytes；此步不會驗證 GPT backup CRC，刷寫後必須在 Linux / final image verifier 與實機 mount audit 分別驗證。
+~~~json
+{
+  "schemaVersion": 1,
+  "layout": "single-usb-issue-37",
+  "sourceCommit": "<40-hex exact commit>",
+  "imageSha256": "<64-hex exact image sha256>",
+  "imageSizeBytes": 0,
+  "diskGuid": "f1448aa1-28cc-54bf-8fdd-3008514c0ab5",
+  "model": "<verified USB model>",
+  "partitions": [
+    {"partitionNumber": 1, "partitionGuid": "e2bd6d1b-8de5-502d-a897-c53a8e60f46b", "gptType": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b", "offsetBytes": 1048576, "sizeBytes": 67108864, "filesystem": "FAT", "label": "USBCOLD_EFI"},
+    {"partitionNumber": 2, "partitionGuid": "18f1c36f-d5c0-5052-9cd2-03e9c2a48f00", "gptType": "0fc63daf-8483-4772-8e79-3d69d8477de4", "offsetBytes": 68157440, "sizeBytes": 67108864, "filesystem": "FAT", "label": "COLD_VAULT"},
+    {"partitionNumber": 3, "partitionGuid": "42f6f5d4-9310-5ac3-b5d4-1540cbe7d6b4", "gptType": "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7", "offsetBytes": 135266304, "sizeBytes": 536870912, "filesystem": "FAT32", "label": "TX_TRANSFER"}
+  ]
+}
+~~~
+
+上述 layout GUID/geometry 來自 #76 當前 genimage.cfg/identify_media.py；不得在 #76/#79 整合後未重新檢驗就沿用。
+
+~~~powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/physical_usb_inventory.ps1 -DriveLetter F -ImagePath "C:\wallet-tests\usb-cold-wallet.img" -LayoutManifest "C:\wallet-tests\trusted-layout.json" -ExpectedManifestSha256 "<independent 64-hex manifest SHA>" -ExpectedCommit "<exact 40-hex commit>" -ExpectedSha256 "<trusted 64-hex image SHA>" -VerifyMediaReadback -Json
+~~~
+
+每次拔插都需重新執行 drive letter → partition → parent disk discovery。PhysicalDriveN 只在當次新辨識後供唯讀 raw media 開啟，不能保存重用或當作寫入目標。逐一驗證全部三個 partition 的 disk number、unique GUID、type GUID、offset、size、filesystem、FAT label、drive letter，並拒絕非 USB、GUID 重複、假 label、錯誤 parent 或轉接替換。
+
+輸出 imageFileVerified（主機檔案 hash）、deviceLayoutVerified（分割區/原始 FAT metadata）、writtenMediaVerified（≤ 1 GiB 的 raw image 長度 prefix 唯讀 readback hash）三個獨立狀態；三者全真只產生 INVENTORY_VERIFIED，physicalAcceptance 始終 NOT TESTED。Windows 無法取得唯讀 physical readback 時直接 BLOCKED。此比對不提供硬體不可複製身分、Secure Boot 或防回滾保證。
 
 ## 跨重開機紀錄
 
@@ -27,13 +50,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/physical_usb_invento
 
 ```powershell
 py -3 scripts/physical_acceptance.py init --file C:\\wallet-tests\\evidence\\run.json --commit <40-hex-exact-commit> --image-sha256 <64-hex> --hardware "ThinkPad T14" --firmware "UEFI 1.20" --device-identity "redacted-usb-test-a"
-py -3 scripts/physical_acceptance.py record --file C:\\wallet-tests\\evidence\\run.json --case WIN_USB_ID --status PASS --evidence "inventory-redacted.json" --command "physical_usb_inventory.ps1 WIN_USB_ID"
+py -3 scripts/physical_acceptance.py record --file C:\\wallet-tests\\evidence\\run.json --case WIN_USB_ID --status PASS --evidence "inventory-redacted.json" --command "physical_usb_inventory.ps1 WIN_USB_ID" --exit-code 0 --operator-verified --note "Observed physical readback and full GPT layout"
 py -3 scripts/physical_acceptance.py boot --file C:\\wallet-tests\\evidence\\run.json --phase WINDOWS_TO_USB --seconds 78 --evidence "boot-timing-redacted.txt"
 py -3 scripts/physical_acceptance.py tx --file C:\\wallet-tests\\evidence\\run.json --chain sepolia --txhash <0x...64-hex> --evidence "sepolia-explorer-redacted.txt"
 py -3 scripts/physical_acceptance.py show --file C:\\wallet-tests\\evidence\\run.json
 ```
 
-若測試 Windows 沒有 Python，記錄工具可在**另外的測試工程機**執行，傳輸**僅公開、已去識別**的步驟與時間；產品 Companion 在驗收時仍必須證明無 Python/Node 依賴。受測 USB OS 不需要 Python CLI 操作此工具。JSON 的所有 cases 初值為 NOT TESTED；人工判定 PASS 需已存在於 journal 同目錄的非空證據檔、SHA-256 和實際執行的 command/test case；修改或移除證據會使 journal 載入失敗，FAIL / BLOCKED 必須保留原因。重開機時間須由人工實測，不能用命令呼叫時間推算。
+若測試 Windows 沒有 Python，記錄工具可在**另外的測試工程機**執行，傳輸**僅公開、已去識別**的步驟與時間；產品 Companion 在驗收時仍必須證明無 Python/Node 依賴。受測 USB OS 不需要 Python CLI 操作此工具。JSON 所有 cases 初值為 NOT TESTED。人工判定 PASS 須具既有證據檔及 SHA-256、實際 command、退出碼 0、--note 觀測及 --operator-verified。WIN_USB_ID / GPT_LAYOUT 必須由 INVENTORY_VERIFIED JSON 佐證，且 writtenMediaVerified 為 true；只有 image SHA 不可通過這兩項。證據超過 30 天或遭竄改、缺欄位、symlink/junction、partial write 均拒絕，FAIL/BLOCKED 保留原因。重開機時間須由人工實測，不能用命令呼叫時間推算。
 
 ## E2E 測試矩陣
 
@@ -81,4 +104,8 @@ py -3 scripts/physical_acceptance.py show --file C:\\wallet-tests\\evidence\\run
 
 ## Journal 與證據限制
 
-Journal schemaVersion 2。`PASS` 需要實際檔案（與 journal 同目錄）、SHA-256、`--command`，每筆 observation 綁定 source commit、image SHA-256、device identity 及 UTC 時間。先以當次 Windows inventory 確認 GPT disk GUID；GUID 與 image digest 未提供時 inventory 回報 BLOCKED。原始 journal 的內文與檔案可由本機使用者整體替換，因此此功能提供可稽核完整性檢查，**不構成不可否認證明或防回滾 trusted anchor**。不得以自行建立的文字檔冒充真實硬體驗收結果。
+Journal schemaVersion 2。`PASS` 需要實際檔案（與 journal 同目錄）、SHA-256、`--command`，每筆 observation 綁定 source commit、image SHA-256、device identity 及 UTC 時間。當次 Windows inventory 必須核對 GPT disk/partition GUID、parent、offset、size、filesystem、label、傳輸磁碟機代號及 physical readback，缺少 exact image manifest/commit/digest 均回報 BLOCKED。原始 journal 的內文與檔案可由本機使用者整體替換，因此此功能提供可稽核完整性檢查，**不構成不可否認證明或防回滾 trusted anchor**。不得以自行建立的文字檔冒充真實硬體驗收結果。
+
+## Harness 測試與真機驗收分離
+
+PowerShell fixtures 與 Python unit tests 只證明 harness fail-closed 行為，CI 成功標記 harness unit-test PASS。#66/#43 真實 USB physical acceptance 仍為 NOT TESTED，不因本 PR 合併而關閉；後續須以整合後最終 image 重測 Windows 兩次插拔、錯誤裝置/相同 label、USB 真機 UEFI/GUI、BTC testnet/Sepolia 跨重啟、斷電持久化與 replay trusted anchor。測試可重建專用 USB，禁止以 CI/mock 證據替代真機。
