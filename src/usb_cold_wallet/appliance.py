@@ -214,6 +214,10 @@ def _security_locked(status: list[str]) -> bool:
 
 
 def mount_transfer() -> bool:
+    # Public integration callers may invoke this without the console menu.
+    # Never mount removable exchange media after a failed boot audit.
+    if LOCKDOWN.exists():
+        return False
     TRANSFER.mkdir(parents=True, exist_ok=True)
     device = _unique_transfer_device()
     if device is None:

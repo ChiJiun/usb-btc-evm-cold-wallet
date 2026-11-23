@@ -108,7 +108,12 @@ fi
 # cold runtime. GPT bit 60 is verified from raw media separately; Linux does
 # not treat that GPT attribute as a generic block-device write lock.
 if [ "$FAILED" -eq 0 ] && [ -n "$BOOT_DEVICE" ]; then
-	if awk -v source="$BOOT_DEVICE" '$1 == source { found=1 } END { exit found ? 0 : 1 }' /proc/mounts 2>/dev/null; then
+	# Match the kernel major:minor identity, not a spelling of /dev/sdX1.
+	# A read-only mount via /dev/disk/by-* must be rejected as well.
+	BOOT_MAJMIN="$(cat "/sys/class/block/${BOOT_DEVICE##*/}/dev" 2>/dev/null || true)"
+	if [ -z "$BOOT_MAJMIN" ] || [ ! -r /proc/self/mountinfo ]; then
+		fail "boot partition mount identity or mountinfo unavailable"
+	elif awk -v dev="$BOOT_MAJMIN" '$3 == dev { found=1 } END { exit found ? 0 : 1 }' /proc/self/mountinfo 2>/dev/null; then
 		fail "boot partition is mounted in cold runtime"
 	else
 		pass "boot partition is not mounted in cold runtime"
@@ -172,21 +177,17 @@ else
 	fail "COLD_VAULT source/type does not match verified PARTUUID device"
 fi
 
-UNEXPECTED_RW="$(
+# Read-only mounts can still expose internal disks or the ESP to the
+# appliance. Permit only the verified vault and the minimal pseudo-filesystems.
+UNEXPECTED_PERSISTENT="$(
 	awk '
-	function hasopt(options, needle, n, parts, i) {
-		n = split(options, parts, ",")
-		for (i = 1; i <= n; i++) if (parts[i] == needle) return 1
-		return 0
-	}
-	hasopt($4, "rw") &&
 	$2 != "/mnt/cold-vault" &&
 	$3 !~ /^(rootfs|tmpfs|proc|sysfs|devtmpfs|devpts|cgroup2|pstore|tracefs)$/ {
 		print $2 " (" $1 ", " $3 ")"
 	}' /proc/mounts 2>/dev/null || true
 )"
-if [ -n "$UNEXPECTED_RW" ]; then
-	fail "unexpected writable non-memory mount(s): $UNEXPECTED_RW"
+if [ -n "$UNEXPECTED_PERSISTENT" ]; then
+	fail "unexpected persistent mount(s): $UNEXPECTED_PERSISTENT"
 else
 	pass "no unexpected writable persistent filesystem mounted"
 fi

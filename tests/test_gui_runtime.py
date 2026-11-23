@@ -29,6 +29,8 @@ def _live_mounts(tmp_path: Path):
     mountinfo = tmp_path / "mountinfo"
     vault_device = tmp_path / "vault-device"
     vault_device.write_text("/dev/sdb2\n", encoding="ascii")
+    boot_device = tmp_path / "boot-device"
+    boot_device.write_text("/dev/sdb1\n", encoding="ascii")
     mountinfo.write_text(
         "1 0 0:1 / / rw - rootfs rootfs rw\n"
         "2 1 8:18 / /mnt/cold-vault rw,nodev,nosuid,noexec,sync,fmask=0177,dmask=0077 - vfat /dev/sdb2 rw,sync\n"
@@ -40,15 +42,19 @@ def _live_mounts(tmp_path: Path):
     sys_root = tmp_path / "sys-dev-block"
     sys_root.mkdir()
     devices = tmp_path / "devices" / "block"
-    for disk, parts in {"sdb": ("sdb2", "sdb3"), "sdc": ("sdc2",)}.items():
+    for disk, parts in {"sdb": ("sdb1", "sdb2", "sdb3"), "sdc": ("sdc2",)}.items():
         disk_dir = devices / disk
         disk_dir.mkdir(parents=True, exist_ok=True)
         (disk_dir / "diskseq").write_text("101" if disk == "sdb" else "202", encoding="ascii")
         for part in parts:
             partition_dir = disk_dir / part
             partition_dir.mkdir(parents=True)
-            (partition_dir / "partition").write_text("2", encoding="ascii")
-    for devno, part in (("8:18", "sdb2"), ("8:19", "sdb3"), ("8:34", "sdc2")):
+            (partition_dir / "partition").write_text(part[-1], encoding="ascii")
+            (partition_dir / "dev").write_text(
+                {"sdb1": "8:17", "sdb2": "8:18", "sdb3": "8:19", "sdc2": "8:34"}[part],
+                encoding="ascii",
+            )
+    for devno, part in (("8:17", "sdb1"), ("8:18", "sdb2"), ("8:19", "sdb3"), ("8:34", "sdc2")):
         disk = part[:3]
         (sys_root / devno).symlink_to(devices / disk / part)
     boot_sysfs_path = tmp_path / "boot-sysfs-path"
@@ -58,6 +64,7 @@ def _live_mounts(tmp_path: Path):
     return {
         "proc_mountinfo": mountinfo,
         "vault_device": vault_device,
+        "boot_device": boot_device,
         "boot_sysfs_path": boot_sysfs_path,
         "boot_diskseq": boot_diskseq,
         "sys_dev_block": sys_root,
@@ -209,6 +216,45 @@ def test_live_mount_allows_only_boot_verified_same_device_transfer(tmp_path):
         encoding="utf-8",
     )
     assert not runtime_audit(**kwargs)[0]
+
+
+def test_live_audit_rejects_readonly_boot_alias_and_other_persistent_mounts(tmp_path):
+    checks = tmp_path / "boot-checks.txt"
+    _boot_checks(checks)
+    swaps = tmp_path / "swaps"
+    swaps.write_text("Filename Type Size Used Priority\n", encoding="utf-8")
+    live = _live_mounts(tmp_path)
+    kwargs = dict(
+        boot_checks=checks, lockdown=tmp_path / "no-lockdown",
+        proc_net=tmp_path / "no-net", proc_swaps=swaps, **live,
+    )
+    assert runtime_audit(**kwargs)[0]
+    original = live["proc_mountinfo"].read_text(encoding="utf-8")
+
+    # The boot partition must be rejected by major:minor even when the source
+    # spelling is a symlink and the filesystem is mounted read-only.
+    live["proc_mountinfo"].write_text(
+        original + "4 1 8:17 / /mnt/esp ro,nodev,nosuid - "
+        "vfat /dev/disk/by-partuuid/boot ro\n", encoding="utf-8",
+    )
+    ok, findings = runtime_audit(**kwargs)
+    assert not ok
+    assert any("boot partition is mounted in live runtime" in line for line in findings)
+
+    # Unapproved persistent mounts must also be rejected if mounted read-only.
+    live["proc_mountinfo"].write_text(
+        original + "4 1 8:34 / /mnt/internal ro,nodev,nosuid - "
+        "ext4 /dev/sdc2 ro\n", encoding="utf-8",
+    )
+    ok, findings = runtime_audit(**kwargs)
+    assert not ok
+    assert any("unexpected live persistent mount" in line for line in findings)
+
+    live["proc_mountinfo"].write_text(original, encoding="utf-8")
+    live["boot_device"].write_text("/dev/sdc1\n", encoding="ascii")
+    ok, findings = runtime_audit(**kwargs)
+    assert not ok
+    assert any("boot partition identity unavailable" in line for line in findings)
 
 
 def test_runtime_audit_rejects_usb_replacement_even_if_device_name_is_reused(tmp_path):

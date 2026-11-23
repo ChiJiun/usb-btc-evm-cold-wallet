@@ -34,6 +34,7 @@ BOOT_CHECKS = Path("/run/usb-wallet/boot-checks.txt")
 LOCKDOWN = Path("/run/usb-wallet/lockdown")
 MOUNTINFO = Path("/proc/self/mountinfo")
 VAULT_DEVICE = Path("/run/usb-wallet/vault-device")
+BOOT_DEVICE = Path("/run/usb-wallet/boot-device")
 TRANSFER_DEVICE = Path("/run/usb-wallet/transfer-device")
 BOOT_SYSFS_PATH = Path("/run/usb-wallet/boot-sysfs-path")
 BOOT_DISKSEQ = Path("/run/usb-wallet/boot-diskseq")
@@ -237,6 +238,7 @@ def _current_mount_evidence(
     mountinfo: Path,
     vault_device: Path,
     transfer_device: Path = TRANSFER_DEVICE,
+    boot_device: Path = BOOT_DEVICE,
     boot_sysfs_path: Path = BOOT_SYSFS_PATH,
     boot_diskseq: Path = BOOT_DISKSEQ,
     sys_dev_block: Path = SYS_DEV_BLOCK,
@@ -276,6 +278,26 @@ def _current_mount_evidence(
         findings.append("PASS: live RAM-backed root")
     required = {"rw", "nodev", "nosuid", "noexec", "sync", "fmask=0177", "dmask=0077"}
     vault_disk = _mounted_disk(vault[0], sys_dev_block) if len(vault) == 1 else None
+
+    # Match the kernel's major:minor, including read-only ESP mounts made via
+    # by-partuuid aliases. A string comparison against /dev/sdX1 is insufficient.
+    try:
+        expected_boot = boot_device.read_text(encoding="ascii").strip()
+        if not re.fullmatch(r"/dev/sd[a-z]+1", expected_boot) or vault_disk is None:
+            raise ValueError("Missing exact boot partition")
+        boot_partition = (vault_disk / Path(expected_boot).name).resolve(strict=True)
+        if (boot_partition.parent != vault_disk
+                or (boot_partition / "partition").read_text(encoding="ascii").strip() != "1"):
+            raise ValueError("Boot partition is not on verified vault disk")
+        boot_devno = (boot_partition / "dev").read_text(encoding="ascii").strip()
+        if not re.fullmatch(r"[0-9]+:[0-9]+", boot_devno):
+            raise ValueError("Boot partition major:minor is malformed")
+        if any(m["device"] == boot_devno for m in mounts):
+            findings.append("FAIL: boot partition is mounted in live runtime")
+        else:
+            findings.append("PASS: boot partition remains unmounted")
+    except (OSError, RuntimeError, ValueError):
+        findings.append("FAIL: live boot partition identity unavailable")
 
     # Pin the kernel block-device instance that passed boot-time GPT/FAT checks.
     # A later unplug/replug may reuse /dev/sdX and public GUIDs, so the live
@@ -342,13 +364,12 @@ def _current_mount_evidence(
         "cgroup2", "pstore", "tracefs",
     }
     for mounted in mounts:
-        options = mounted["options"] | mounted["super"]
-        if ("rw" in options and mounted["type"] not in safe_pseudo
+        if (mounted["type"] not in safe_pseudo
                 and mounted["target"] not in ("/mnt/cold-vault", "/mnt/transfer")):
-            findings.append("FAIL: unexpected live writable persistent mount")
+            findings.append("FAIL: unexpected live persistent mount (including read-only)")
             break
     if not any(x.startswith("FAIL:") for x in findings):
-        findings.append("PASS: no unexpected writable persistent filesystem mounted now")
+        findings.append("PASS: no unexpected persistent filesystem mounted now")
     return findings
 
 
@@ -361,6 +382,7 @@ def runtime_audit(
     proc_mountinfo: Path = MOUNTINFO,
     vault_device: Path = VAULT_DEVICE,
     transfer_device: Path = TRANSFER_DEVICE,
+    boot_device: Path = BOOT_DEVICE,
     boot_sysfs_path: Path = BOOT_SYSFS_PATH,
     boot_diskseq: Path = BOOT_DISKSEQ,
     sys_dev_block: Path = SYS_DEV_BLOCK,
@@ -407,6 +429,7 @@ def runtime_audit(
         proc_mountinfo,
         vault_device,
         transfer_device,
+        boot_device,
         boot_sysfs_path,
         boot_diskseq,
         sys_dev_block,

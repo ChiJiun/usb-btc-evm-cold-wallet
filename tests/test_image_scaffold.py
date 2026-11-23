@@ -164,6 +164,9 @@ def test_boot_audit_binds_vault_to_unique_partuuid_and_boot_device():
     assert "/usr/libexec/usb-wallet-identify-media" in init
     assert "blkid -t" not in init and "blkid -s" not in init
     assert "boot and vault partitions share verified block parent" in init
+    assert 'BOOT_MAJMIN=' in init
+    assert '/proc/self/mountinfo' in init
+    assert '$3 == dev' in init
     assert '"$VAULT_DEVICE" /mnt/cold-vault' in init
     assert "COLD_VAULT mount source matches verified PARTUUID device" in init
     assert "-L COLD_VAULT" not in init
@@ -178,6 +181,8 @@ def test_boot_audit_covers_memory_swap_and_persistence_and_fails_closed():
     assert "root filesystem is RAM-backed" in init
     assert "no active swap" in init
     assert "no unexpected writable persistent filesystem mounted" in init
+    assert "UNEXPECTED_PERSISTENT=" in init
+    assert 'hasopt($4, "rw")' not in init
     assert 'LOCKDOWN=/run/usb-wallet/lockdown' in init
     assert 'BOOT_PARENT_FILE=/run/usb-wallet/boot-parent' in init
     assert 'VAULT_DEVICE_FILE=/run/usb-wallet/vault-device' in init

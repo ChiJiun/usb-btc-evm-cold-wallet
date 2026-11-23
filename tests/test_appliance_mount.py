@@ -31,6 +31,17 @@ def _identity_files(
     monkeypatch.setattr(appliance, "TRANSFER_DEVICE_FILE", transfer_file)
 
 
+def test_transfer_mount_refuses_lockdown_before_scanning_or_mounting(monkeypatch, tmp_path):
+    lockdown = tmp_path / "lockdown"
+    lockdown.touch()
+    monkeypatch.setattr(appliance, "LOCKDOWN", lockdown)
+    monkeypatch.setattr(
+        appliance, "_unique_transfer_device",
+        lambda: (_ for _ in ()).throw(AssertionError("No device discovery during lockdown")),
+    )
+    assert appliance.mount_transfer() is False
+
+
 def test_transfer_mount_rejects_ambiguous_or_missing_label(monkeypatch, tmp_path):
     monkeypatch.setattr(appliance, "TRANSFER", tmp_path)
     monkeypatch.setattr(appliance, "_unique_transfer_device", lambda: None)
