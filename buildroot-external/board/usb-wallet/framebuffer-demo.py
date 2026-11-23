@@ -83,8 +83,14 @@ def main() -> int:
         rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         _serial(f"USB_WALLET_FB_POC_READY boot_ms={boot_ms} rss_kb={rss_kb} input=evdev")
 
+    def frame(page: int, offset: int, bottom: int, acknowledged: bool) -> None:
+        _serial(
+            f"USB_WALLET_FB_POC_FRAME page={page} offset={offset} "
+            f"bottom={bottom} acknowledged={int(acknowledged)}"
+        )
+
     try:
-        intent = run_vt(plan, FONT, audit=_audit, on_ready=ready)
+        intent = run_vt(plan, FONT, audit=_audit, on_ready=ready, on_frame=frame)
         authorized = authorize_review_intent(
             plan, intent, security, rebuild_plan=_plan, audit=_audit)
         if authorized:

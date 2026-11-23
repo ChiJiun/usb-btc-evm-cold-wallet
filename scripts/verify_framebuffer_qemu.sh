@@ -82,6 +82,8 @@ wait_count() {
     count=0
     while [ "$count" -lt "$limit" ]; do
         found="$(grep -F -c "$marker" "$TMP/serial.log" 2>/dev/null || true)"
+        # Missing serial.log can yield an empty grep count; dash requires an integer.
+        [ -n "$found" ] || found=0
         if [ "$found" -ge "$expected" ]; then
             return 0
         fi
@@ -183,18 +185,28 @@ PY
 cp "$TMP/framebuffer-gui.ppm" "$SCREENSHOT"
 printf '%s\n' "actual QEMU screendump captured" >> "$ACTIONS"
 
-# The fixed EVM ReviewPlan contains five pages. Exercise navigation and explicit
-# acknowledgement on every page. DOWN is sent once on each page as an input-path
-# smoke; host tests cover long-page mandatory scrolling.
+# Follow rendered framebuffer state, not a guessed scroll count. The public
+# demo emits only pagination data, never transaction fields. Wait for each
+# completed frame and input-drain before sending the next synthetic key.
 page=1
 while [ "$page" -le 5 ]; do
-    hmp "sendkey down"
-    sleep 1
+    wait_count "USB_WALLET_FB_POC_FRAME page=$page offset=0 " 1 20
+    frame="$(grep -F "USB_WALLET_FB_POC_FRAME page=$page offset=0 " "$TMP/serial.log" | tail -1)"
+    bottom="$(printf '%s\n' "$frame" | sed -n 's/.* bottom=\([0-9][0-9]*\) acknowledged=.*/\1/p')"
+    case "$bottom" in
+        ''|*[!0-9]*) echo "ERROR: missing/invalid guest scroll bound for page $page" >&2; exit 1 ;;
+    esac
+    [ "$bottom" -le 256 ] || { echo "ERROR: guest scroll bound exceeds CI limit" >&2; exit 1; }
+    offset=0
+    while [ "$offset" -lt "$bottom" ]; do
+        hmp "sendkey down"
+        offset=$((offset + 1))
+        wait_count "USB_WALLET_FB_POC_FRAME page=$page offset=$offset bottom=$bottom acknowledged=0" 1 20
+    done
     hmp "sendkey ret"
-    sleep 1
+    wait_count "USB_WALLET_FB_POC_FRAME page=$page offset=$bottom bottom=$bottom acknowledged=1" 1 20
     if [ "$page" -lt 5 ]; then
         hmp "sendkey right"
-        sleep 1
     fi
     page=$((page + 1))
 done

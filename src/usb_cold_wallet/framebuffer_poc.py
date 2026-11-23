@@ -677,6 +677,7 @@ def run_vt(
     fb_path: str | None = None,
     input_directory: Path = Path("/dev/input"),
     on_ready: Callable[[], None] | None = None,
+    on_frame: Callable[[int, int, int, bool], None] | None = None,
 ) -> ReviewIntent:
     """Render a verified plan on the active VT and return non-signing intent."""
     _validate_plan(plan)
@@ -709,6 +710,7 @@ def run_vt(
             tty.setraw(fd)
             fcntl.ioctl(fd, KDSETMODE, KD_GRAPHICS)
             ready_reported = False
+            last_reported_frame: tuple[int, int, int, bool] | None = None
             # Discard any input queued before the first stable frame and after
             # every visual state change. Approval cannot ride behind a
             # navigation/scroll key while the next frame is still being drawn.
@@ -742,6 +744,12 @@ def run_vt(
                 if not ready_reported and on_ready is not None:
                     on_ready()
                     ready_reported = True
+                # Report completed frames only; no request values or wallet material.
+                frame_state = (controller.page + 1, controller.offset,
+                               controller.scroll_bottom, controller.page in controller.seen)
+                if on_frame is not None and frame_state != last_reported_frame:
+                    on_frame(*frame_state)
+                    last_reported_frame = frame_state
                 try:
                     key = inputs.read_key()
                 except InputDeviceChanged:
