@@ -76,7 +76,9 @@ def _read_regular(path: Path, limit: int) -> bytes:
     _safe_directory(path.parent)
     if path.is_symlink() or not path.is_file():
         raise ValueError("Missing or unsafe regular evidence file")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    # Windows os.open defaults to CRT text mode: CRLF translation would corrupt
+    # the byte-count/SHA contract. Always read raw bytes on every OS.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     fd = os.open(path, flags)
     try:
         import stat
