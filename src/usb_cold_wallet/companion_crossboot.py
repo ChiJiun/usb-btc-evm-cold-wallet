@@ -86,6 +86,29 @@ def _write_all(fd: int, raw: bytes) -> None:
     os.fsync(fd)
 
 
+def _windows_publish(stage: Path, final: Path, *, replace: bool) -> None:
+    """Write-through Windows publish; no filesystem power-loss guarantee.
+
+    Without MOVEFILE_REPLACE_EXISTING, an existing request/response name must
+    never be overwritten, even during a concurrent publication attempt.
+    """
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    move = kernel32.MoveFileExW
+    move.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    move.restype = ctypes.c_int
+    flags = 0x00000008 | (0x00000001 if replace else 0)  # WRITE_THROUGH / REPLACE_EXISTING
+    if not move(str(stage), str(final), flags):
+        error = ctypes.get_last_error()
+        if error in (80, 183):  # ERROR_FILE_EXISTS / ERROR_ALREADY_EXISTS
+            raise FileExistsError(error, "Cross-boot file already exists", str(final))
+        raise OSError(error, "Windows write-through file publication failed", str(final))
+    fd = os.open(final, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _create_only(path: Path, value: dict) -> None:
     """Publish a completed JSON object without overwriting an existing request."""
     raw = canonical(value) + b"\n"
@@ -100,7 +123,7 @@ def _create_only(path: Path, value: dict) -> None:
         os.close(fd)
     try:
         if os.name == "nt":
-            os.rename(stage, path)  # Windows rename is create-only when dst exists.
+            _windows_publish(stage, path, replace=False)
         else:
             os.link(stage, path, follow_symlinks=False)
             stage.unlink()
@@ -132,7 +155,22 @@ def _replace_public(path: Path, value: dict) -> None:
         _write_all(fd, raw)
     finally:
         os.close(fd)
-    os.replace(stage, path)
+    try:
+        if os.name == "nt":
+            _windows_publish(stage, path, replace=True)
+        else:
+            os.replace(stage, path)
+            parent = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(parent)
+            finally:
+                os.close(parent)
+    except Exception:
+        try:
+            stage.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _package_request(kind: str, payload, *, request_id: str, account: str,
