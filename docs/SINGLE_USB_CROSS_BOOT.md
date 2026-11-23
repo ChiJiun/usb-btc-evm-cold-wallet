@@ -32,7 +32,9 @@ COLD_REVIEWED -> SIGNED
            \-> FAILED
 ```
 
-Both are append-only hash-chained journals. They detect visible corruption/reordering. Whole-store rollback remains indistinguishable from an older valid snapshot without an external monotonic anchor. The cold `ReplayLedger` refuses to authorize review/signing without such an anchor; unit tests may opt into an explicitly test-only unanchored mode. The Windows journal also refuses to recreate missing authoritative state from FAT32 request files, but coherent rollback of the entire Windows-visible store remains a documented limitation pending an independent anchor/reconciliation design.
+Both are append-only hash-chained journals. They detect visible corruption/reordering. Whole-store rollback remains indistinguishable from an older valid snapshot without an external monotonic anchor.
+
+The cold journal now supports an explicit `MonotonicAnchor` backend contract (`read_tip()` and atomic `advance_tip(old, new)`). Each guarded state transition appends and flushes the journal, conditionally advances the independent anchor, and re-reads the anchor **before** it returns authorization. A lost/corrupt/torn journal, anchor outage, competing advance, or crash between those operations fails closed. Supplying `expected_tip` alone **does not enable signing**. The existing tests use only a simulated backend; there is **no production-provisioned external backend**. A real backend must establish separate authority and bind wallet identity, policy, counter/epoch, and request history before release. A Windows/Vault/FAT32 file, USB firmware metadata, or duplicated GPT GUID is not eligible. The cold `ReplayLedger` refuses to authorize review/signing without such an anchor; unit tests may opt into an explicitly test-only unanchored mode. The Windows journal also refuses to recreate missing authoritative state from FAT32 request files, but coherent rollback of the entire Windows-visible store remains a documented limitation pending an independent anchor/reconciliation design.
 
 Public files live under:
 
@@ -72,7 +74,8 @@ Normal operation requires no Python, Node, CLI, MetaMask, or manual JSON editing
 
 ## Failure recovery
 
-- Automatic Windows `TX_TRANSFER` discovery is disabled until the exact GPT disk GUID, partition GUID/type/size/layout, parent disk and uniqueness contract from PR #76 is integrated. Volume labels and DRIVE_FIXED/DRIVE_REMOVABLE classification alone are never accepted as identity.
+- Automatic Windows `TX_TRANSFER` discovery is disabled until the exact GPT disk GUID, partition GUID/type/size/layout, parent disk and uniqueness contract from PR #76 is integrated.
+- Windows cross-boot request/response publication uses a create-only `MoveFileExW(MOVEFILE_WRITE_THROUGH)` and file flush; public watch-only replacement also uses write-through. Interrupted/partial journal records block subsequent state changes. These API-level behaviors **do not establish physical FAT32/controller power-loss durability**. Volume labels and DRIVE_FIXED/DRIVE_REMOVABLE classification alone are never accepted as identity.
 - Multiple active requests, filename/requestId mismatch, malformed or modified v2 envelopes, account/network mismatch, changed recipient/amount/fee/nonce/UTXO, replay, and stale signatures fail closed.
 - Explicit cancel records `FAILED` and removes only that request's exchange files.
 - Immediately before network I/O, Broadcast durably records `BROADCAST_REQUESTED` with the exact txid. A timeout/crash leaves that reservation in place; restart reconstructs a `broadcast_unknown` session for **status lookup only** and cannot resend it. `/api/crossboot/reconcile` may query only the stored txid, but public RPC/Esplora answers are explicitly untrusted and cannot advance the durable state or delete exchange evidence. The reservation remains fail closed until an independently authenticated chain-proof mechanism is integrated.
