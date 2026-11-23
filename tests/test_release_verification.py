@@ -1003,9 +1003,15 @@ def test_finalizer_uses_pinned_artifact_ids_and_strict_download_digests():
     finalizer = Path(".github/workflows/release-finalize.yml").read_text(encoding="utf-8")
     assert finalizer.count("uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333") == 4
     assert finalizer.count("artifact-ids:") == 4
-    assert finalizer.count("merge-multiple: true") == 4
+    assert finalizer.count("skip-decompress: true") == 4
+    assert finalizer.count("extract_release_candidate") == 4
+    assert finalizer.count("artifact_digest") >= 5
     assert finalizer.count("digest-mismatch: error") == 4
     assert "gh run download" not in finalizer
+    candidate = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert "steps.upload.outputs.artifact-digest" in candidate
+    assert "skip-decompress: true" in candidate
+    assert "extract_release_candidate" in candidate
     assert "select_candidate_artifact(" in finalizer
 
 
