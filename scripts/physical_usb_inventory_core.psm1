@@ -88,8 +88,7 @@ function Test-PhysicalInventorySnapshot {
         foreach ($peer in @($Snapshot.peers)) {
             if ([int]$peer.diskNumber -eq [int]$d.diskNumber) { throw 'Duplicate disk number' }
             if ((& $guid $peer.diskGuid) -eq $mDisk -or
-                ([string]$peer.model -eq [string]$d.model -and
-                 @($peer.labels) -contains 'TX_TRANSFER')) {
+                (@($peer.labels) -contains 'TX_TRANSFER')) {
                 throw 'Ambiguous/cloned USB disk or duplicate transfer label'
             }
             foreach ($id in @($peer.partitionGuids)) {

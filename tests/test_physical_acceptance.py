@@ -44,6 +44,23 @@ def inventory_report(**overrides) -> dict:
         "imageFileVerified": True, "deviceLayoutVerified": True,
         "writtenMediaVerified": True, "exactImageCommit": COMMIT,
         "imageSha256": DIGEST,
+        "mediaReadbackSha256": DIGEST,
+        "collectedAtUtc": module.utc_now(),
+        "observed": {
+            "driveLetter": "F",
+            "disk": {"busType": "USB", "partitionStyle": "GPT",
+                     "diskNumber": 8, "diskGuid": "f1448aa1-28cc-54bf-8fdd-3008514c0ab5"},
+            "partitions": [
+                {"diskNumber": 8, "partitionNumber": index,
+                 "partitionGuid": f"00000000-0000-0000-0000-{index:012x}",
+                 "label": label, "filesystem": fs,
+                 "driveLetter": "F" if index == 3 else ""}
+                for index, label, fs in [
+                    (1, "USBCOLD_EFI", "FAT"), (2, "COLD_VAULT", "FAT"),
+                    (3, "TX_TRANSFER", "FAT32"),
+                ]
+            ],
+        },
     }
     data.update(overrides)
     return data
@@ -111,6 +128,9 @@ class TestPhysicalAcceptance(unittest.TestCase):
                 {"exactImageCommit": "c" * 40},
                 {"imageSha256": "d" * 64},
                 {"physicalAcceptance": "PASS"},
+                {"mediaReadbackSha256": "c" * 64},
+                {"collectedAtUtc": "2020-01-01T00:00:00+00:00"},
+                {"observed": {}},
             ):
                 with self.subTest(changes=changes):
                     proof.write_text(json.dumps(inventory_report(**changes)), encoding="utf-8")

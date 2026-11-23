@@ -36,6 +36,12 @@ jobs:
           python-version: "3.12"
           architecture: "x64"
 
+      - name: Test atomic journal and evidence recovery on Windows
+        shell: powershell
+        run: |
+          python -m unittest discover -s tests -p test_physical_acceptance.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Install project and pinned bundler
         shell: pwsh
         run: |

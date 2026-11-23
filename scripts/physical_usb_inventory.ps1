@@ -152,6 +152,20 @@ try {
         } else {
             $fileVerified = $true
         }
+        # Do not open any raw physical path until the fresh selected USB
+        # and its exact expected GPT parent are already verified.
+        if ($snapshot.disk.busType -ne 'USB' -or
+            $snapshot.disk.partitionStyle -ne 'GPT' -or
+            (Normalize-Guid ([string]$snapshot.disk.diskGuid)) -ne
+              (Normalize-Guid ([string]$manifest.diskGuid)) -or
+            $snapshot.partitions.Count -ne 3) {
+            throw 'Selected device is not the exact expected three-partition USB'
+        }
+        foreach ($p in @($snapshot.partitions)) {
+            if ($p.diskNumber -ne $snapshot.disk.diskNumber) {
+                throw 'Partition ancestry mismatch before media readback'
+            }
+        }
         if ($VerifyMediaReadback -and $fileVerified) {
             # PhysicalDriveN is used only after fresh drive letter -> partition ->
             # USB parent discovery, never as a stored target or for write access.
@@ -183,6 +197,10 @@ try {
                     $after.partitions[$i].sizeBytes -ne $snapshot.partitions[$i].sizeBytes) {
                     throw 'Device replacement or layout change during readback'
                 }
+            }
+            if ($after.partitions[2].driveLetter -ne $snapshot.partitions[2].driveLetter -or
+                $after.peers.Count -ne $snapshot.peers.Count) {
+                throw 'Drive-letter or peer inventory changed during readback'
             }
             if ($after.disk.diskNumber -ne $snapshot.disk.diskNumber -or
                 $after.disk.diskGuid -ne $snapshot.disk.diskGuid -or

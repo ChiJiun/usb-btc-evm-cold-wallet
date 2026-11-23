@@ -176,6 +176,45 @@ def verify_evidence(journal_path: Path, observation: dict) -> None:
             or report.get("imageSha256") != observation.get("imageSha256")
         ):
             raise ValueError("Hardware case evidence does not bind verified media and image")
+        snapshot = report.get("observed")
+        if not isinstance(snapshot, dict) or not isinstance(snapshot.get("disk"), dict):
+            raise ValueError("Physical inventory parent disk/drive evidence missing")
+        disk = snapshot["disk"]
+        partitions = snapshot.get("partitions")
+        if (
+            disk.get("busType") != "USB"
+            or disk.get("partitionStyle") != "GPT"
+            or not isinstance(disk.get("diskNumber"), int)
+            or disk.get("diskGuid") is None
+            or not isinstance(partitions, list) or len(partitions) != 3
+            or not isinstance(snapshot.get("driveLetter"), str)
+            or len(snapshot["driveLetter"]) != 1
+            or report.get("mediaReadbackSha256") != observation["imageSha256"]
+        ):
+            raise ValueError("Physical media inventory/readback provenance incomplete")
+        part_ids = set()
+        expected_labels = ("USBCOLD_EFI", "COLD_VAULT", "TX_TRANSFER")
+        expected_fs = ("FAT", "FAT", "FAT32")
+        for index, partition in enumerate(partitions, 1):
+            if not isinstance(partition, dict):
+                raise ValueError("Corrupt physical partition evidence")
+            part_id = str(partition.get("partitionGuid", "")).strip("{}").lower()
+            if (
+                not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", part_id)
+                or part_id in part_ids
+                or partition.get("diskNumber") != disk["diskNumber"]
+                or partition.get("partitionNumber") != index
+                or partition.get("label") != expected_labels[index - 1]
+                or partition.get("filesystem") != expected_fs[index - 1]
+                or (index == 3 and partition.get("driveLetter") != snapshot["driveLetter"])
+                or (index < 3 and partition.get("driveLetter"))
+            ):
+                raise ValueError("Physical partition/drive ancestry evidence inconsistent")
+            part_ids.add(part_id)
+        collected = _utc(str(report.get("collectedAtUtc", "")))
+        if not (-CLOCK_SKEW <= dt.datetime.now(dt.timezone.utc) - collected <= dt.timedelta(hours=1)):
+            raise ValueError("Physical inventory snapshot stale; rediscover after replug")
+
     elif observation.get("case") == "IMAGE_SHA256":
         try:
             report = json.loads(data)

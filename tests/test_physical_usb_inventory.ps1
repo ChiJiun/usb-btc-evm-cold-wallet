@@ -121,6 +121,10 @@ $wrong = Copy-Snapshot $baseline
 $wrong.peers = @([pscustomobject]@{diskNumber=9; diskGuid='00000000-0000-0000-0000-000000000001';
         model='Mock USB'; labels=@('TX_TRANSFER'); partitionGuids=@()})
 Assert-Inventory 'same-label and model fake USB' $wrong $false
+$wrong = Copy-Snapshot $baseline
+$wrong.peers = @([pscustomobject]@{diskNumber=9; diskGuid='00000000-0000-0000-0000-000000000001';
+        model='Other USB Model'; labels=@('TX_TRANSFER'); partitionGuids=@()})
+Assert-Inventory 'same-label fake USB with different model' $wrong $false
 
 $wrong = Copy-Snapshot $baseline
 $wrong.peers = @([pscustomobject]@{diskNumber=9; diskGuid='00000000-0000-0000-0000-000000000001';
