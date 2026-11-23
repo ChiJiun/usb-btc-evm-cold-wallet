@@ -463,6 +463,18 @@ class CrossBootManager:
         )
         return self.status(session, btc_session)
 
+    def require_trusted_chain_evidence(self) -> None:
+        """Block cross-boot network submission until independent chain evidence.
+
+        Public RPC/Esplora account nonce and UTXO status can be forged. The
+        verified signed payload plus a UI click do not authenticate the current
+        chain state. No production verifier is wired in yet.
+        """
+        self._require()
+        raise ValueError(
+            "Authenticated chain/nonce/UTXO evidence required before cross-boot broadcast"
+        )
+
     def mark_broadcast_requested(self, session, btc_session, txid: str) -> None:
         """Durably reserve the only broadcast attempt before network I/O."""
         request, owner, _asset = self._request_from_any(session, btc_session)
