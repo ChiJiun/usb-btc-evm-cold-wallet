@@ -18,7 +18,7 @@ import stat
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 REQUEST_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -66,6 +66,19 @@ class StateCorruptionError(ValueError):
 
 class RollbackDetected(StateCorruptionError):
     pass
+
+
+class MonotonicAnchor(Protocol):
+    """Contract for an independently trusted, durable monotonic state store.
+
+    The backend must be outside USB/Windows/FAT32/Vault rollback authority.
+    compare-and-advance must be atomic and reject stale expected tips. No
+    backend is provided by this module; mock implementations are test-only.
+    """
+
+    def read_tip(self) -> str: ...
+
+    def advance_tip(self, expected_tip: str, new_tip: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -180,12 +193,16 @@ def _append(root: Path, name: str, raw: bytes) -> None:
 
 
 class _Journal:
-    def __init__(self, root: Path, owner: str, *, expected_tip: str | None = None):
+    def __init__(self, root: Path, owner: str, *, expected_tip: str | None = None,
+                 trusted_anchor: MonotonicAnchor | None = None):
         if owner not in {"online", "cold"}:
             raise ValueError("Invalid state owner")
         self.root = Path(root)
         self.owner = owner
-        self._external_anchor_verified = expected_tip is not None
+        # A caller-supplied expected_tip is only a comparison primitive, not
+        # evidence that the caller obtained it from independent monotonic storage.
+        self._trusted_anchor = trusted_anchor
+        self._external_anchor_verified = False
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         if os.name != "nt":
             self.root.chmod(0o700)
@@ -196,6 +213,23 @@ class _Journal:
                 raise ValueError("Invalid expected state anchor")
             if self.tip_anchor() != expected_tip:
                 raise RollbackDetected("State journal tip differs from externally pinned anchor")
+        if self._trusted_anchor is not None:
+            self._verify_trusted_tip()
+
+    def _verify_trusted_tip(self) -> str:
+        if self._trusted_anchor is None:
+            raise RollbackDetected("No independent monotonic anchor configured")
+        self._external_anchor_verified = False
+        try:
+            tip = self._trusted_anchor.read_tip()
+        except Exception as exc:
+            raise RollbackDetected("Independent monotonic anchor is unavailable") from exc
+        if type(tip) is not str or HEX64_RE.fullmatch(tip) is None:
+            raise RollbackDetected("Independent monotonic anchor returned an invalid tip")
+        if tip != self.tip_anchor():
+            raise RollbackDetected("Journal differs from independent monotonic anchor")
+        self._external_anchor_verified = True
+        return tip
 
     @contextmanager
     def _locked(self):
@@ -383,8 +417,11 @@ class _Journal:
         transaction_digest: str, metadata: dict | None = None,
     ) -> StateSnapshot:
         self._reload()
-        if state == "BROADCAST_REQUESTED" and self.recovery_warnings:
-            raise StateCorruptionError("Unresolved journal write; broadcast is blocked")
+        if self.recovery_warnings:
+            # A torn write is ambiguous regardless of which transition follows.
+            # Do not advance a journal over an uncommitted crash artifact.
+            raise StateCorruptionError("Unresolved journal write; state transition is blocked")
+        pinned_tip = self._verify_trusted_tip() if self._trusted_anchor is not None else None
         if REQUEST_ID_RE.fullmatch(request_id or "") is None:
             raise ValueError("Invalid requestId")
         for value, label in ((request_digest, "request digest"), (transaction_digest, "transaction digest")):
@@ -423,6 +460,17 @@ class _Journal:
         raw = _canonical(record) + b"\n"
         _append(self.root, name, raw)
         self._records.append(record)
+        if self._trusted_anchor is not None:
+            # Append BEFORE advancing the independently monotonic anchor.
+            # Crashes on either side of the CAS fail closed after reboot.
+            self._external_anchor_verified = False
+            try:
+                self._trusted_anchor.advance_tip(pinned_tip, self.tip_anchor())
+                self._verify_trusted_tip()
+            except Exception as exc:
+                raise RollbackDetected(
+                    "Independent anchor advance/recheck failed; manual trusted recovery required"
+                ) from exc
         return self.get(request_id)
 
     def tip_anchor(self) -> str:
@@ -441,8 +489,10 @@ class _Journal:
 
 
 class PendingRequestStore(_Journal):
-    def __init__(self, root: Path, *, expected_tip: str | None = None):
-        super().__init__(root, "online", expected_tip=expected_tip)
+    def __init__(self, root: Path, *, expected_tip: str | None = None,
+                 trusted_anchor: MonotonicAnchor | None = None):
+        super().__init__(root, "online", expected_tip=expected_tip,
+                         trusted_anchor=trusted_anchor)
 
     def active_request_ids(self) -> set[str]:
         """Enumerate visible in-flight reservations, including missing exchange files.
@@ -554,9 +604,11 @@ class PendingRequestStore(_Journal):
 
 class ReplayLedger(_Journal):
     def __init__(self, root: Path, *, expected_tip: str | None = None,
-                 allow_unanchored_for_testing: bool = False):
+                 allow_unanchored_for_testing: bool = False,
+                 trusted_anchor: MonotonicAnchor | None = None):
         self._allow_unanchored_for_testing = allow_unanchored_for_testing
-        super().__init__(root, "cold", expected_tip=expected_tip)
+        super().__init__(root, "cold", expected_tip=expected_tip,
+                         trusted_anchor=trusted_anchor)
 
     def _ensure_unseen(self, request: dict) -> None:
         self._reload()
