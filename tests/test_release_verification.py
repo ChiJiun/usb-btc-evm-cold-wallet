@@ -24,6 +24,7 @@ from scripts.verify_release_assets import (
     verify_local_artifacts,
     verify_release,
     verify_repository_release_controls,
+    verify_protected_main_commit,
     verify_source,
     select_candidate_artifact,
     verify_workflow_run_identity,
@@ -112,6 +113,13 @@ class FakeGitHub:
                     "object": {"type": "commit", "sha": self.object_commit},
                 }
             )
+        if args[:2] == ["api", f"repos/{REPOSITORY}/compare/{COMMIT}...{WORKFLOW_SHA}"]:
+            return json.dumps({"status": "ahead", "ahead_by": 1, "behind_by": 0})
+        if args[:2] == ["api", f"repos/{REPOSITORY}/git/ref/heads/main"]:
+            return json.dumps({
+                "ref": "refs/heads/main",
+                "object": {"type": "commit", "sha": WORKFLOW_SHA},
+            })
         if args[:2] == ["api", f"repos/{REPOSITORY}/actions/runs/12345"]:
             return json.dumps(
                 {
@@ -299,6 +307,8 @@ def test_trusted_main_candidate_workflow_run_is_accepted():
         ("head_branch", "attacker/ref"),
         ("head_sha", "d" * 40),
         ("path", ".github/workflows/evil.yml"),
+        ("path", ".github/workflows/release.yml@refs/tags/v0.1.0"),
+        ("path", ".github/workflows/release.yml@refs/heads/untrusted"),
         ("repository", {"full_name": "attacker/repo"}),
         ("head_repository", {"full_name": "attacker/repo"}),
         ("actor", {"login": "attacker"}),
@@ -829,6 +839,87 @@ def test_release_verifier_entrypoints_reuse_fail_closed_python_verifier():
         assert "--asset" in text
         assert "http://" not in text
         assert "https://" not in text
+
+
+
+def test_protected_main_ref_must_match_exact_trusted_workflow_commit():
+    fake = FakeGitHub()
+    verify_protected_main_commit(WORKFLOW_SHA, run=fake)
+
+    def moved(args):
+        if args == ["api", f"repos/{REPOSITORY}/git/ref/heads/main"]:
+            return json.dumps({
+                "ref": "refs/heads/main",
+                "object": {"type": "commit", "sha": "d" * 40},
+            })
+        raise AssertionError(args)
+
+    with pytest.raises(ReleaseVerificationError, match="main moved"):
+        verify_protected_main_commit(WORKFLOW_SHA, run=moved)
+
+
+@pytest.mark.parametrize("status,behind", [
+    ("diverged", 2),
+    ("behind", 3),
+    ("ahead", 1),
+    ("identical", 1),
+])
+def test_tagged_source_must_be_ancestor_of_trusted_main(status, behind):
+    fake = FakeGitHub()
+
+    def forged(args):
+        if args == ["api", f"repos/{REPOSITORY}/compare/{COMMIT}...{WORKFLOW_SHA}"]:
+            return json.dumps({"status": status, "ahead_by": 1, "behind_by": behind})
+        return fake(args)
+
+    with pytest.raises(ReleaseVerificationError, match="trusted main history"):
+        verify_source(TAG, COMMIT, trusted_workflow_sha=WORKFLOW_SHA, run=forged)
+
+
+def test_publish_verifier_rejects_staged_wrong_run_or_attempt(tmp_path):
+    fake = FakeGitHub()
+    _write_local_release(tmp_path)
+    for run_id, attempt in [("12346", "1"), ("12345", "2")]:
+        with pytest.raises(ReleaseVerificationError, match="workflow run"):
+            verify_local_artifacts(
+                TAG, COMMIT, ASSET, tmp_path,
+                workflow_sha=WORKFLOW_SHA,
+                expected_run_id=run_id,
+                expected_run_attempt=attempt,
+                run=fake,
+            )
+
+
+def test_candidate_archive_rejects_unexpected_nested_files_and_symlinks(tmp_path):
+    fake = FakeGitHub()
+    _write_local_release(tmp_path)
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    with pytest.raises(ReleaseVerificationError, match="Unexpected file"):
+        verify_candidate_artifacts(TAG, COMMIT, ASSET, tmp_path, workflow_sha=WORKFLOW_SHA, run=fake)
+    nested.rmdir()
+    (tmp_path / "extra-link").symlink_to(tmp_path / ASSET)
+    with pytest.raises(ReleaseVerificationError, match="Unexpected file"):
+        verify_candidate_artifacts(TAG, COMMIT, ASSET, tmp_path, workflow_sha=WORKFLOW_SHA, run=fake)
+
+
+def test_independent_release_rejects_recompressed_image_with_wrong_raw_digest():
+    fake = FakeGitHub()
+    fake.binary = lzma.compress(b"altered raw bytes", preset=6)
+    fake.manifest_digest = hashlib.sha256(fake.binary).hexdigest()
+    with pytest.raises(ReleaseVerificationError, match="Published raw image SHA-256"):
+        verify_release(TAG, COMMIT, ASSET, workflow_sha=WORKFLOW_SHA, run=fake)
+
+
+def test_release_workflow_checks_live_main_before_attestation_and_provenance():
+    candidate = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    finalizer = Path(".github/workflows/release-finalize.yml").read_text(encoding="utf-8")
+    assert "trusted_workflow_sha=os.environ[\"GITHUB_SHA\"]" in candidate
+    assert candidate.count("verify_protected_main_commit(") >= 1
+    assert finalizer.count("verify_protected_main_commit(") >= 3
+    assert finalizer.count("--expected-run-attempt") >= 3
+    assert "gh release create" in finalizer
+    assert finalizer.rfind("--expected-run-attempt") < finalizer.rfind("gh release create")
 
 
 def _candidate_artifact(*, name=None, artifact_id=91, digest=None, run_id=12345, head_sha=WORKFLOW_SHA):

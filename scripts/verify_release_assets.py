@@ -229,16 +229,48 @@ def verify_source(
     run: Run = _gh,
     authorized_tagger_emails: frozenset[str] = DEFAULT_AUTHORIZED_RELEASE_TAGGER_EMAILS,
     expected_tag_object_sha: str | None = None,
+    trusted_workflow_sha: str | None = None,
 ) -> str:
-    """Verify signed tag, exact source commit, authorized signer, and optional tag-object pin."""
+    """Verify signed source and, when supplied, its ancestry in trusted main."""
     tag, commit = _validate_identity(tag, commit)
-    return _verify_signed_tag(
+    tag_object_sha = _verify_signed_tag(
         run,
         tag,
         commit,
         authorized_tagger_emails,
         expected_tag_object_sha=expected_tag_object_sha,
     )
+    if trusted_workflow_sha is not None:
+        if not re.fullmatch(r"[a-f0-9]{40}", trusted_workflow_sha):
+            raise ReleaseVerificationError("Trusted main workflow SHA is malformed")
+        compare = _json(
+            run,
+            ["api", f"repos/{REPOSITORY}/compare/{commit}...{trusted_workflow_sha}"],
+        )
+        if (
+            compare.get("status") not in ("ahead", "identical")
+            or type(compare.get("behind_by")) is not int
+            or compare["behind_by"] != 0
+            or type(compare.get("ahead_by")) is not int
+            or compare["ahead_by"] < 0
+        ):
+            raise ReleaseVerificationError("Signed release source is not in trusted main history")
+    return tag_object_sha
+
+
+def verify_protected_main_commit(expected_sha: str, *, run: Run = _gh) -> None:
+    """Recheck the live protected main ref before privileged attest/publish work."""
+    if not re.fullmatch(r"[a-f0-9]{40}", expected_sha):
+        raise ReleaseVerificationError("Trusted main commit SHA is malformed")
+    ref = _json(run, ["api", f"repos/{REPOSITORY}/git/ref/heads/main"])
+    obj = ref.get("object")
+    if (
+        ref.get("ref") != "refs/heads/main"
+        or not isinstance(obj, dict)
+        or obj.get("type") != "commit"
+        or obj.get("sha") != expected_sha
+    ):
+        raise ReleaseVerificationError("Protected main moved or returned an invalid ref")
 
 
 def _active_ruleset_details(run: Run) -> list[dict]:
@@ -467,7 +499,12 @@ def verify_workflow_run_identity(
     actor = data.get("actor")
     triggering_actor = data.get("triggering_actor")
     path = data.get("path")
-    normalized_path = path.split("@", 1)[0] if isinstance(path, str) else None
+    path_parts = path.split("@", 1) if isinstance(path, str) else []
+    valid_path = (
+        bool(path_parts)
+        and path_parts[0] == ".github/workflows/release.yml"
+        and (len(path_parts) == 1 or path_parts[1] == "refs/heads/main")
+    )
 
     if (
         data.get("id") != int(run_id_text)
@@ -476,7 +513,7 @@ def verify_workflow_run_identity(
         or data.get("conclusion") != "success"
         or data.get("head_branch") != "main"
         or str(data.get("head_sha", "")).lower() != expected_head_sha
-        or normalized_path != ".github/workflows/release.yml"
+        or not valid_path
         or not isinstance(repository, dict)
         or repository.get("full_name") != REPOSITORY
         or not isinstance(head_repository, dict)
@@ -758,12 +795,13 @@ def verify_candidate_artifacts(
 ) -> str:
     """Verify staged candidate bytes before any privileged attestation or publish step."""
     tag, commit = _validate_identity(tag, commit, asset)
-    tag_object_sha = _verify_signed_tag(
-        run,
+    tag_object_sha = verify_source(
         tag,
         commit,
-        authorized_tagger_emails,
+        run=run,
+        authorized_tagger_emails=authorized_tagger_emails,
         expected_tag_object_sha=expected_tag_object_sha,
+        trusted_workflow_sha=workflow_sha,
     )
 
     root = Path(directory)
@@ -773,6 +811,17 @@ def verify_candidate_artifacts(
     manifest = _safe_file(root, "SHA256SUMS")
     entries = parse_sha256sums_entries(manifest.read_bytes())
     expected_names = {asset, *REQUIRED_STAGED_FILES}
+    if {entry.name for entry in root.iterdir()} != expected_names | {"SHA256SUMS"}:
+        raise ReleaseVerificationError("Unexpected file or directory in candidate artifact")
+    limits = {
+        asset: MAX_RAW_IMAGE_BYTES,
+        "SBOM.spdx.json": 256 * 1024 * 1024,
+        "release-metadata.json": MAX_MANIFEST_BYTES,
+        "build-host-packages.txt": 8 * 1024 * 1024,
+    }
+    for name, max_bytes in limits.items():
+        if _safe_file(root, name).stat().st_size > max_bytes:
+            raise ReleaseVerificationError(f"Candidate artifact exceeds limit: {name}")
     if set(entries) != expected_names:
         raise ReleaseVerificationError(
             "SHA256SUMS must cover exactly the final image, SBOM, and release metadata"
@@ -821,6 +870,8 @@ def verify_local_artifacts(
     run: Run = _gh,
     authorized_tagger_emails: frozenset[str] = DEFAULT_AUTHORIZED_RELEASE_TAGGER_EMAILS,
     expected_tag_object_sha: str | None = None,
+    expected_run_id: int | str | None = None,
+    expected_run_attempt: int | str | None = None,
 ) -> str:
     """Verify the exact staged bytes after attestation and before publish."""
     digest = verify_candidate_artifacts(
@@ -832,6 +883,8 @@ def verify_local_artifacts(
         run=run,
         authorized_tagger_emails=authorized_tagger_emails,
         expected_tag_object_sha=expected_tag_object_sha,
+        expected_run_id=expected_run_id,
+        expected_run_attempt=expected_run_attempt,
     )
     root = Path(directory)
     metadata_path = _safe_file(root, "release-metadata.json")
@@ -872,12 +925,13 @@ def verify_release(
 ) -> str:
     """Independently download and verify an already-published immutable release."""
     tag, commit = _validate_identity(tag, commit, asset)
-    tag_object_sha = _verify_signed_tag(
-        run,
+    tag_object_sha = verify_source(
         tag,
         commit,
-        authorized_tagger_emails,
+        run=run,
+        authorized_tagger_emails=authorized_tagger_emails,
         expected_tag_object_sha=expected_tag_object_sha,
+        trusted_workflow_sha=workflow_sha,
     )
 
     release = _json(
@@ -932,6 +986,14 @@ def verify_release(
             asset,
         )
         _verify_spdx(_safe_file(directory, "SBOM.spdx.json"))
+        try:
+            metadata = json.loads(
+                _safe_file(directory, "release-metadata.json").read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ReleaseVerificationError("Invalid release-metadata.json") from exc
+        if _raw_image_sha256(image) != metadata["raw_image_sha256"]:
+            raise ReleaseVerificationError("Published raw image SHA-256 does not match metadata")
 
         # Authenticate every published file with immutable-release integrity
         # and the same SLSA source/workflow identity.
@@ -946,12 +1008,6 @@ def verify_release(
                     REPOSITORY,
                 ]
             )
-        try:
-            metadata = json.loads(
-                _safe_file(directory, "release-metadata.json").read_text(encoding="utf-8")
-            )
-        except (OSError, UnicodeError, ValueError) as exc:
-            raise ReleaseVerificationError("Invalid release-metadata.json") from exc
         _verify_build_provenance(
             run,
             directory,
@@ -983,6 +1039,8 @@ def main() -> int:
         "--local-dir",
         help="Verify already-built final bytes in this directory; never downloads assets",
     )
+    parser.add_argument("--expected-run-id", help="Expected candidate workflow run ID")
+    parser.add_argument("--expected-run-attempt", help="Expected candidate run attempt")
     parser.add_argument(
         "--source-only",
         action="store_true",
@@ -997,7 +1055,7 @@ def main() -> int:
 
     try:
         if args.source_only:
-            if args.asset or args.local_dir or args.candidate_only:
+            if args.asset or args.local_dir or args.candidate_only or args.expected_run_id or args.expected_run_attempt:
                 raise ReleaseVerificationError(
                     "--source-only cannot be combined with artifact verification options"
                 )
@@ -1027,6 +1085,8 @@ def main() -> int:
                 args.local_dir,
                 workflow_sha=args.workflow_sha,
                 expected_tag_object_sha=args.expected_tag_object_sha,
+                expected_run_id=args.expected_run_id,
+                expected_run_attempt=args.expected_run_attempt,
             )
         elif args.local_dir:
             digest = verify_local_artifacts(
@@ -1036,8 +1096,12 @@ def main() -> int:
                 args.local_dir,
                 workflow_sha=args.workflow_sha,
                 expected_tag_object_sha=args.expected_tag_object_sha,
+                expected_run_id=args.expected_run_id,
+                expected_run_attempt=args.expected_run_attempt,
             )
         else:
+            if args.expected_run_id or args.expected_run_attempt:
+                raise ReleaseVerificationError("Run identity pin requires --local-dir")
             digest = verify_release(
                 args.tag,
                 args.commit,

@@ -67,10 +67,12 @@ jobs:
           python3 - <<'PY'
           import os
           from scripts.verify_release_assets import (
+              verify_protected_main_commit,
               verify_repository_release_controls,
               verify_workflow_run_identity,
           )
 
+          verify_protected_main_commit(os.environ["GITHUB_SHA"])
           verify_workflow_run_identity(
               os.environ["TRIGGER_RUN_ID"],
               os.environ["TRIGGER_HEAD_SHA"],
@@ -207,8 +209,18 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import os
-          from scripts.verify_release_assets import verify_candidate_artifacts
+          from scripts.verify_release_assets import (
+              verify_candidate_artifacts, verify_protected_main_commit,
+              verify_repository_release_controls, verify_workflow_run_identity,
+          )
 
+          verify_protected_main_commit(os.environ["GITHUB_SHA"])
+          verify_workflow_run_identity(
+              os.environ["TRIGGER_RUN_ID"],
+              os.environ["WORKFLOW_SHA"],
+              expected_run_attempt=os.environ["TRIGGER_RUN_ATTEMPT"],
+          )
+          verify_repository_release_controls()
           verify_candidate_artifacts(
               os.environ["TAG"],
               os.environ["SOURCE_SHA"],
@@ -276,6 +288,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+      TRIGGER_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
       ARTIFACT_NAME: ${{ needs.preflight.outputs.artifact_name }}
       TAG: ${{ needs.preflight.outputs.tag }}
       SOURCE_SHA: ${{ needs.preflight.outputs.source_sha }}
@@ -302,7 +315,15 @@ jobs:
       - name: Verify tag, metadata, every subject digest, and provenance signer
         run: |
           set -euo pipefail
-          python3 scripts/verify_release_assets.py             --tag "$TAG" --commit "$SOURCE_SHA" --asset "$ASSET" --local-dir release             --workflow-sha "$WORKFLOW_SHA" --expected-tag-object-sha "$TAG_OBJECT_SHA"
+          python3 - <<'PY'
+          import os
+          from scripts.verify_release_assets import verify_protected_main_commit
+          verify_protected_main_commit(os.environ["GITHUB_SHA"])
+          PY
+          python3 scripts/verify_release_assets.py \
+            --tag "$TAG" --commit "$SOURCE_SHA" --asset "$ASSET" --local-dir release \
+            --workflow-sha "$WORKFLOW_SHA" --expected-tag-object-sha "$TAG_OBJECT_SHA" \
+            --expected-run-id "$TRIGGER_RUN_ID" --expected-run-attempt "$TRIGGER_RUN_ATTEMPT"
 
   gate:
     name: Required trusted finalizer gate
@@ -369,7 +390,10 @@ jobs:
       - name: Reverify attestations and final bytes without executing candidate contents
         run: |
           set -euo pipefail
-          python3 scripts/verify_release_assets.py             --tag "$TAG" --commit "$SOURCE_SHA" --asset "$ASSET" --local-dir release             --workflow-sha "$WORKFLOW_SHA"             --expected-tag-object-sha "$EXPECTED_TAG_OBJECT_SHA"
+          python3 scripts/verify_release_assets.py \
+            --tag "$TAG" --commit "$SOURCE_SHA" --asset "$ASSET" --local-dir release \
+            --workflow-sha "$WORKFLOW_SHA" --expected-tag-object-sha "$EXPECTED_TAG_OBJECT_SHA" \
+            --expected-run-id "$TRIGGER_RUN_ID" --expected-run-attempt "$TRIGGER_RUN_ATTEMPT"
 
       - name: Require hardware and product release gates to be closed
         run: |
@@ -428,6 +452,11 @@ jobs:
             exit 1
           fi
 
+          # Re-hash every asset immediately before publication, after all policy gates.
+          python3 scripts/verify_release_assets.py \
+            --tag "$TAG" --commit "$SOURCE_SHA" --asset "$ASSET" --local-dir release \
+            --workflow-sha "$WORKFLOW_SHA" --expected-tag-object-sha "$EXPECTED_TAG_OBJECT_SHA" \
+            --expected-run-id "$TRIGGER_RUN_ID" --expected-run-attempt "$TRIGGER_RUN_ATTEMPT"
           extra=()
           case "$TAG" in *-*) extra+=(--prerelease) ;; esac
           gh release create "$TAG"             "release/$ASSET"             release/SHA256SUMS             release/SBOM.spdx.json             release/release-metadata.json             release/build-host-packages.txt             --repo "$GITHUB_REPOSITORY"             --verify-tag             --title "$TAG"             --notes "Release provenance candidate. Do not claim production safety without the #24/#43 acceptance evidence."             "${extra[@]}"

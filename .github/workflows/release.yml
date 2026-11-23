@@ -79,8 +79,14 @@ jobs:
           test "${#SOURCE_SHA}" -eq 40
           tag_object_sha="$(python3 - <<'PY'
           import os
-          from scripts.verify_release_assets import verify_source
-          print(verify_source(os.environ["TAG"], os.environ["SOURCE_SHA"]))
+          from scripts.verify_release_assets import (
+              verify_protected_main_commit, verify_source,
+          )
+          verify_protected_main_commit(os.environ["GITHUB_SHA"])
+          print(verify_source(
+              os.environ["TAG"], os.environ["SOURCE_SHA"],
+              trusted_workflow_sha=os.environ["GITHUB_SHA"],
+          ))
           PY
           )"
           case "$tag_object_sha" in *[!0-9a-f]*|'') exit 1 ;; esac
