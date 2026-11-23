@@ -375,7 +375,7 @@ def test_http_cancel_records_failed_and_removes_active_exchange(tmp_path):
         _stop(server, worker)
 
 
-def test_matching_rpc_ack_preserves_reservation_and_never_double_broadcasts(tmp_path):
+def test_missing_chain_evidence_blocks_sepolia_network_send_across_restart(tmp_path):
     rpc = FakeRpc()
     manager, server, session, token, worker = _run_server(rpc, tmp_path)
     code, _ = _http(server, token, "POST", "/api/import",
@@ -399,30 +399,24 @@ def test_matching_rpc_ack_preserves_reservation_and_never_double_broadcasts(tmp_
     try:
         assert session2.pending["stage"] == "verified"
         assert rpc.sent == []
-        code, result = _http(server2, token2, "POST", "/api/broadcast", {})
-        assert code == 200 and result["stage"] == "broadcast_unknown"
-        assert len(rpc.sent) == 1
-        assert PendingRequestStore(manager2.state_root).get(request_id).state == "BROADCAST_REQUESTED"
+        code, denied = _http(server2, token2, "POST", "/api/broadcast", {})
+        assert code == 400 and "Authenticated chain" in denied["error"]
+        assert rpc.sent == []
+        assert session2.pending["stage"] == "verified"
+        assert PendingRequestStore(manager2.state_root).get(request_id).state == "IMPORTED_VERIFIED"
         assert manager2._request_path(request_id).is_file()
         assert manager2._response_path(request_id).is_file()
-        with pytest.raises(ValueError, match="Authenticated chain evidence"):
-            manager2.mark_broadcasted(session2, None, result["tx_hash"])
     finally:
         _stop(server2, worker2)
 
     manager3, server3, session3, token3, worker3 = _run_server(rpc, tmp_path)
     try:
         assert session3.pending is not None
-        assert session3.pending["stage"] == "broadcast_unknown"
-        code, _ = _http(server3, token3, "POST", "/api/broadcast", {})
-        assert code == 400
-        assert len(rpc.sent) == 1
-        assert PendingRequestStore(manager3.state_root).get(request_id).state == "BROADCAST_REQUESTED"
-        assert manager3._request_path(request_id).is_file()
-        assert manager3._response_path(request_id).is_file()
-        code, cancelled = _http(server3, token3, "POST", "/api/cancel", {})
-        assert code == 400 and "cannot be cancelled" in cancelled["error"]
-        assert session3.pending["stage"] == "broadcast_unknown"
+        assert session3.pending["stage"] == "verified"
+        code, denied = _http(server3, token3, "POST", "/api/broadcast", {})
+        assert code == 400 and "Authenticated chain" in denied["error"]
+        assert rpc.sent == []
+        assert PendingRequestStore(manager3.state_root).get(request_id).state == "IMPORTED_VERIFIED"
         assert manager3._request_path(request_id).is_file()
         assert manager3._response_path(request_id).is_file()
     finally:
@@ -449,9 +443,14 @@ def test_unknown_broadcast_recovers_status_only_after_restart(tmp_path):
     manager2, server2, session2, token2, worker2 = _run_server(rpc, tmp_path)
     try:
         assert session2.pending["stage"] == "verified"
-        code, _ = _http(server2, token2, "POST", "/api/broadcast", {})
-        assert code == 400
-        assert session2.pending["stage"] == "broadcast_unknown"
+        code, denied = _http(server2, token2, "POST", "/api/broadcast", {})
+        assert code == 400 and "Authenticated chain" in denied["error"]
+        assert rpc.sent == []
+        assert session2.pending["stage"] == "verified"
+        # Simulate an already-reserved attempt from a previously authorized
+        # version, without making any network submission in this test.
+        manager2.mark_broadcast_requested(session2, None, session2.pending["tx_hash"])
+        session2.pending["stage"] = "broadcast_unknown"
         snap = PendingRequestStore(manager2.state_root).get(request_id)
         assert snap.state == "BROADCAST_REQUESTED"
         assert snap.metadata["txid"] == session2.pending["tx_hash"]
@@ -477,7 +476,7 @@ def test_unknown_broadcast_recovers_status_only_after_restart(tmp_path):
         _stop(server3, worker3)
 
 
-def test_btc_matching_esplora_ack_keeps_reserved_txid_across_restart(tmp_path):
+def test_missing_chain_evidence_blocks_btc_network_send_across_restart(tmp_path):
     api = FakeBtcEsplora()
     manager = CrossBootManager(tmp_path)
     evm, btc, rpc = fresh_sessions(btc_api=api)
@@ -502,17 +501,12 @@ def test_btc_matching_esplora_ack_keeps_reserved_txid_across_restart(tmp_path):
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     try:
-        code, result = _http(server, token, "POST", "/api/btc/broadcast", {})
-        assert code == 200 and result["stage"] == "broadcast_unknown"
-        assert len(api.sent) == 1
+        code, denied = _http(server, token, "POST", "/api/btc/broadcast", {})
+        assert code == 400 and "Authenticated chain" in denied["error"]
+        assert api.sent == []
         snap = PendingRequestStore(manager.state_root).get(request_id)
-        assert snap.state == "BROADCAST_REQUESTED"
-        assert snap.metadata["txid"] == result["txid"]
+        assert snap.state == "IMPORTED_VERIFIED"
         assert manager._request_path(request_id).is_file()
-        assert manager._response_path(request_id).is_file()
-        code, cancelled = _http(server, token, "POST", "/api/btc/cancel", {})
-        assert code == 400 and "cannot be cancelled" in cancelled["error"]
-        assert PendingRequestStore(manager.state_root).get(request_id).state == "BROADCAST_REQUESTED"
         assert manager._response_path(request_id).is_file()
     finally:
         _stop(server, worker)
@@ -521,10 +515,10 @@ def test_btc_matching_esplora_ack_keeps_reserved_txid_across_restart(tmp_path):
     worker2 = threading.Thread(target=server2.serve_forever, daemon=True)
     worker2.start()
     try:
-        code, _ = _http(server2, token2, "POST", "/api/btc/broadcast", {})
-        assert code == 400
-        assert len(api.sent) == 1
-        assert PendingRequestStore(manager.state_root).get(request_id).state == "BROADCAST_REQUESTED"
+        code, denied = _http(server2, token2, "POST", "/api/btc/broadcast", {})
+        assert code == 400 and "Authenticated chain" in denied["error"]
+        assert api.sent == []
+        assert PendingRequestStore(manager.state_root).get(request_id).state == "IMPORTED_VERIFIED"
     finally:
         _stop(server2, worker2)
 
