@@ -529,3 +529,43 @@ def test_missing_partition_is_pending_but_malformed_gpt_is_permanent(tmp_path):
     _flip(dev / "sda", 512 + 8)
     with pytest.raises(media.MediaInvalid):
         media.identify(sys_block, dev)
+
+
+def test_delayed_real_fixture_enumerates_before_deadline(tmp_path):
+    sys_block, dev = tmp_path / "sys", tmp_path / "dev"
+    sys_block.mkdir()
+    clock = _Clock()
+    def scanner(_):
+        if clock.now >= 4 and not (sys_block / "sda").exists():
+            _create(sys_block, dev)
+        return media.identify(sys_block, dev)
+    result = media.wait_ready(scanner=scanner, clock=clock.monotonic, sleeper=clock.sleep)
+    assert result[3] == "sda"
+    assert clock.now == 5
+
+
+def test_larger_unadjusted_flash_geometry_remains_rejected(tmp_path):
+    sys_block, dev = tmp_path / "sys", tmp_path / "dev"
+    _create(sys_block, dev)
+    with (dev / "sda").open("r+b") as disk:
+        disk.truncate(31_457_280_000)
+    with pytest.raises(media.MediaInvalid, match="malformed GPT"):
+        media.identify(sys_block, dev)
+
+
+def test_malformed_primary_cannot_hide_valid_backup_clone(tmp_path):
+    sys_block, dev = tmp_path / "sys", tmp_path / "dev"
+    _create(sys_block, dev, "sda")
+    _create(sys_block, dev, "sdb")
+    with (dev / "sdb").open("r+b") as disk:
+        disk.write(bytes((2 + media.GPT_TABLE_SECTORS) * media.SECTOR_SIZE))
+    with pytest.raises(media.MediaInvalid, match="malformed GPT"):
+        media.identify(sys_block, dev)
+
+
+def test_unexpected_noncontiguous_kernel_partition_is_rejected(tmp_path):
+    sys_block, dev = tmp_path / "sys", tmp_path / "dev"
+    _create(sys_block, dev)
+    (sys_block / "sda9").symlink_to((sys_block / "sda3").resolve(), target_is_directory=True)
+    with pytest.raises(media.MediaInvalid, match="extra kernel partition"):
+        media.identify(sys_block, dev)

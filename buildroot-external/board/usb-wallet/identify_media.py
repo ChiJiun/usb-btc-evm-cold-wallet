@@ -300,10 +300,17 @@ def _gpt_hint(path: Path, expected=None) -> bool:
     """A malformed GPT must not disappear from a uniqueness scan."""
     with _open_media(path, expected) as source:
         prefix = source.read((2 + GPT_TABLE_SECTORS) * SECTOR_SIZE)
+        source.seek(0, os.SEEK_END)
+        end = source.tell()
+        tail_size = min(end, (GPT_TABLE_SECTORS + 1) * SECTOR_SIZE)
+        source.seek(end - tail_size)
+        tail = source.read(tail_size)
     return (
         any(prefix[i + 4:i + 5] == b"\xee" for i in range(446, 510, 16))
         or prefix[512:520] == b"EFI PART"
-        or any(uid.bytes_le in prefix for uid in (DISK_UUID, BOOT_UUID, VAULT_UUID, TRANSFER_UUID))
+        or tail[-SECTOR_SIZE:-SECTOR_SIZE + 8] == b"EFI PART"
+        or any(uid.bytes_le in prefix or uid.bytes_le in tail
+               for uid in (DISK_UUID, BOOT_UUID, VAULT_UUID, TRANSFER_UUID))
     )
 
 
@@ -358,8 +365,10 @@ def identify(
             part_ids & {BOOT_UUID, VAULT_UUID, TRANSFER_UUID}
         ):
             continue
-        if not _usb_mass_storage(entry) or disk_id != DISK_UUID or not _layout_valid(parts):
+        if not _usb_mass_storage(entry) or disk_id != DISK_UUID:
             raise MediaDuplicate("duplicated or inconsistent trusted GPT identity")
+        if not _layout_valid(parts):
+            raise MediaInvalid("inconsistent trusted GPT layout")
 
         boot = dev_root / f"{name}1"
         vault = dev_root / f"{name}2"
@@ -373,25 +382,31 @@ def identify(
         ):
             pending = True
             continue
+        if matches:
+            raise MediaDuplicate("duplicated trusted USB partitions")
         if not all(
             _partition_matches_kernel(sys_block, entry, part_name, index, parts[index - 1])
             for index, part_name in enumerate(names, 1)
         ):
             raise MediaInvalid("inconsistent kernel partition mapping")
-        if any((sys_block / part_name).exists() for part_name in (f"{name}{len(parts)+1}",)):
+        if any(
+            re.fullmatch(re.escape(name) + r"[0-9]+", node.name)
+            and node.name not in names
+            for node in sys_block.iterdir()
+        ):
             raise MediaInvalid("inconsistent extra kernel partition")
         try:
             def label(path, fat32=False):
                 identity = inventory[path.name] if inventory is not None else None
                 return fat_label(path, require_fat32=fat32, expected=identity)
             if label(boot) != "USBCOLD_EFI" or label(vault) != "COLD_VAULT":
-                raise MediaDuplicate("duplicated or inconsistent trusted FAT identity")
+                raise MediaInvalid("inconsistent trusted FAT identity")
             if transfer is not None and label(transfer, True) != "TX_TRANSFER":
-                raise MediaDuplicate("duplicated or inconsistent trusted FAT identity")
+                raise MediaInvalid("inconsistent trusted FAT identity")
         except MediaInvalid:
             raise
         except (OSError, ValueError, UnicodeDecodeError) as exc:
-            raise MediaDuplicate("duplicated or inconsistent FAT metadata") from exc
+            raise MediaInvalid("inconsistent FAT metadata") from exc
         matches.append((str(boot), str(vault), str(transfer) if transfer else None, name))
         if len(matches) > 1:
             raise MediaDuplicate("duplicated trusted USB partitions")

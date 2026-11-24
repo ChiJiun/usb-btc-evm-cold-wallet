@@ -111,6 +111,7 @@ def test_uefi_smoke_uses_matched_flash_firmware_and_serial_audit():
     assert 'grep \'^FAIL:\' "$CHECKS" > /dev/ttyS0' in boot_audit
     assert "USB_WALLET_UEFI_AUDIT_LOCKDOWN" in boot_audit
     assert "USB_WALLET_CONSOLE_READY" in script
+    assert 'python3 "$ROOT/scripts/verify_delayed_usb.py"' in script
     assert "guest audit marker present but required evidence is missing" in script
     assert "boot partition is not mounted in cold runtime" in script
     assert "-net none" in script
@@ -159,7 +160,15 @@ def test_boot_audit_binds_vault_to_unique_partuuid_and_boot_device():
     assert 'BOOT_UUID = uuid.UUID("e2bd6d1b-8de5-502d-a897-c53a8e60f46b")' in helper
     assert 'VAULT_UUID = uuid.UUID("18f1c36f-d5c0-5052-9cd2-03e9c2a48f00")' in helper
     assert "zlib.crc32" in helper
-    assert "missing, duplicated, or inconsistent" in helper
+    assert "class MediaPending" in helper
+    assert "class MediaInvalid" in helper
+    assert "class MediaDuplicate" in helper
+    assert "class MediaReplaced" in helper
+    assert "class MediaTimeout" in helper
+    assert "BLKGETDISKSEQ" in helper
+    assert ' --check "$MEDIA_IDENTITY"' in init
+    assert 'ro,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077' in init
+    assert 'remount,rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077' in init
     assert "usb-wallet-identify-media" in postbuild
     assert "/usr/libexec/usb-wallet-identify-media" in init
     assert "blkid -t" not in init and "blkid -s" not in init

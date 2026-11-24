@@ -1,5 +1,5 @@
 #!/bin/sh
-set -eu
+set -efu
 
 CHECKS=/run/usb-wallet/boot-checks.txt
 LOCKDOWN=/run/usb-wallet/lockdown
@@ -14,7 +14,8 @@ FAILED=0
 mkdir -p /run/usb-wallet /mnt/cold-vault /mnt/transfer
 chmod 0700 /run/usb-wallet /mnt/cold-vault /mnt/transfer
 : > "$CHECKS"
-rm -f "$LOCKDOWN" "$BOOT_DEVICE_FILE" "$BOOT_PARENT_FILE" "$VAULT_DEVICE_FILE" "$TRANSFER_DEVICE_FILE" "$BOOT_SYSFS_FILE" "$BOOT_DISKSEQ_FILE"
+: > "$LOCKDOWN"
+rm -f "$BOOT_DEVICE_FILE" "$BOOT_PARENT_FILE" "$VAULT_DEVICE_FILE" "$TRANSFER_DEVICE_FILE" "$BOOT_SYSFS_FILE" "$BOOT_DISKSEQ_FILE"
 
 pass() {
 	printf 'PASS: %s\n' "$1" >> "$CHECKS"
@@ -236,6 +237,8 @@ if [ "$FAILED" -ne 0 ]; then
 	printf 'LOCKDOWN: one or more boot security checks failed\n' >> "$CHECKS"
 else
 	pass "offline startup audit complete"
+	# Only a fully successful audit can release the default lock.
+	rm -f "$LOCKDOWN"
 fi
 
 # Report only the final audit result on the emulated UART. No wallet secrets or

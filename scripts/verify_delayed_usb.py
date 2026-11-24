@@ -15,6 +15,11 @@ ROOT = Path(__file__).resolve().parents[1]
 IMAGES = ROOT / "build/output/images"
 
 
+def require(condition, reason):
+    if not condition:
+        raise RuntimeError(reason)
+
+
 def wait_for(log, process, predicate, timeout):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -71,7 +76,7 @@ def exercise(attach):
                 if attach:
                     time.sleep(5)
                     before = serial.read_text(errors="replace")
-                    assert "USB_WALLET_UEFI_AUDIT_" not in before, "guest decided before hotplug"
+                    require("USB_WALLET_UEFI_AUDIT_" not in before, "guest decided before hotplug")
                     hotplug(qmp)
                 data = wait_for(serial, process, lambda log: (
                     "USB_WALLET_UEFI_AUDIT_LOCKDOWN" in log or (
@@ -79,18 +84,18 @@ def exercise(attach):
                     )
                 ), 100)
                 if attach:
-                    assert "USB_WALLET_UEFI_AUDIT_LOCKDOWN" not in data
-                    assert "USB_WALLET_UEFI_AUDIT_OK" in data
-                    assert "PASS: USB readiness: two complete stable scans" in data
-                    assert "PASS: COLD_VAULT restrictive mount options verified" in data
-                    assert "PASS: /proc/net absent" in data
-                    assert "PASS: no active swap" in data
-                    assert "PASS: root filesystem is RAM-backed" in data
+                    require("USB_WALLET_UEFI_AUDIT_LOCKDOWN" not in data, "missing or contradictory guest evidence")
+                    require("USB_WALLET_UEFI_AUDIT_OK" in data, "missing or contradictory guest evidence")
+                    require("PASS: USB readiness: two complete stable scans" in data, "missing or contradictory guest evidence")
+                    require("PASS: COLD_VAULT restrictive mount options verified" in data, "missing or contradictory guest evidence")
+                    require("PASS: /proc/net absent" in data, "missing or contradictory guest evidence")
+                    require("PASS: no active swap" in data, "missing or contradictory guest evidence")
+                    require("PASS: root filesystem is RAM-backed" in data, "missing or contradictory guest evidence")
                     print("PASS: real kernel boot accepted delayed USB and audited mount")
                 else:
-                    assert "USB_WALLET_UEFI_AUDIT_OK" not in data
-                    assert "USB_WALLET_UEFI_AUDIT_LOCKDOWN" in data
-                    assert "USB readiness: enumeration or I/O deadline expired" in data
+                    require("USB_WALLET_UEFI_AUDIT_OK" not in data, "missing or contradictory guest evidence")
+                    require("USB_WALLET_UEFI_AUDIT_LOCKDOWN" in data, "missing or contradictory guest evidence")
+                    require("USB readiness: enumeration or I/O deadline expired" in data, "missing or contradictory guest evidence")
                     print("PASS: real kernel boot timed out without USB and locked down")
             except BaseException:
                 if serial.exists():
