@@ -52,15 +52,23 @@ VAULT_PARENT=""
 # GUIDs, FAT labels and uniqueness across USB disks before returning paths.
 MEDIA_PARENT=""
 TRANSFER_DEVICE=""
+# This marker is public and lets the host test attach USB after init starts.
+if [ -c /dev/ttyS0 ]; then
+    printf 'USB_WALLET_MEDIA_WAIT\n' > /dev/ttyS0
+fi
 if MEDIA_IDENTITY="$(/usr/bin/python3 /usr/libexec/usb-wallet-identify-media 2>/dev/null)"; then
     # Helper emits boot, vault, optional same-device transfer ("-" if absent),
     # then a kernel block basename. None of these fields are shell-controlled.
     set -- $MEDIA_IDENTITY
-    if [ "$#" -eq 4 ]; then
+    if [ "$#" -eq 8 ]; then
         BOOT_DEVICE="$1"
         VAULT_DEVICE="$2"
         [ "$3" = "-" ] || TRANSFER_DEVICE="$3"
         MEDIA_PARENT="$4"
+        EXPECTED_SYSFS="$5"
+        EXPECTED_DISKSEQ="$6"
+        EXPECTED_VAULT_DEV="$7"
+        pass "USB readiness: two complete stable scans within 60 seconds"
         if [ -n "$TRANSFER_DEVICE" ]; then
             pass "unique single-USB boot, vault and transfer layout verified by GPT CRC, GUID, size and FAT label"
         else
@@ -70,7 +78,13 @@ if MEDIA_IDENTITY="$(/usr/bin/python3 /usr/libexec/usb-wallet-identify-media 2>/
         fail "boot media identifier returned malformed output"
     fi
 else
-    fail "boot/vault/transfer media is missing, duplicated or failed GPT/FAT verification"
+    status=$?
+    case "$status" in
+        3) fail "USB readiness: duplicate or conflicting media identity" ;;
+        4) fail "USB readiness: enumeration or I/O deadline expired (60 seconds)" ;;
+        5) fail "USB readiness: observed device identity replaced" ;;
+        *) fail "USB readiness: permanent GPT/FAT/sysfs validation failure" ;;
+    esac
 fi
 
 if [ -n "$BOOT_DEVICE" ] && [ -n "$VAULT_DEVICE" ]; then
@@ -83,7 +97,7 @@ if [ -n "$BOOT_DEVICE" ] && [ -n "$VAULT_DEVICE" ]; then
 		printf '%s\n' "$VAULT_DEVICE" > "$VAULT_DEVICE_FILE"
 		BOOT_SYSFS="$(readlink -f "/sys/class/block/$BOOT_PARENT" 2>/dev/null || true)"
 		BOOT_DISKSEQ="$(cat "/sys/class/block/$BOOT_PARENT/diskseq" 2>/dev/null || true)"
-		if [ -n "$BOOT_SYSFS" ] && [ -n "$BOOT_DISKSEQ" ]; then
+		if [ "$BOOT_SYSFS" = "$EXPECTED_SYSFS" ] && [ "$BOOT_DISKSEQ" = "$EXPECTED_DISKSEQ" ]; then
 			printf '%s\n' "$BOOT_SYSFS" > "$BOOT_SYSFS_FILE"
 			printf '%s\n' "$BOOT_DISKSEQ" > "$BOOT_DISKSEQ_FILE"
 			pass "boot USB sysfs ancestry and disk sequence pinned for runtime replacement detection"
@@ -120,20 +134,40 @@ if [ "$FAILED" -eq 0 ] && [ -n "$BOOT_DEVICE" ]; then
 	fi
 fi
 
+# Repeat the full identity/uniqueness check at the mount boundary. The
+# initial mount is read-only so a replacement cannot receive FAT writes.
+media_unchanged() {
+    /usr/bin/python3 /usr/libexec/usb-wallet-identify-media --check "$MEDIA_IDENTITY" >/dev/null 2>&1
+}
+
+vault_mount_matches() {
+    awk -v dev="$EXPECTED_VAULT_DEV" '
+        $5 == "/mnt/cold-vault" { count++; if ($3 == dev) matchdev++ }
+        END { exit !(count == 1 && matchdev == 1) }
+    ' /proc/self/mountinfo
+}
+
 # Mount only the exact, unique vault partition identified above. A duplicated
 # PARTUUID (for example, two cloned boot USBs attached at once) fails closed.
 if [ "$FAILED" -eq 0 ] && [ -n "$VAULT_DEVICE" ]; then
-	current="$(mount_source /mnt/cold-vault)"
-	if [ -z "$current" ]; then
-		mount -t vfat -o rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077 \
-			"$VAULT_DEVICE" /mnt/cold-vault 2>/dev/null || true
-		current="$(mount_source /mnt/cold-vault)"
-	fi
-	if [ "$current" = "$VAULT_DEVICE" ]; then
-		pass "COLD_VAULT mount source matches verified PARTUUID device"
-	else
-		fail "COLD_VAULT mount source does not match verified PARTUUID device"
-	fi
+    current="$(mount_source /mnt/cold-vault)"
+    if [ -n "$current" ] || ! media_unchanged; then
+        fail "COLD_VAULT pre-mount identity verification failed"
+    elif ! mount -t vfat -o ro,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077 \
+        "$VAULT_DEVICE" /mnt/cold-vault 2>/dev/null; then
+        fail "COLD_VAULT read-only mount failed"
+    elif ! vault_mount_matches || ! media_unchanged; then
+        fail "COLD_VAULT identity changed during read-only mount"
+    elif ! mount -t vfat -o remount,rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077 \
+        "$VAULT_DEVICE" /mnt/cold-vault 2>/dev/null; then
+        fail "COLD_VAULT restrictive remount failed"
+    elif ! vault_mount_matches || ! media_unchanged; then
+        fail "COLD_VAULT identity changed during remount"
+    elif [ "$(mount_source /mnt/cold-vault)" = "$VAULT_DEVICE" ]; then
+        pass "COLD_VAULT mount source matches verified PARTUUID device"
+    else
+        fail "COLD_VAULT mount source does not match verified PARTUUID device"
+    fi
 fi
 
 if [ -d /proc/net ]; then
@@ -193,6 +227,10 @@ else
 fi
 
 if [ "$FAILED" -ne 0 ]; then
+    # A failed mount audit must not leave writable vault media accessible.
+    if [ -n "$(mount_source /mnt/cold-vault)" ]; then
+        umount /mnt/cold-vault 2>/dev/null || fail "COLD_VAULT cleanup failed"
+    fi
 	rm -f "$BOOT_DEVICE_FILE" "$BOOT_PARENT_FILE" "$VAULT_DEVICE_FILE" "$TRANSFER_DEVICE_FILE" "$BOOT_SYSFS_FILE" "$BOOT_DISKSEQ_FILE"
 	: > "$LOCKDOWN"
 	printf 'LOCKDOWN: one or more boot security checks failed\n' >> "$CHECKS"

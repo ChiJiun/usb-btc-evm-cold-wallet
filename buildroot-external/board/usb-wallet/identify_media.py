@@ -7,6 +7,12 @@ authenticate the USB contents or provide a trusted boot root.
 from __future__ import annotations
 
 import os
+import fcntl
+import hashlib
+import select
+import signal
+import stat
+import time
 from pathlib import Path
 import re
 import struct
@@ -80,13 +86,56 @@ def _read_entries(source, header: dict[str, int | uuid.UUID]) -> bytes:
     return entries
 
 
+# BLKGETDISKSEQ = _IOR(0x12, 128, __u64), on the x86-64 Linux target.
+BLKGETDISKSEQ = 0x80081280
+
+
+class MediaPending(ValueError):
+    """Enumeration is incomplete; no unsafe media has been established."""
+
+
+class MediaInvalid(ValueError):
+    """Permanent security failure; never retry."""
+
+
+class MediaDuplicate(MediaInvalid):
+    """More than one trusted identity or a conflicting identity."""
+
+
+class MediaReplaced(MediaInvalid):
+    """Previously observed kernel device identity changed."""
+
+
+class MediaTimeout(ValueError):
+    """Readiness deadline expired."""
+
+
+def _open_media(path: Path, expected=None):
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        if expected is not None:
+            _, sequence, dev = expected
+            st = os.fstat(fd)
+            if not stat.S_ISBLK(st.st_mode) or (
+                f"{os.major(st.st_rdev)}:{os.minor(st.st_rdev)}" != dev
+            ):
+                raise MediaReplaced("inconsistent device node identity")
+            actual = struct.unpack("=Q", fcntl.ioctl(fd, BLKGETDISKSEQ, bytes(8)))[0]
+            if str(actual) != sequence:
+                raise MediaReplaced("inconsistent disk sequence")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def read_gpt(
-    disk: Path,
+    disk: Path, *, expected=None,
 ) -> tuple[uuid.UUID, list[tuple[uuid.UUID, uuid.UUID, int, int, int]]]:
     """Read and cross-check protective MBR plus primary/backup GPT copies."""
     if disk.is_symlink():
         raise ValueError("block device path must not be a symlink")
-    with disk.open("rb") as source:
+    with _open_media(disk, expected) as source:
         source.seek(0, os.SEEK_END)
         size_bytes = source.tell()
         if size_bytes < 68 * SECTOR_SIZE or size_bytes % SECTOR_SIZE:
@@ -153,11 +202,11 @@ def read_gpt(
     return disk_id, partitions
 
 
-def fat_label(partition: Path, *, require_fat32: bool = False) -> str:
+def fat_label(partition: Path, *, require_fat32: bool = False, expected=None) -> str:
     """Read the fixed FAT12/16/FAT32 volume label directly from its boot sector."""
     if partition.is_symlink():
         raise ValueError("partition device path must not be a symlink")
-    with partition.open("rb") as source:
+    with _open_media(partition, expected) as source:
         sector = source.read(SECTOR_SIZE)
     if len(sector) != SECTOR_SIZE or sector[510:512] != b"\x55\xaa":
         raise ValueError("missing FAT boot sector")
@@ -247,78 +296,246 @@ def _layout_valid(
     return True
 
 
+def _gpt_hint(path: Path, expected=None) -> bool:
+    """A malformed GPT must not disappear from a uniqueness scan."""
+    with _open_media(path, expected) as source:
+        prefix = source.read((2 + GPT_TABLE_SECTORS) * SECTOR_SIZE)
+    return (
+        any(prefix[i + 4:i + 5] == b"\xee" for i in range(446, 510, 16))
+        or prefix[512:520] == b"EFI PART"
+        or any(uid.bytes_le in prefix for uid in (DISK_UUID, BOOT_UUID, VAULT_UUID, TRANSFER_UUID))
+    )
+
+
 def identify(
     sys_block: Path = Path("/sys/class/block"),
     dev_root: Path = Path("/dev"),
+    *,
+    inventory=None,
 ) -> tuple[str, str, str | None, str]:
     """Return boot, vault, optional same-device transfer, and parent block name."""
     matches = []
-    unsafe_duplicate = False
+    pending = False
     for entry in sorted(sys_block.iterdir()):
         name = entry.name
         if not re.fullmatch(r"sd[a-z]+", name) or not entry.is_dir():
             continue
         if (entry / "partition").exists():
             continue
+        disk = dev_root / name
+        expected = inventory.get(name) if inventory is not None else None
+        if inventory is not None and expected is None:
+            pending = True
+            continue
+        if not disk.exists():
+            pending = True
+            continue
+        if disk.is_symlink():
+            raise MediaInvalid("inconsistent disk device path")
         try:
             if (entry / "queue/logical_block_size").read_text().strip() != "512":
+                raise MediaInvalid("inconsistent logical block size")
+            if inventory is not None and int((entry / "size").read_text().strip()) == 0:
+                pending = True
                 continue
-            disk_id, parts = read_gpt(dev_root / name)
-        except (OSError, ValueError):
+            disk_id, parts = read_gpt(disk, expected=expected)
+        except MediaInvalid:
+            raise
+        except FileNotFoundError:
+            pending = True
             continue
+        except ValueError:
+            # Non-GPT media (e.g. a separate legacy FAT transfer USB) is not
+            # a boot candidate. A corrupt GPT, even alongside a valid clone,
+            # is a permanent failure, not a reason to wait for its removal.
+            if _gpt_hint(disk, expected):
+                raise MediaInvalid("inconsistent malformed GPT")
+            continue
+        except OSError as exc:
+            raise MediaInvalid("inconsistent disk I/O") from exc
         part_ids = {part[1] for part in parts}
         if disk_id != DISK_UUID and not (
             part_ids & {BOOT_UUID, VAULT_UUID, TRANSFER_UUID}
         ):
             continue
-        if not _usb_mass_storage(entry):
-            unsafe_duplicate = True
-            continue
-        if disk_id != DISK_UUID or not _layout_valid(parts):
-            unsafe_duplicate = True
-            continue
+        if not _usb_mass_storage(entry) or disk_id != DISK_UUID or not _layout_valid(parts):
+            raise MediaDuplicate("duplicated or inconsistent trusted GPT identity")
 
         boot = dev_root / f"{name}1"
         vault = dev_root / f"{name}2"
         transfer = dev_root / f"{name}3" if len(parts) == 3 else None
         names = [f"{name}1", f"{name}2"] + ([f"{name}3"] if transfer else [])
+        if any(
+            not (sys_block / part_name).exists()
+            or not (dev_root / part_name).exists()
+            or (inventory is not None and part_name not in inventory)
+            for part_name in names
+        ):
+            pending = True
+            continue
         if not all(
             _partition_matches_kernel(sys_block, entry, part_name, index, parts[index - 1])
             for index, part_name in enumerate(names, 1)
         ):
-            unsafe_duplicate = True
-            continue
+            raise MediaInvalid("inconsistent kernel partition mapping")
+        if any((sys_block / part_name).exists() for part_name in (f"{name}{len(parts)+1}",)):
+            raise MediaInvalid("inconsistent extra kernel partition")
         try:
-            if fat_label(boot) != "USBCOLD_EFI" or fat_label(vault) != "COLD_VAULT":
-                unsafe_duplicate = True
-                continue
-            if transfer is not None and fat_label(transfer, require_fat32=True) != "TX_TRANSFER":
-                unsafe_duplicate = True
-                continue
-        except (OSError, ValueError, UnicodeDecodeError):
-            unsafe_duplicate = True
-            continue
-        matches.append(
-            (
-                str(boot),
-                str(vault),
-                str(transfer) if transfer is not None else None,
-                name,
-            )
-        )
-    if unsafe_duplicate or len(matches) != 1:
-        raise ValueError("missing, duplicated, or inconsistent trusted USB partitions")
+            def label(path, fat32=False):
+                identity = inventory[path.name] if inventory is not None else None
+                return fat_label(path, require_fat32=fat32, expected=identity)
+            if label(boot) != "USBCOLD_EFI" or label(vault) != "COLD_VAULT":
+                raise MediaDuplicate("duplicated or inconsistent trusted FAT identity")
+            if transfer is not None and label(transfer, True) != "TX_TRANSFER":
+                raise MediaDuplicate("duplicated or inconsistent trusted FAT identity")
+        except MediaInvalid:
+            raise
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            raise MediaDuplicate("duplicated or inconsistent FAT metadata") from exc
+        matches.append((str(boot), str(vault), str(transfer) if transfer else None, name))
+        if len(matches) > 1:
+            raise MediaDuplicate("duplicated trusted USB partitions")
+    if pending or not matches:
+        raise MediaPending("missing or not yet enumerated trusted USB partitions")
     return matches[0]
 
 
-def main() -> int:
+def capture_inventory(sys_block=Path("/sys/class/block")):
+    """Pin kernel ancestry, diskseq and device numbers, including partitions."""
+    found = {}
+    for entry in sorted(sys_block.iterdir()):
+        if not re.fullmatch(r"sd[a-z]+[0-9]*", entry.name):
+            continue
+        try:
+            node = entry.resolve(strict=True)
+            is_part = (node / "partition").exists()
+            disk = node.parent if is_part else node
+            seq = (disk / "diskseq").read_text().strip()
+            dev = (node / "dev").read_text().strip()
+            if not seq.isdecimal() or int(seq) <= 0 or not re.fullmatch(r"[0-9]+:[0-9]+", dev):
+                raise MediaInvalid("inconsistent sysfs disk identity")
+            found[entry.name] = (str(node), seq, dev)
+        except FileNotFoundError:
+            # A devtmpfs/sysfs node may be created piecemeal at startup.
+            # Keep it visible in the inventory rather than treating it as absent.
+            found[entry.name] = None
+    return found
+
+
+def observe(previous, current):
+    """New nodes may appear, but an observed complete identity cannot change."""
+    for name, identity in previous.items():
+        if identity is not None and current.get(name) != identity:
+            raise MediaReplaced("inconsistent device replacement during enumeration")
+    previous.update({name: value for name, value in current.items() if value is not None})
+
+
+def scan(previous):
+    inventory = capture_inventory()
+    observe(previous, inventory)
+    # Never read partially initialized devices; no accepted identity until
+    # the complete inventory is stable across the full GPT/FAT scan.
+    if any(value is None for value in inventory.values()):
+        raise MediaPending("missing sysfs identity")
     try:
-        boot, vault, transfer, parent = identify()
-    except (OSError, ValueError) as exc:
-        print(f"usb media identification failed: {exc}", file=sys.stderr)
-        return 1
-    print(boot, vault, transfer or "-", parent, sep="\n")
-    return 0
+        boot, vault, transfer, parent = identify(inventory=inventory)
+    finally:
+        after = capture_inventory()
+        observe(previous, after)
+    if inventory != after:
+        raise MediaPending("missing stable enumeration")
+    ancestry, seq, _ = inventory[parent]
+    vault_dev = inventory[Path(vault).name][2]
+    fingerprint = hashlib.sha256(repr(sorted(inventory.items())).encode("ascii")).hexdigest()
+    return "\n".join((boot, vault, transfer or "-", parent, ancestry, seq, vault_dev, fingerprint))
+
+
+def wait_ready(seconds=60, *, scanner=scan, clock=time.monotonic, sleeper=time.sleep):
+    """Two complete identical scans; only explicit pending states may retry."""
+    deadline = clock() + seconds
+    observed = {}
+    prior = None
+    while clock() < deadline:
+        try:
+            identity = scanner(observed)
+            if clock() >= deadline:
+                break
+            if prior is not None:
+                if identity != prior:
+                    raise MediaReplaced("inconsistent identity between complete scans")
+                return identity
+            prior = identity
+        except MediaPending:
+            # Do not accept a different device once a complete identity was seen.
+            if prior is not None:
+                raise MediaReplaced("inconsistent identity after readiness")
+        remaining = deadline - clock()
+        if remaining > 0:
+            sleeper(min(1, remaining))
+    raise MediaTimeout("readiness timeout")
+
+
+def _worker(expected):
+    try:
+        if expected is None:
+            return 0, wait_ready()
+        identity = scan({})
+        if identity != expected:
+            raise MediaReplaced("inconsistent boot identity at mount boundary")
+        return 0, identity
+    except MediaTimeout:
+        return 4, ""
+    except MediaDuplicate:
+        return 3, ""
+    except MediaReplaced:
+        return 5, ""
+    except (MediaInvalid, MediaPending, OSError, ValueError):
+        return 2, ""
+
+
+def _bounded_worker(expected):
+    """Bound even a stuck USB read. The read-only child owns no mount/write."""
+    limit = 60 if expected is None else 10
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_fd)
+        # Do not retain the shell command-substitution stdout/stderr pipe if
+        # a kernel I/O operation is uninterruptible after the deadline.
+        os.close(1)
+        os.close(2)
+        try:
+            status, identity = _worker(expected)
+            os.write(write_fd, (str(status) + "\n" + identity).encode("ascii"))
+        finally:
+            os._exit(0)
+    os.close(write_fd)
+    try:
+        if not select.select([read_fd], [], [], limit)[0]:
+            return 4, ""
+        payload = os.read(read_fd, 4096).decode("ascii")
+        code, _, identity = payload.partition("\n")
+        if code not in ("0", "2", "3", "4", "5") or (code == "0" and not identity):
+            return 2, ""
+        return int(code), identity
+    finally:
+        os.close(read_fd)
+        # Never wait for a child stuck in kernel D-state. It cannot write media.
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        os.waitpid(pid, os.WNOHANG)
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args and (len(args) != 2 or args[0] != "--check"):
+        return 2
+    status, identity = _bounded_worker(args[1] if args else None)
+    if status == 0:
+        print(identity)
+    return status
 
 
 if __name__ == "__main__":

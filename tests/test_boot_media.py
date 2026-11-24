@@ -454,3 +454,78 @@ def test_spoofed_trusted_identifiers_on_non_usb_disk_lock_down_even_with_valid_u
         media.identify(sys_block, dev)
 
 
+
+
+class _Clock:
+    now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def test_readiness_retries_only_pending_then_requires_two_full_scans():
+    clock = _Clock()
+    calls = []
+    def scanner(_):
+        calls.append(clock.now)
+        if len(calls) <= 3:
+            raise media.MediaPending("missing")
+        return "stable"
+    assert media.wait_ready(scanner=scanner, clock=clock.monotonic, sleeper=clock.sleep) == "stable"
+    assert calls == [0, 1, 2, 3, 4]
+
+
+def test_readiness_timeout_is_bounded():
+    clock = _Clock()
+    def scanner(_):
+        raise media.MediaPending("missing")
+    with pytest.raises(media.MediaTimeout):
+        media.wait_ready(60, scanner=scanner, clock=clock.monotonic, sleeper=clock.sleep)
+    assert clock.now == 60
+
+
+@pytest.mark.parametrize("failure", [media.MediaInvalid, media.MediaDuplicate, media.MediaReplaced])
+def test_security_failure_is_never_retried(failure):
+    clock = _Clock()
+    def scanner(_):
+        raise failure("security failure")
+    with pytest.raises(failure):
+        media.wait_ready(scanner=scanner, clock=clock.monotonic, sleeper=clock.sleep)
+    assert clock.now == 0
+
+
+def test_readiness_rejects_replacement_between_complete_scans():
+    clock = _Clock()
+    identities = iter(("diskseq-1", "diskseq-2"))
+    with pytest.raises(media.MediaReplaced):
+        media.wait_ready(scanner=lambda _: next(identities), clock=clock.monotonic, sleeper=clock.sleep)
+
+
+def test_observed_diskseq_cannot_be_replaced_while_waiting():
+    previous = {}
+    media.observe(previous, {"sda": ("/sys/device", "10", "8:0")})
+    with pytest.raises(media.MediaReplaced):
+        media.observe(previous, {"sda": ("/sys/device", "11", "8:0")})
+
+
+def test_readiness_cannot_ignore_malformed_duplicate(tmp_path):
+    sys_block, dev = tmp_path / "sys", tmp_path / "dev"
+    _create(sys_block, dev, "sda")
+    _create(sys_block, dev, "sdb")
+    _flip(dev / "sdb", 512 + 8)
+    with pytest.raises(media.MediaInvalid, match="malformed GPT"):
+        media.identify(sys_block, dev)
+
+
+def test_missing_partition_is_pending_but_malformed_gpt_is_permanent(tmp_path):
+    sys_block, dev = tmp_path / "sys", tmp_path / "dev"
+    _create(sys_block, dev)
+    (sys_block / "sda3").unlink()
+    with pytest.raises(media.MediaPending):
+        media.identify(sys_block, dev)
+    _flip(dev / "sda", 512 + 8)
+    with pytest.raises(media.MediaInvalid):
+        media.identify(sys_block, dev)

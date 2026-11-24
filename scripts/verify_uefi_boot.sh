@@ -100,6 +100,9 @@ while [ "$count" -lt 120 ]; do
             fi
         done
         echo "PASS: OVMF booted generated USB GPT image, guest security audit passed, and audited console reached its menu"
+        # Separately boot the same embedded initramfs with USB initially absent.
+        # The OVMF test above remains required and is never replaced by this.
+        python3 "$ROOT/scripts/verify_delayed_usb.py"
         exit 0
     fi
     if ! kill -0 "$PID" 2>/dev/null; then
