@@ -135,7 +135,7 @@ jobs:
         run: node --check src/usb_cold_wallet/companion_static/companion.js && node --test tests/test_companion_ui.mjs
 
       - name: Set up Python for Python-to-QR interoperability vectors
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -171,7 +171,7 @@ jobs:
           cache-dependency-path: qr-metamask/package-lock.json
 
       - name: Set up Python for cross-language signing test
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
