@@ -39,6 +39,16 @@ mount_source() {
 	awk -v target="$1" '$2 == target { print $1; exit }' /proc/mounts 2>/dev/null || true
 }
 
+# Preserve a public failure reason if an unexpected command aborts the audit.
+# The default LOCKDOWN remains in place; this diagnostic never unlocks it.
+record_unexpected_exit() {
+    status=$?
+    if [ "$status" -ne 0 ] && [ -e "$LOCKDOWN" ]; then
+        printf 'FAIL: boot security audit aborted unexpectedly (exit %s)\n' "$status" >> "$CHECKS" || true
+    fi
+}
+trap record_unexpected_exit 0
+
 # This image intentionally has no swap. Be defensive if firmware or a future
 # image accidentally exposes one.
 swapoff -a 2>/dev/null || true
@@ -55,7 +65,9 @@ MEDIA_PARENT=""
 TRANSFER_DEVICE=""
 # This marker is public and lets the host test attach USB after init starts.
 if [ -c /dev/ttyS0 ]; then
-    printf 'USB_WALLET_MEDIA_WAIT\n' > /dev/ttyS0
+    # A serial character node may exist without a usable physical UART.
+    # Diagnostic I/O must not abort the security audit under set -e.
+    printf 'USB_WALLET_MEDIA_WAIT\n' 2>/dev/null > /dev/ttyS0 || true
 fi
 if MEDIA_IDENTITY="$(/usr/bin/python3 /usr/libexec/usb-wallet-identify-media 2>/dev/null)"; then
     # Helper emits boot, vault, optional same-device transfer ("-" if absent),
@@ -248,11 +260,11 @@ if [ -c /dev/ttyS0 ]; then
 		# Emit bounded, public audit evidence before the final marker so CI
 		# validates the guest checks themselves, not a marker in isolation.
 		grep '^PASS:' "$CHECKS" > /dev/ttyS0 || true
-		printf 'USB_WALLET_UEFI_AUDIT_OK\n' > /dev/ttyS0
+		printf 'USB_WALLET_UEFI_AUDIT_OK\n' 2>/dev/null > /dev/ttyS0 || true
 	else
 		# Failure reasons contain only public mount/configuration facts.
 		# Include them in the emulated serial log to diagnose a locked boot.
 		grep '^FAIL:' "$CHECKS" > /dev/ttyS0 || true
-		printf 'USB_WALLET_UEFI_AUDIT_LOCKDOWN\n' > /dev/ttyS0
+		printf 'USB_WALLET_UEFI_AUDIT_LOCKDOWN\n' 2>/dev/null > /dev/ttyS0 || true
 	fi
 fi

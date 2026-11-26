@@ -90,3 +90,28 @@ Reuse: existing identify_media.py GPT/FAT parser and S01airgap policy; Linux
 BLKGETDISKSEQ UAPI reference (Linux v6.12 commit
 adc218676eef25575469234709c2d87185ca223a, include/uapi/linux/fs.h and
 block/ioctl.c); Python standard library only, no upstream code copied.
+
+
+## Second physical boot attempt (2026-11-26)
+
+Operator video of exact source `76f58b847d4eb01656bf853fc8a01d6fd0109e4f`
+on the same Acer/General UDisk shows Linux init, then
+`FAIL: boot security audit contained no checks` and LOCKDOWN, before
+USB descriptor error -110, mass-storage discovery and sda1/sda2/sda3.
+The tested image passed CI run
+[45408993902](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/actions/runs/45408993902);
+the physical boot failed. The original script creates an empty audit file
+and default lock, then writes MEDIA_WAIT to /dev/ttyS0 under set -e before
+calling the media helper. A character node is not proof of a working UART.
+A failed write or open can terminate init early, matching the observed
+empty audit. This is a concrete software defect and a suspected physical
+cause, not proof that the Acer UART actually returned an error.
+
+Make all serial marker writes best effort; keep the file-based security
+audit authoritative and report unexpected startup exits while locked.
+Regression tests execute the real pre-scan prefix and final serial block
+with /dev/full, an actual failing character device. No GPT, media identity,
+mount, offline or timing gate is relaxed. No third-party source copied.
+Exact-head CI, two clean builds, QEMU and a new physical retest remain
+required. Power-off after menu option 6 was reported as a black display;
+actual power state and shutdown success remain unconfirmed.

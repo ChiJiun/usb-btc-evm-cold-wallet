@@ -377,3 +377,69 @@ def test_post_build_enforces_single_appliance_tty_and_fails_closed(tmp_path):
     result = subprocess.run(["sh", str(script)], env=env, capture_output=True, text=True)
     assert result.returncode != 0
     assert "required appliance launcher missing" in result.stderr
+
+
+def test_boot_media_wait_survives_unusable_serial_character_device(tmp_path):
+    """Execute the real startup prefix with an actual failing character sink."""
+    import shutil
+    import subprocess
+    import pytest
+
+    if not Path("/dev/full").is_char_device() or not shutil.which("sh"):
+        pytest.skip("requires POSIX shell and /dev/full")
+    script = (
+        ROOT / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d/S01airgap"
+    ).read_text()
+    prefix, separator, _ = script.partition('if MEDIA_IDENTITY=')
+    assert separator
+    # Execute only the pre-discovery prefix: no real mounts, device access,
+    # swap changes or modifications to the host's /run.
+    prefix = (
+        prefix.replace("/run/usb-wallet", str(tmp_path / "run"))
+        .replace("/mnt/cold-vault", str(tmp_path / "vault"))
+        .replace("/mnt/transfer", str(tmp_path / "transfer"))
+        .replace("/dev/ttyS0", "/dev/full")
+    )
+    prefix = "swapoff() { :; }\n" + prefix
+    result = subprocess.run(
+        ["sh", "-c", prefix + '\nprintf "MEDIA_SCAN_REACHED\\n"\n'],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "MEDIA_SCAN_REACHED" in result.stdout
+    assert (tmp_path / "run/lockdown").exists()
+
+    # Genuine startup failure must still lock down and leave a public reason.
+    result = subprocess.run(
+        ["sh", "-c", prefix + "\nexit 7\n"],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 7
+    assert (tmp_path / "run/lockdown").exists()
+    assert "FAIL: boot security audit aborted unexpectedly (exit 7)" in (
+        tmp_path / "run/boot-checks.txt"
+    ).read_text()
+
+
+def test_boot_final_serial_diagnostics_cannot_change_audit_result(tmp_path):
+    import shutil
+    import subprocess
+    import pytest
+
+    if not Path("/dev/full").is_char_device() or not shutil.which("sh"):
+        pytest.skip("requires POSIX shell and /dev/full")
+    script = (
+        ROOT / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d/S01airgap"
+    ).read_text()
+    _, separator, tail = script.partition("# Report only the final audit result")
+    assert separator
+    checks = tmp_path / "checks"
+    checks.write_text("PASS: test audit\nFAIL: test failure\n")
+    tail = (separator + tail).replace("/dev/ttyS0", "/dev/full")
+    for failed in (0, 1):
+        result = subprocess.run(
+            ["sh", "-efuc", 'CHECKS=$1\nFAILED=$2\n' + tail,
+             "audit", str(checks), str(failed)],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
