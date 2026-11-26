@@ -108,7 +108,8 @@ def test_uefi_smoke_uses_matched_flash_firmware_and_serial_audit():
     assert "console=tty1 console=ttyS0,115200" in grub
     assert "earlyprintk=serial,ttyS0,115200" in grub
     assert "loglevel=7" in grub
-    assert 'grep \'^FAIL:\' "$CHECKS" > /dev/ttyS0' in boot_audit
+    assert "--serial audit-lockdown" in boot_audit
+    assert "--serial audit-ok" in boot_audit
     assert "USB_WALLET_UEFI_AUDIT_LOCKDOWN" in boot_audit
     assert "USB_WALLET_CONSOLE_READY" in script
     assert 'python3 "$ROOT/scripts/verify_delayed_usb.py"' in script
@@ -400,6 +401,9 @@ def test_boot_media_wait_survives_unusable_serial_character_device(tmp_path):
         .replace("/mnt/transfer", str(tmp_path / "transfer"))
         .replace("/dev/ttyS0", "/dev/full")
     )
+    # Stub the bounded helper's failed exit; real device/watchdog behavior is
+    # exercised separately in test_boot_media.
+    prefix = prefix.replace("/usr/bin/python3 /usr/libexec/usb-wallet-identify-media", "false")
     prefix = "swapoff() { :; }\n" + prefix
     result = subprocess.run(
         ["sh", "-c", prefix + '\nprintf "MEDIA_SCAN_REACHED\\n"\n'],
@@ -435,7 +439,7 @@ def test_boot_final_serial_diagnostics_cannot_change_audit_result(tmp_path):
     assert separator
     checks = tmp_path / "checks"
     checks.write_text("PASS: test audit\nFAIL: test failure\n")
-    tail = (separator + tail).replace("/dev/ttyS0", "/dev/full")
+    tail = (separator + tail).replace("/usr/bin/python3 /usr/libexec/usb-wallet-identify-media", "false")
     for failed in (0, 1):
         result = subprocess.run(
             ["sh", "-efuc", 'CHECKS=$1\nFAILED=$2\n' + tail,

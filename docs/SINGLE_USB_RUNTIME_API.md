@@ -115,3 +115,27 @@ mount, offline or timing gate is relaxed. No third-party source copied.
 Exact-head CI, two clean builds, QEMU and a new physical retest remain
 required. Power-off after menu option 6 was reported as a black display;
 actual power state and shutdown success remain unconfirmed.
+
+
+## Boot robustness follow-up
+
+Use the existing standalone stdlib media helper for fixed serial markers with
+nonblocking open/write and an independent two-second fork watchdog. Both
+startup and appliance use it; failure is non-authoritative. Kernel-uptime
+INFO stages are stored in the RAM audit log and displayed alongside real
+PASS/FAIL lines. Missing mount/swap evidence fails closed; unexpected init
+exits preserve the failing phase and attempt vault cleanup.
+
+Only EAGAIN/EBUSY/EINTR/ETIMEDOUT or incomplete enumeration are retryable
+during readiness. EIO, removal, malformed GPT/FAT and identity changes
+remain permanent; no extra retry is permitted after a complete scan is
+lost. Unit tests cover delay/deadline boundaries and UART failure/stall.
+The direct-kernel QEMU matrix includes xHCI at 5 and 30 seconds and EHCI
+at 15 seconds, plus absent media; OVMF and two independent clean builds
+remain required. The normal and locked power-off menu shares explicit
+unmount/sync/poweroff checks and keeps the console locked if shutdown
+fails. A command accepted by PID 1 is not proof of physical power-off.
+
+No upstream code copied; existing local media parser, watchdog pattern,
+appliance, QMP and CI gate reused. Physical controller/firmware faults,
+Secure Boot and raw-media provenance remain independent acceptance.

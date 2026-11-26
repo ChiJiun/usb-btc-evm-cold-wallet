@@ -32,7 +32,7 @@ def wait_for(log, process, predicate, timeout):
     raise RuntimeError("QEMU guest evidence deadline expired")
 
 
-def hotplug(path):
+def hotplug(path, bus):
     with socket.socket(socket.AF_UNIX) as sock:
         sock.settimeout(10)
         sock.connect(str(path))
@@ -41,7 +41,7 @@ def hotplug(path):
             for command in (
                 {"execute": "qmp_capabilities"},
                 {"execute": "device_add", "arguments": {
-                    "driver": "usb-storage", "bus": "xhci.0",
+                    "driver": "usb-storage", "bus": bus,
                     "drive": "walletdisk", "id": "delayed-usb",
                 }},
             ):
@@ -55,7 +55,7 @@ def hotplug(path):
                         break
 
 
-def exercise(attach):
+def exercise(attach, *, delay=5, controller='qemu-xhci', bus='xhci'):
     with tempfile.TemporaryDirectory(prefix="wallet-delayed-") as directory:
         temp = Path(directory)
         serial = temp / "serial.log"
@@ -65,7 +65,7 @@ def exercise(attach):
                 "qemu-system-x86_64", "-machine", "q35,accel=tcg", "-cpu", "max",
                 "-smp", "2", "-m", "1536", "-display", "none", "-monitor", "none",
                 "-net", "none", "-no-reboot", "-serial", f"file:{serial}",
-                "-qmp", f"unix:{qmp},server=on,wait=off", "-device", "qemu-xhci,id=xhci",
+                "-qmp", f"unix:{qmp},server=on,wait=off", "-device", f"{controller},id={bus}",
                 "-kernel", str(IMAGES / "bzImage"), "-append",
                 "console=tty1 console=ttyS0,115200 loglevel=7 rdinit=/sbin/init",
                 "-drive", f"if=none,id=walletdisk,format=raw,snapshot=on,file={IMAGES / 'usb-cold-wallet.img'}",
@@ -74,10 +74,10 @@ def exercise(attach):
             try:
                 wait_for(serial, process, lambda data: "USB_WALLET_MEDIA_WAIT" in data, 180)
                 if attach:
-                    time.sleep(5)
+                    time.sleep(delay)
                     before = serial.read_text(errors="replace")
                     require("USB_WALLET_UEFI_AUDIT_" not in before, "guest decided before hotplug")
-                    hotplug(qmp)
+                    hotplug(qmp, f'{bus}.0')
                 data = wait_for(serial, process, lambda log: (
                     "USB_WALLET_UEFI_AUDIT_LOCKDOWN" in log or (
                         "USB_WALLET_UEFI_AUDIT_OK" in log and "USB_WALLET_CONSOLE_READY" in log
@@ -113,4 +113,6 @@ def exercise(attach):
 
 if __name__ == "__main__":
     exercise(True)
+    exercise(True, delay=15, controller="usb-ehci", bus="ehci")
+    exercise(True, delay=30)
     exercise(False)

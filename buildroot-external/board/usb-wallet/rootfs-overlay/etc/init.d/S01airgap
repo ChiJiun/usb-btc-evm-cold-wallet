@@ -10,11 +10,33 @@ TRANSFER_DEVICE_FILE=/run/usb-wallet/transfer-device
 BOOT_SYSFS_FILE=/run/usb-wallet/boot-sysfs-path
 BOOT_DISKSEQ_FILE=/run/usb-wallet/boot-diskseq
 FAILED=0
-
-mkdir -p /run/usb-wallet /mnt/cold-vault /mnt/transfer
-chmod 0700 /run/usb-wallet /mnt/cold-vault /mnt/transfer
-: > "$CHECKS"
+STAGE=INIT
+mkdir -p /run/usb-wallet
 : > "$LOCKDOWN"
+: > "$CHECKS"
+
+# Stage timestamps are kernel uptime, public evidence only, not audit PASS.
+stage() {
+    STAGE="$1"
+    uptime=unknown
+    if read -r uptime ignored < /proc/uptime; then :; fi
+    printf 'INFO: [%s] %s\n' "$uptime" "$STAGE" >> "$CHECKS" || true
+}
+
+record_unexpected_exit() {
+    status=$?
+    if [ "$status" -ne 0 ] && [ -e "$LOCKDOWN" ]; then
+        printf 'FAIL: boot security audit aborted unexpectedly (exit %s) at %s\n' "$status" "$STAGE" >> "$CHECKS" || true
+        if awk '$2 == "/mnt/cold-vault" { found=1 } END { exit !found }' /proc/mounts 2>/dev/null; then
+            umount /mnt/cold-vault 2>/dev/null || printf 'FAIL: COLD_VAULT cleanup failed\n' >> "$CHECKS" || true
+        fi
+        rm -f "$BOOT_DEVICE_FILE" "$BOOT_PARENT_FILE" "$VAULT_DEVICE_FILE" "$TRANSFER_DEVICE_FILE" "$BOOT_SYSFS_FILE" "$BOOT_DISKSEQ_FILE" || true
+    fi
+}
+trap record_unexpected_exit 0
+stage INIT_STARTED
+mkdir -p /mnt/cold-vault /mnt/transfer
+chmod 0700 /run/usb-wallet /mnt/cold-vault /mnt/transfer
 rm -f "$BOOT_DEVICE_FILE" "$BOOT_PARENT_FILE" "$VAULT_DEVICE_FILE" "$TRANSFER_DEVICE_FILE" "$BOOT_SYSFS_FILE" "$BOOT_DISKSEQ_FILE"
 
 pass() {
@@ -39,15 +61,10 @@ mount_source() {
 	awk -v target="$1" '$2 == target { print $1; exit }' /proc/mounts 2>/dev/null || true
 }
 
-# Preserve a public failure reason if an unexpected command aborts the audit.
-# The default LOCKDOWN remains in place; this diagnostic never unlocks it.
-record_unexpected_exit() {
-    status=$?
-    if [ "$status" -ne 0 ] && [ -e "$LOCKDOWN" ]; then
-        printf 'FAIL: boot security audit aborted unexpectedly (exit %s)\n' "$status" >> "$CHECKS" || true
-    fi
-}
-trap record_unexpected_exit 0
+# Missing proc evidence is a failure, never an empty-success mount audit.
+if [ ! -r /proc/mounts ] || [ ! -r /proc/self/mountinfo ] || [ ! -r /proc/swaps ]; then
+    fail "required kernel mount/swap evidence unavailable"
+fi
 
 # This image intentionally has no swap. Be defensive if firmware or a future
 # image accidentally exposes one.
@@ -63,12 +80,10 @@ VAULT_PARENT=""
 # GUIDs, FAT labels and uniqueness across USB disks before returning paths.
 MEDIA_PARENT=""
 TRANSFER_DEVICE=""
-# This marker is public and lets the host test attach USB after init starts.
-if [ -c /dev/ttyS0 ]; then
-    # A serial character node may exist without a usable physical UART.
-    # Diagnostic I/O must not abort the security audit under set -e.
-    printf 'USB_WALLET_MEDIA_WAIT\n' 2>/dev/null > /dev/ttyS0 || true
-fi
+# USB discovery has its own 60-second watchdog; optional UART I/O cannot
+# delay it indefinitely or change the security decision.
+stage USB_SCAN_STARTED
+/usr/bin/python3 /usr/libexec/usb-wallet-identify-media --serial media-wait >/dev/null 2>&1 || true
 if MEDIA_IDENTITY="$(/usr/bin/python3 /usr/libexec/usb-wallet-identify-media 2>/dev/null)"; then
     # Helper emits boot, vault, optional same-device transfer ("-" if absent),
     # then a kernel block basename. None of these fields are shell-controlled.
@@ -81,6 +96,7 @@ if MEDIA_IDENTITY="$(/usr/bin/python3 /usr/libexec/usb-wallet-identify-media 2>/
         EXPECTED_SYSFS="$5"
         EXPECTED_DISKSEQ="$6"
         EXPECTED_VAULT_DEV="$7"
+        stage STABLE_SCAN_COMPLETE
         pass "USB readiness: two complete stable scans within 60 seconds"
         if [ -n "$TRANSFER_DEVICE" ]; then
             pass "unique single-USB boot, vault and transfer layout verified by GPT CRC, GUID, size and FAT label"
@@ -100,6 +116,7 @@ else
     esac
 fi
 
+stage DEVICE_IDENTITY_CHECK
 if [ -n "$BOOT_DEVICE" ] && [ -n "$VAULT_DEVICE" ]; then
 	BOOT_PARENT="$(block_parent_name "$BOOT_DEVICE" 2>/dev/null || true)"
 	VAULT_PARENT="$(block_parent_name "$VAULT_DEVICE" 2>/dev/null || true)"
@@ -140,11 +157,17 @@ if [ "$FAILED" -eq 0 ] && [ -n "$BOOT_DEVICE" ]; then
 	BOOT_MAJMIN="$(cat "/sys/class/block/${BOOT_DEVICE##*/}/dev" 2>/dev/null || true)"
 	if [ -z "$BOOT_MAJMIN" ] || [ ! -r /proc/self/mountinfo ]; then
 		fail "boot partition mount identity or mountinfo unavailable"
-	elif awk -v dev="$BOOT_MAJMIN" '$3 == dev { found=1 } END { exit found ? 0 : 1 }' /proc/self/mountinfo 2>/dev/null; then
-		fail "boot partition is mounted in cold runtime"
 	else
-		pass "boot partition is not mounted in cold runtime"
-	fi
+        if boot_mounted="$(awk -v dev="$BOOT_MAJMIN" '$3 == dev { found=1 } END { print found ? 1 : 0 }' /proc/self/mountinfo 2>/dev/null)"; then
+            case "$boot_mounted" in
+                0) pass "boot partition is not mounted in cold runtime" ;;
+                1) fail "boot partition is mounted in cold runtime" ;;
+                *) fail "boot mount audit returned invalid evidence" ;;
+            esac
+        else
+            fail "boot partition mountinfo inspection failed"
+        fi
+    fi
 fi
 
 # Repeat the full identity/uniqueness check at the mount boundary. The
@@ -162,6 +185,7 @@ vault_mount_matches() {
 
 # Mount only the exact, unique vault partition identified above. A duplicated
 # PARTUUID (for example, two cloned boot USBs attached at once) fails closed.
+stage VAULT_MOUNT_CHECK
 if [ "$FAILED" -eq 0 ] && [ -n "$VAULT_DEVICE" ]; then
     current="$(mount_source /mnt/cold-vault)"
     if [ -n "$current" ] || ! media_unchanged; then
@@ -183,16 +207,23 @@ if [ "$FAILED" -eq 0 ] && [ -n "$VAULT_DEVICE" ]; then
     fi
 fi
 
+stage OFFLINE_RUNTIME_CHECK
 if [ -d /proc/net ]; then
 	fail "/proc/net exists; kernel networking is present"
 else
 	pass "/proc/net absent (CONFIG_NET expected disabled)"
 fi
 
-if [ -s /proc/swaps ] && [ "$(wc -l < /proc/swaps)" -gt 1 ]; then
-	fail "active swap detected"
+if swap_lines="$(awk 'END { print NR }' /proc/swaps 2>/dev/null)"; then
+    if [ "$swap_lines" -eq 1 ]; then
+        pass "no active swap"
+    elif [ "$swap_lines" -gt 1 ]; then
+        fail "active swap detected"
+    else
+        fail "invalid swap evidence"
+    fi
 else
-	pass "no active swap"
+    fail "unable to inspect swap state"
 fi
 
 ROOT_TYPE="$(awk '$2 == "/" { print $3; exit }' /proc/mounts 2>/dev/null || true)"
@@ -226,19 +257,23 @@ fi
 
 # Read-only mounts can still expose internal disks or the ESP to the
 # appliance. Permit only the verified vault and the minimal pseudo-filesystems.
-UNEXPECTED_PERSISTENT="$(
-	awk '
-	$2 != "/mnt/cold-vault" &&
-	$3 !~ /^(rootfs|tmpfs|proc|sysfs|devtmpfs|devpts|cgroup2|pstore|tracefs)$/ {
-		print $2 " (" $1 ", " $3 ")"
-	}' /proc/mounts 2>/dev/null || true
-)"
-if [ -n "$UNEXPECTED_PERSISTENT" ]; then
-	fail "unexpected persistent mount(s): $UNEXPECTED_PERSISTENT"
+if UNEXPECTED_PERSISTENT="$(
+    awk '
+    $2 != "/mnt/cold-vault" &&
+    $3 !~ /^(rootfs|tmpfs|proc|sysfs|devtmpfs|devpts|cgroup2|pstore|tracefs)$/ {
+        print $2 " (" $1 ", " $3 ")"
+    }' /proc/mounts 2>/dev/null
+)"; then
+    if [ -n "$UNEXPECTED_PERSISTENT" ]; then
+        fail "unexpected persistent mount(s): $UNEXPECTED_PERSISTENT"
+    else
+        pass "no unexpected writable persistent filesystem mounted"
+    fi
 else
-	pass "no unexpected writable persistent filesystem mounted"
+    fail "unable to inspect persistent mount evidence"
 fi
 
+stage FINAL_AUDIT
 if [ "$FAILED" -ne 0 ]; then
     # A failed mount audit must not leave writable vault media accessible.
     if [ -n "$(mount_source /mnt/cold-vault)" ]; then
@@ -253,18 +288,11 @@ else
 	rm -f "$LOCKDOWN"
 fi
 
-# Report only the final audit result on the emulated UART. No wallet secrets or
-# addresses are written to this diagnostic channel.
-if [ -c /dev/ttyS0 ]; then
-	if [ "$FAILED" -eq 0 ]; then
-		# Emit bounded, public audit evidence before the final marker so CI
-		# validates the guest checks themselves, not a marker in isolation.
-		grep '^PASS:' "$CHECKS" > /dev/ttyS0 || true
-		printf 'USB_WALLET_UEFI_AUDIT_OK\n' 2>/dev/null > /dev/ttyS0 || true
-	else
-		# Failure reasons contain only public mount/configuration facts.
-		# Include them in the emulated serial log to diagnose a locked boot.
-		grep '^FAIL:' "$CHECKS" > /dev/ttyS0 || true
-		printf 'USB_WALLET_UEFI_AUDIT_LOCKDOWN\n' 2>/dev/null > /dev/ttyS0 || true
-	fi
+# Report only the final audit result on the emulated UART. The fixed
+# USB_WALLET_UEFI_AUDIT_OK / USB_WALLET_UEFI_AUDIT_LOCKDOWN markers are
+# produced by the bounded diagnostic helper, not by direct tty writes.
+if [ "$FAILED" -eq 0 ]; then
+    /usr/bin/python3 /usr/libexec/usb-wallet-identify-media --serial audit-ok >/dev/null 2>&1 || true
+else
+    /usr/bin/python3 /usr/libexec/usb-wallet-identify-media --serial audit-lockdown >/dev/null 2>&1 || true
 fi

@@ -569,3 +569,40 @@ def test_unexpected_noncontiguous_kernel_partition_is_rejected(tmp_path):
     (sys_block / "sda9").symlink_to((sys_block / "sda3").resolve(), target_is_directory=True)
     with pytest.raises(media.MediaInvalid, match="extra kernel partition"):
         media.identify(sys_block, dev)
+
+
+@pytest.mark.parametrize("delay,accepted", [(5, True), (15, True), (30, True), (58, True), (59, False), (60, False)])
+def test_readiness_deadline_matrix(delay, accepted):
+    clock = _Clock()
+    def scanner(_):
+        if clock.now < delay:
+            raise media.MediaPending("delayed enumeration")
+        return "stable"
+    if accepted:
+        assert media.wait_ready(scanner=scanner, clock=clock.monotonic, sleeper=clock.sleep) == "stable"
+    else:
+        with pytest.raises(media.MediaTimeout):
+            media.wait_ready(scanner=scanner, clock=clock.monotonic, sleeper=clock.sleep)
+        assert clock.now == 60
+
+
+def test_serial_watchdog_bounds_failed_and_stuck_driver(monkeypatch, tmp_path):
+    import os
+    import time
+    if not hasattr(os, "fork"):
+        pytest.skip("requires Linux fork")
+    sink = tmp_path / "diagnostic"
+    sink.touch()
+    assert media._emit_serial(media.SERIAL_MARKERS["media-wait"], sink)
+    assert sink.read_bytes() == b"USB_WALLET_MEDIA_WAIT\n"
+    if Path("/dev/full").exists():
+        assert not media._emit_serial(b"test", Path("/dev/full"))
+    monkeypatch.setattr(media, "_write_serial", lambda *args: time.sleep(30))
+    start = time.monotonic()
+    assert not media._emit_serial(b"test", sink, budget=0.1)
+    assert time.monotonic() - start < 2
+
+
+@pytest.mark.parametrize("error,transient", [(11, True), (110, True), (16, True), (5, False), (19, False)])
+def test_only_explicit_transport_readiness_errors_can_retry(error, transient):
+    assert media._transient_io(OSError(error, "test")) is transient

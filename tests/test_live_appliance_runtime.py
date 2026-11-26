@@ -9,11 +9,15 @@ import pytest
 from usb_cold_wallet import appliance, cli, gui
 
 
-def test_console_ready_marker_contains_no_wallet_data(monkeypatch, tmp_path):
-    serial = tmp_path / "ttyS0"
-    monkeypatch.setattr(appliance, "SERIAL_DIAGNOSTIC", serial)
+def test_console_ready_marker_contains_no_wallet_data(monkeypatch):
+    calls = []
+    monkeypatch.setattr(appliance.subprocess, "run", lambda args, **kwargs: calls.append((args, kwargs)))
     appliance._signal_console_ready()
-    assert serial.read_text(encoding="ascii") == "USB_WALLET_CONSOLE_READY\n"
+    appliance._signal_console_ready(locked=True)
+    assert [args[-2:] for args, _ in calls] == [
+        ["--serial", "console-ready"], ["--serial", "lockdown-ready"],
+    ]
+    assert all(kwargs["timeout"] == 4 for _, kwargs in calls)
 
 
 def test_appliance_live_audit_failure_is_visible_and_blocks_menu(monkeypatch, tmp_path):
@@ -137,3 +141,27 @@ def test_cli_rechecks_before_and_after_signing_and_never_writes_on_failed_audit(
     assert result == 1
     assert calls == ["audit", "audit", "sign", "audit"]
     assert not (tmp_path / "signed.json").exists()
+
+
+def test_stage_diagnostics_do_not_make_empty_boot_audit_pass(monkeypatch, tmp_path):
+    boot = tmp_path / "checks"
+    boot.write_text("INFO: [1.00] INIT_STARTED\n")
+    monkeypatch.setattr(appliance, "BOOT_CHECKS", boot)
+    status = appliance.security_status()
+    assert "FAIL: boot security audit contained no checks" in status
+    assert appliance._security_locked(status)
+
+
+@pytest.mark.parametrize("failure", ["transfer", "vault", "sync", "poweroff", None])
+def test_attended_shutdown_requires_unmount_sync_and_poweroff(monkeypatch, tmp_path, failure):
+    lock = tmp_path / "lockdown"
+    monkeypatch.setattr(appliance, "LOCKDOWN", lock)
+    calls = []
+    monkeypatch.setattr(appliance, "unmount_transfer", lambda: calls.append("transfer") or failure != "transfer")
+    monkeypatch.setattr(appliance, "_unmount_path", lambda _: calls.append("vault") or failure != "vault")
+    monkeypatch.setattr(appliance.subprocess, "run", lambda args, **kw:
+                        calls.append(args[0]) or SimpleNamespace(returncode=int(args[0] == failure)))
+    assert appliance._poweroff() is (failure is None)
+    assert lock.exists()
+    expected = ["transfer", "vault", "sync", "poweroff"]
+    assert calls == (expected if failure is None else expected[:expected.index(failure) + 1])

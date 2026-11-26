@@ -7,6 +7,7 @@ authenticate the USB contents or provide a trusted boot root.
 from __future__ import annotations
 
 import os
+import errno
 import fcntl
 import hashlib
 import select
@@ -108,6 +109,12 @@ class MediaReplaced(MediaInvalid):
 
 class MediaTimeout(ValueError):
     """Readiness deadline expired."""
+
+
+def _transient_io(exc: OSError) -> bool:
+    # Retry only explicit transport readiness errors. Corrupt metadata, EIO,
+    # removal and identity mismatches remain permanent failures.
+    return exc.errno in {errno.EAGAIN, errno.EBUSY, errno.EINTR, errno.ETIMEDOUT}
 
 
 def _open_media(path: Path, expected=None):
@@ -243,6 +250,7 @@ def _partition_matches_kernel(
     name: str,
     number: int,
     part: tuple[uuid.UUID, uuid.UUID, int, int, int],
+    *, allow_pending: bool = False,
 ) -> bool:
     """Require the kernel's actual device mapping to match the CRC-checked GPT."""
     try:
@@ -254,6 +262,10 @@ def _partition_matches_kernel(
             and int((node / "start").read_text().strip()) == part[3]
             and int((node / "size").read_text().strip()) == _size(part)
         )
+    except FileNotFoundError as exc:
+        if allow_pending:
+            raise MediaPending("incomplete kernel partition attributes") from exc
+        return False
     except (OSError, ValueError, RuntimeError):
         return False
 
@@ -355,10 +367,18 @@ def identify(
             # Non-GPT media (e.g. a separate legacy FAT transfer USB) is not
             # a boot candidate. A corrupt GPT, even alongside a valid clone,
             # is a permanent failure, not a reason to wait for its removal.
-            if _gpt_hint(disk, expected):
+            try:
+                hint = _gpt_hint(disk, expected)
+            except OSError as exc:
+                if inventory is not None and _transient_io(exc):
+                    raise MediaPending("GPT hint I/O not ready") from exc
+                raise MediaInvalid("inconsistent disk I/O") from exc
+            if hint:
                 raise MediaInvalid("inconsistent malformed GPT")
             continue
         except OSError as exc:
+            if inventory is not None and _transient_io(exc):
+                raise MediaPending("disk transport not ready") from exc
             raise MediaInvalid("inconsistent disk I/O") from exc
         part_ids = {part[1] for part in parts}
         if disk_id != DISK_UUID and not (
@@ -385,7 +405,8 @@ def identify(
         if matches:
             raise MediaDuplicate("duplicated trusted USB partitions")
         if not all(
-            _partition_matches_kernel(sys_block, entry, part_name, index, parts[index - 1])
+            _partition_matches_kernel(sys_block, entry, part_name, index, parts[index - 1],
+                                      allow_pending=inventory is not None)
             for index, part_name in enumerate(names, 1)
         ):
             raise MediaInvalid("inconsistent kernel partition mapping")
@@ -405,7 +426,11 @@ def identify(
                 raise MediaInvalid("inconsistent trusted FAT identity")
         except MediaInvalid:
             raise
-        except (OSError, ValueError, UnicodeDecodeError) as exc:
+        except OSError as exc:
+            if inventory is not None and _transient_io(exc):
+                raise MediaPending("FAT transport not ready") from exc
+            raise MediaInvalid("inconsistent FAT metadata") from exc
+        except (ValueError, UnicodeDecodeError) as exc:
             raise MediaInvalid("inconsistent FAT metadata") from exc
         matches.append((str(boot), str(vault), str(transfer) if transfer else None, name))
         if len(matches) > 1:
@@ -543,8 +568,89 @@ def _bounded_worker(expected):
         os.waitpid(pid, os.WNOHANG)
 
 
+SERIAL_MARKERS = {
+    "media-wait": b"USB_WALLET_MEDIA_WAIT\n",
+    "audit-ok": b"USB_WALLET_UEFI_AUDIT_OK\n",
+    "audit-lockdown": b"USB_WALLET_UEFI_AUDIT_LOCKDOWN\n",
+    "console-ready": b"USB_WALLET_CONSOLE_READY\n",
+    "lockdown-ready": b"USB_WALLET_LOCKDOWN_CONSOLE_READY\n",
+}
+
+
+def _write_serial(path, payload):
+    # A tty node can exist with no working UART; never wait for carrier or
+    # flow control and never create a node. The parent has a hard watchdog.
+    fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC)
+    try:
+        while payload:
+            if not select.select([], [fd], [], 0.2)[1]:
+                return False
+            try:
+                count = os.write(fd, payload)
+            except BlockingIOError:
+                continue
+            if count <= 0:
+                return False
+            payload = payload[count:]
+        return True
+    finally:
+        os.close(fd)
+
+
+def _emit_serial(payload, path=Path("/dev/ttyS0"), budget=2.0):
+    """Best effort, even when the physical driver is stuck in kernel I/O."""
+    if not payload or len(payload) > 16384:
+        return False
+    try:
+        pid = os.fork()
+    except OSError:
+        return False
+    if pid == 0:
+        try:
+            ok = _write_serial(path, payload)
+        except Exception:
+            ok = False
+        os._exit(0 if ok else 1)
+    deadline = time.monotonic() + budget
+    try:
+        while time.monotonic() < deadline:
+            finished, status = os.waitpid(pid, os.WNOHANG)
+            if finished:
+                pid = None
+                return os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+            time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
+        return False
+    finally:
+        if pid is not None:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.waitpid(pid, os.WNOHANG)
+
+
+def _serial_diagnostic(mode):
+    marker = SERIAL_MARKERS.get(mode)
+    if marker is None:
+        return 2
+    payload = marker
+    if mode in ("audit-ok", "audit-lockdown"):
+        try:
+            with Path("/run/usb-wallet/boot-checks.txt").open("rb") as source:
+                raw = source.read(16000)
+            prefix = b"PASS:" if mode == "audit-ok" else b"FAIL:"
+            payload = b"".join(line + b"\n" for line in raw.splitlines()
+                               if line.startswith((prefix, b"INFO:")))
+            payload += marker
+        except OSError:
+            return 1
+    return 0 if _emit_serial(payload) else 1
+
+
 def main() -> int:
     args = sys.argv[1:]
+    if len(args) == 2 and args[0] == "--serial":
+        return _serial_diagnostic(args[1])
     if args and (len(args) != 2 or args[0] != "--check"):
         return 2
     status, identity = _bounded_worker(args[1] if args else None)
