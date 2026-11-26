@@ -209,7 +209,7 @@ class _Journal:
         self._records, self.recovery_warnings = self._load()
         self._validate_chains()
         if expected_tip is not None:
-            if HEX64_RE.fullmatch(expected_tip) is None:
+            if type(expected_tip) is not str or HEX64_RE.fullmatch(expected_tip) is None:
                 raise ValueError("Invalid expected state anchor")
             if self.tip_anchor() != expected_tip:
                 raise RollbackDetected("State journal tip differs from externally pinned anchor")
@@ -322,9 +322,11 @@ class _Journal:
         }
         if type(data) is not dict or set(data) != fields:
             raise StateCorruptionError("Invalid state record fields")
-        if data["format"] != FORMAT or data["version"] != VERSION or data["owner"] != self.owner:
+        if (type(data["format"]) is not str or type(data["version"]) is not int or
+                data["format"] != FORMAT or data["version"] != VERSION or
+                data["owner"] != self.owner):
             raise StateCorruptionError("State record format/owner mismatch")
-        if REQUEST_ID_RE.fullmatch(data["requestId"] or "") is None:
+        if type(data["requestId"]) is not str or REQUEST_ID_RE.fullmatch(data["requestId"]) is None:
             raise StateCorruptionError("Invalid state requestId")
         if type(data["counter"]) is not int or not 1 <= data["counter"] <= MAX_RECORDS:
             raise StateCorruptionError("Invalid state counter")
@@ -335,6 +337,8 @@ class _Journal:
             type(data["previousDigest"]) is not str or HEX64_RE.fullmatch(data["previousDigest"]) is None
         ):
             raise StateCorruptionError("Invalid previous state digest")
+        if type(data["state"]) is not str:
+            raise StateCorruptionError("Invalid state value")
         if type(data["metadata"]) is not dict:
             raise StateCorruptionError("State metadata must be an object")
         content = {key: value for key, value in data.items() if key != "recordDigest"}
@@ -381,7 +385,7 @@ class _Journal:
         )
 
     def get(self, request_id: str) -> StateSnapshot | None:
-        if REQUEST_ID_RE.fullmatch(request_id or "") is None:
+        if type(request_id) is not str or REQUEST_ID_RE.fullmatch(request_id) is None:
             raise ValueError("Invalid requestId")
         records = self._for_request(request_id)
         if not records:
@@ -422,8 +426,10 @@ class _Journal:
             # Do not advance a journal over an uncommitted crash artifact.
             raise StateCorruptionError("Unresolved journal write; state transition is blocked")
         pinned_tip = self._verify_trusted_tip() if self._trusted_anchor is not None else None
-        if REQUEST_ID_RE.fullmatch(request_id or "") is None:
+        if type(request_id) is not str or REQUEST_ID_RE.fullmatch(request_id) is None:
             raise ValueError("Invalid requestId")
+        if type(state) is not str:
+            raise ValueError("Invalid state")
         for value, label in ((request_digest, "request digest"), (transaction_digest, "transaction digest")):
             if type(value) is not str or HEX64_RE.fullmatch(value) is None:
                 raise ValueError(f"Invalid {label}")
@@ -682,6 +688,10 @@ class ReplayLedger(_Journal):
         allow_no_trusted_clock: bool = False,
         verifier=None,
     ) -> StateSnapshot:
+        if not self.rollback_resistant and not self._allow_unanchored_for_testing:
+            raise RollbackDetected(
+                "Cold replay ledger has no independent monotonic anchor; signing fails closed"
+            )
         current = self.get(request["requestId"])
         if current is None or current.state != "COLD_REVIEWED":
             raise ValueError("Request must be cold-reviewed before signing")

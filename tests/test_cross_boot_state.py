@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
+import json
 
 import pytest
 from embit import bip32, psbt, script, transaction
@@ -109,6 +111,21 @@ def btc_request(request_id="22" * 16):
 def rehash(envelope):
     envelope["sha256"] = _envelope_sha(envelope)
     return envelope
+
+
+def _rewrite_journal_record(root, mutator):
+    old = next(root.glob("*.json"))
+    record = json.loads(old.read_text(encoding="utf-8"))
+    mutator(record)
+    fields = {key: value for key, value in record.items() if key != "recordDigest"}
+    record["recordDigest"] = hashlib.sha256(json.dumps(
+        fields, sort_keys=True, ensure_ascii=True, separators=(",", ":"),
+        allow_nan=False,
+    ).encode("ascii")).hexdigest()
+    parts = old.name.split(".")
+    renamed = root / f"{parts[0]}.{parts[1]}.{record['recordDigest']}.json"
+    old.unlink()
+    renamed.write_text(json.dumps(record), encoding="utf-8")
 
 
 def test_evm_v2_full_request_response_binding():
@@ -541,6 +558,30 @@ def test_no_clock_cold_review_persists_unverified_assurance(tmp_path):
     assert snap.metadata["expiryAssurance"] == "unverified"
 
 
+@pytest.mark.parametrize("mutation", ["boolean_version", "numeric_request_id", "list_state"])
+def test_hostile_journal_rejects_rehashed_ambiguous_metadata(tmp_path, mutation):
+    request = evm_request()
+    root = tmp_path / "online-state"
+    PendingRequestStore(root).create(request)
+    if mutation == "boolean_version":
+        _rewrite_journal_record(root, lambda record: record.__setitem__("version", True))
+    elif mutation == "numeric_request_id":
+        _rewrite_journal_record(root, lambda record: record.__setitem__("requestId", 42))
+    else:
+        _rewrite_journal_record(root, lambda record: record.__setitem__("state", []))
+    with pytest.raises(StateCorruptionError):
+        PendingRequestStore(root)
+
+
+def test_state_api_rejects_non_string_external_identifiers(tmp_path):
+    root = tmp_path / "online-state"
+    store = PendingRequestStore(root)
+    with pytest.raises(ValueError, match="requestId"):
+        store.get(42)
+    with pytest.raises(ValueError, match="anchor"):
+        PendingRequestStore(root, expected_tip=True)
+
+
 def test_online_journal_import_does_not_load_cold_signing_modules():
     import subprocess
     import sys
@@ -560,3 +601,15 @@ def test_cold_replay_ledger_fails_closed_without_independent_anchor(tmp_path):
     ledger = ReplayLedger(tmp_path / "cold-ledger")
     with pytest.raises(RollbackDetected, match="no independent monotonic anchor"):
         ledger.review_once(request, expected_account=EVM_ACCOUNT, trusted_time=100)
+
+
+def test_unanchored_reopen_cannot_mark_existing_cold_review_signed(tmp_path):
+    root = tmp_path / "cold-ledger"
+    request = btc_request()
+    ledger = ReplayLedger(root, allow_unanchored_for_testing=True)
+    ledger.review_once(request, expected_account=request["account"], trusted_time=100)
+    signed = sign_btc_psbt(ROOT, request["payload"], BTC_RECIPIENT, 60_000, 1500, 0)
+    response = package_v2_response(request, signed, trusted_time=100)
+    with pytest.raises(RollbackDetected, match="no independent monotonic anchor"):
+        ReplayLedger(root).mark_signed(request, response, trusted_time=100)
+    assert ReplayLedger(root).get(request["requestId"]).state == "COLD_REVIEWED"
