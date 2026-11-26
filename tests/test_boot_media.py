@@ -645,3 +645,32 @@ def test_capacity_preparation_rejects_untrusted_digest_without_output(tmp_path):
     assert not output.exists()
     assert source.read_bytes() == b"not a verified image"
     assert list(tmp_path.iterdir()) == [source]
+
+
+def test_capacity_preparation_full_path_uses_new_file_and_distinct_hash(tmp_path):
+    import hashlib
+    from scripts.prepare_usb_capacity_image import prepare_image
+    from scripts.verify_image import verify_image
+    source, output = tmp_path / "original.img", tmp_path / "prepared.img"
+    _write_disk(source)
+    with source.open("r+b") as handle:
+        for label, lba in (("USBCOLD_EFI", media.BOOT_START_LBA),
+                           ("COLD_VAULT", media.VAULT_START_LBA),
+                           ("TX_TRANSFER", media.TRANSFER_START_LBA)):
+            handle.seek(lba * 512)
+            handle.write(_fat(label, fat32=label == "TX_TRANSFER"))
+    with source.open("rb") as handle:
+        expected = hashlib.file_digest(handle, "sha256").hexdigest()
+    size = source.stat().st_size + 1024 * 1024
+    result = prepare_image(source, output, size, expected)
+    assert result["sourceSha256"] == expected
+    assert result["physicalMediaVerified"] is False
+    with output.open("rb") as handle:
+        assert hashlib.file_digest(handle, "sha256").hexdigest() == result["derivedSha256"]
+    with source.open("rb") as handle:
+        assert hashlib.file_digest(handle, "sha256").hexdigest() == expected
+    assert media.read_gpt(source) == media.read_gpt(output)
+    assert output.stat().st_size == size
+    assert verify_image(output) == 0
+    with pytest.raises(ValueError, match="output must not exist"):
+        prepare_image(source, output, size, expected)

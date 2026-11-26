@@ -9,6 +9,18 @@ VAULT_DEVICE_FILE=/run/usb-wallet/vault-device
 TRANSFER_DEVICE_FILE=/run/usb-wallet/transfer-device
 BOOT_SYSFS_FILE=/run/usb-wallet/boot-sysfs-path
 BOOT_DISKSEQ_FILE=/run/usb-wallet/boot-diskseq
+# Buildroot rcS invokes start and rcK invokes stop on every S?? script.
+# Shutdown must never re-enter discovery, clear evidence or remount a vault.
+case "${1:-start}" in
+    start) ;;
+    stop)
+        mkdir -p /run/usb-wallet
+        : > "$LOCKDOWN"
+        exit 0
+        ;;
+    *) exit 1 ;;
+esac
+
 FAILED=0
 STAGE=INIT
 mkdir -p /run/usb-wallet

@@ -574,6 +574,7 @@ SERIAL_MARKERS = {
     "audit-lockdown": b"USB_WALLET_UEFI_AUDIT_LOCKDOWN\n",
     "console-ready": b"USB_WALLET_CONSOLE_READY\n",
     "lockdown-ready": b"USB_WALLET_LOCKDOWN_CONSOLE_READY\n",
+    "transfer-ready": b"USB_WALLET_TRANSFER_AUDIT_OK\n",
 }
 
 

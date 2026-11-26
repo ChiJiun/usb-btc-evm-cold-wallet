@@ -58,15 +58,34 @@ def hotplug(path, bus):
     }}])
 
 
+def menu_key(path, key):
+    qmp_commands(path, [
+        {"execute": "send-key", "arguments": {"keys": [{"type": "qcode", "data": code}], "hold-time": 100}}
+        for code in (key, "ret")
+    ])
+
+
+def verify_transfer_menu(path, process, serial):
+    marker = "USB_WALLET_TRANSFER_AUDIT_OK"
+    for count in (1, 2):
+        menu_key(path, "5")
+        wait_for(serial, process, lambda log: log.count(marker) >= count, 30)
+        # The second invocation must unmount/re-mount the real partition;
+        # allow the audited console to return to its input prompt.
+        time.sleep(0.5)
+    require("USB_WALLET_LOCKDOWN_CONSOLE_READY" not in serial.read_text(errors="replace"),
+            "guest locked down after transfer mount")
+    print("PASS: attended option 5 mounted and re-audited TX_TRANSFER twice")
+
+
 def shutdown_with_menu(path, process, serial):
     # Drive the actual attended option 6, not QEMU system_powerdown or quit.
-    qmp_commands(path, [
-        {"execute": "send-key", "arguments": {"keys": [{"type": "qcode", "data": key}], "hold-time": 100}}
-        for key in ("6", "ret")
-    ])
+    menu_key(path, "6")
     require(process.wait(timeout=30) == 0, "guest poweroff returned nonzero")
-    require("Power down" in serial.read_text(errors="replace"), "guest lacks kernel poweroff evidence")
-    print("PASS: attended option 6 caused guest kernel poweroff")
+    log = serial.read_text(errors="replace")
+    require("Power down" in log, "guest lacks kernel poweroff evidence")
+    require(log.count("USB_WALLET_MEDIA_WAIT") == 1, "startup audit reran during shutdown")
+    print("PASS: attended option 6 caused guest kernel poweroff without rerunning discovery")
 
 
 def exercise(attach, *, delay=5, controller='qemu-xhci', bus='xhci', image=None):
@@ -116,6 +135,8 @@ def exercise(attach, *, delay=5, controller='qemu-xhci', bus='xhci', image=None)
                 # The readiness marker precedes input(); leave a small interval
                 # for the actual tty menu to reach its read.
                 time.sleep(0.5)
+                if attach:
+                    verify_transfer_menu(qmp, process, serial)
                 shutdown_with_menu(qmp, process, serial)
             except BaseException:
                 if serial.exists():

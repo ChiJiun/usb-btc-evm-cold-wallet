@@ -153,3 +153,25 @@ QEMU exit. These tests are not physical power-state evidence. EHCI device/bus
 configuration reference: QEMU docs at commit
 d27e7c359330ba7020bdbed7ed2316cb4cf6ffc1, docs/system/devices/usb.rst;
 no upstream source copied.
+
+
+### Pre-third-boot review: init lifecycle and attended menu
+
+Pinned Buildroot 2026.08.2 `package/initscripts/init.d/rcK` invokes each
+S?? script with `stop` (BusyBox `package/busybox/inittab` runs rcK during
+shutdown). The previous S01airgap ignored its argument and could perform
+fresh media discovery and remount the vault after the console unmounted it.
+The stop branch now keeps lockdown, preserves previous audit evidence and
+returns before discovery. Only start executes the boot audit; arbitrary
+restart is rejected. Upstream source consulted for lifecycle semantics only,
+no copied upstream source.
+
+Option 5 now checks live runtime before and after mount, reports success
+only if the post-mount audit passes, and emits a fixed public marker via
+the same bounded diagnostic helper. The QEMU delayed-media test invokes
+option 5 twice before option 6 on every positive boot (including prepared
+operator capacity) and checks that discovery did not rerun at shutdown.
+An additional regular-file capacity test exercises the actual prepare_image
+entry point with source digest, output digest, unchanged source, no-replace
+and exact partition entries. Real USB/UEFI, physical shutdown, exact-image
+readback and authenticated boot remain separate gates.

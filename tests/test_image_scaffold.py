@@ -447,3 +447,35 @@ def test_boot_final_serial_diagnostics_cannot_change_audit_result(tmp_path):
             capture_output=True, text=True, timeout=10,
         )
         assert result.returncode == 0, result.stderr
+
+
+def test_boot_audit_stop_does_not_reset_or_restart_discovery(tmp_path):
+    import shutil
+    import subprocess
+    import pytest
+    if not shutil.which("sh"):
+        pytest.skip("requires POSIX shell")
+    script = (
+        ROOT / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d/S01airgap"
+    ).read_text()
+    run = tmp_path / "run"
+    run.mkdir()
+    checks = run / "boot-checks.txt"
+    checks.write_text("PASS: previous completed boot audit\n")
+    identity = run / "boot-device"
+    identity.write_text("/dev/sda1\n")
+    # If execution incorrectly reaches the normal boot body, fail without
+    # executing any host mounts, swaps, or actual device discovery.
+    prefix, sep, _ = script.partition("FAILED=0")
+    assert sep
+    prefix = prefix.replace("/run/usb-wallet", str(run))
+    code = prefix + "\nexit 97\n"
+    result = subprocess.run(["sh", "-c", code, "audit", "stop"],
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert (run / "lockdown").exists()
+    assert checks.read_text() == "PASS: previous completed boot audit\n"
+    assert identity.read_text() == "/dev/sda1\n"
+    result = subprocess.run(["sh", "-c", code, "audit", "restart"],
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode == 1

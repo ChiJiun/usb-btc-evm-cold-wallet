@@ -21,16 +21,19 @@ DEV_ROOT = Path("/dev")
 DIAGNOSTIC_HELPER = Path("/usr/libexec/usb-wallet-identify-media")
 
 
-def _signal_console_ready(*, locked: bool = False) -> None:
+def _signal_diagnostic(mode: str) -> None:
     """Use the same bounded, best-effort serial diagnostic as startup."""
     try:
         subprocess.run(
-            [sys.executable, str(DIAGNOSTIC_HELPER), "--serial",
-             "lockdown-ready" if locked else "console-ready"],
+            [sys.executable, str(DIAGNOSTIC_HELPER), "--serial", mode],
             check=False, timeout=4, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired):
         pass
+
+
+def _signal_console_ready(*, locked: bool = False) -> None:
+    _signal_diagnostic("lockdown-ready" if locked else "console-ready")
 
 
 def _mount_info(path: Path) -> tuple[str, str, set[str]] | None:
@@ -242,17 +245,51 @@ def mount_transfer() -> bool:
 
 
 def _unmount_path(path: Path) -> bool:
-    if not _mounted(path):
-        return True
+    # Inspect the actual mount table before and after unmount. A failed read
+    # is not equivalent to an absent mount.
+    def mounted():
+        lines = Path("/proc/mounts").read_text(encoding="utf-8").splitlines()
+        if not lines or any(len(line.split()) < 4 for line in lines):
+            raise ValueError("invalid mount table")
+        return any(line.split()[1] == str(path) for line in lines)
     try:
+        if not mounted():
+            return True
         result = subprocess.run(["umount", str(path)], check=False)
-        return result.returncode == 0 and not _mounted(path)
-    except OSError:
+        return result.returncode == 0 and not mounted()
+    except (OSError, ValueError):
         return False
 
 
 def unmount_transfer() -> bool:
     return _unmount_path(TRANSFER)
+
+
+def _rescan_transfer() -> bool:
+    """Attended option 5, with live audit before and after changing mounts."""
+    if _security_locked(security_status()):
+        print("FAIL: runtime audit rejected TX_TRANSFER re-scan.", flush=True)
+        return False
+    if not unmount_transfer():
+        print("FAIL: TX_TRANSFER unmount failed; re-scan cancelled.", flush=True)
+        return False
+    try:
+        mounted = mount_transfer()
+    except OSError:
+        mounted = False
+    if not mounted:
+        print("TX_TRANSFER not found or unsafe.", flush=True)
+        return False
+    if _security_locked(security_status()):
+        if not unmount_transfer():
+            print("FAIL: TX_TRANSFER cleanup failed.", flush=True)
+        # A failed live audit cannot be reset by mounting another partition.
+        LOCKDOWN.touch()
+        print("FAIL: TX_TRANSFER post-mount runtime audit failed.", flush=True)
+        return False
+    print("TX_TRANSFER mounted.", flush=True)
+    _signal_diagnostic("transfer-ready")
+    return True
 
 
 def _poweroff() -> bool:
@@ -451,10 +488,7 @@ def main() -> int:
         elif choice == "4":
             _sign_btc()
         elif choice == "5":
-            if not unmount_transfer():
-                print("FAIL: TX_TRANSFER unmount failed; re-scan cancelled.")
-            else:
-                print("TX_TRANSFER mounted." if mount_transfer() else "TX_TRANSFER not found or unsafe.")
+            _rescan_transfer()
         elif choice == "7":
             _initialize_policy()
         elif choice == "6":

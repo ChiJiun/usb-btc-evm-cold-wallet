@@ -165,3 +165,20 @@ def test_attended_shutdown_requires_unmount_sync_and_poweroff(monkeypatch, tmp_p
     assert lock.exists()
     expected = ["transfer", "vault", "sync", "poweroff"]
     assert calls == (expected if failure is None else expected[:expected.index(failure) + 1])
+
+
+@pytest.mark.parametrize("after_ok", [True, False])
+def test_attended_transfer_rescan_requires_live_post_mount_audit(monkeypatch, tmp_path, capsys, after_ok):
+    lock = tmp_path / "lockdown"
+    monkeypatch.setattr(appliance, "LOCKDOWN", lock)
+    audit_results = iter([["PASS: boot"], ["PASS: live"] if after_ok else ["FAIL: changed"]])
+    monkeypatch.setattr(appliance, "security_status", lambda: next(audit_results))
+    calls = []
+    monkeypatch.setattr(appliance, "unmount_transfer", lambda: calls.append("unmount") or True)
+    monkeypatch.setattr(appliance, "mount_transfer", lambda: calls.append("mount") or True)
+    monkeypatch.setattr(appliance, "_signal_diagnostic", lambda mode: calls.append(mode))
+    assert appliance._rescan_transfer() is after_ok
+    assert calls == (["unmount", "mount", "transfer-ready"] if after_ok
+                     else ["unmount", "mount", "unmount"])
+    assert lock.exists() is (not after_ok)
+    assert ("TX_TRANSFER mounted." in capsys.readouterr().out) is after_ok
