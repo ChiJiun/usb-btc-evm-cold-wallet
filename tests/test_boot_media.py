@@ -606,3 +606,42 @@ def test_serial_watchdog_bounds_failed_and_stuck_driver(monkeypatch, tmp_path):
 @pytest.mark.parametrize("error,transient", [(11, True), (110, True), (16, True), (5, False), (19, False)])
 def test_only_explicit_transport_readiness_errors_can_retry(error, transient):
     assert media._transient_io(OSError(error, "test")) is transient
+
+
+@pytest.mark.parametrize("capacity", [8 * 1024**3, 16 * 1024**3, 31_457_280_000, 64 * 1024**3])
+def test_capacity_preparation_preserves_partition_entries_and_payload(tmp_path, capacity):
+    from scripts.prepare_usb_capacity_image import relocate_gpt
+    from scripts.verify_image import verify_image
+    disk = tmp_path / "capacity.img"
+    _write_disk(disk)
+    original = media.read_gpt(disk)
+    with disk.open("r+b") as handle:
+        for label, lba in (("USBCOLD_EFI", media.BOOT_START_LBA),
+                           ("COLD_VAULT", media.VAULT_START_LBA),
+                           ("TX_TRANSFER", media.TRANSFER_START_LBA)):
+            handle.seek(lba * 512)
+            handle.write(_fat(label, fat32=label == "TX_TRANSFER"))
+            handle.write(b"partition-data")
+        handle.flush()
+        old_last = _last_lba(disk)
+        relocate_gpt(handle, capacity)
+        assert disk.stat().st_size == capacity
+        assert media.read_gpt(disk) == original
+        for _, _, _, start, _ in original[1]:
+            handle.seek(start * 512 + 512)
+            assert handle.read(14) == b"partition-data"
+        handle.seek((old_last - media.GPT_TABLE_SECTORS) * 512)
+        assert handle.read((media.GPT_TABLE_SECTORS + 1) * 512) == bytes(
+            (media.GPT_TABLE_SECTORS + 1) * 512)
+    assert verify_image(disk) == 0
+
+
+def test_capacity_preparation_rejects_untrusted_digest_without_output(tmp_path):
+    from scripts.prepare_usb_capacity_image import prepare_image
+    source, output = tmp_path / "source.img", tmp_path / "output.img"
+    source.write_bytes(b"not a verified image")
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        prepare_image(source, output, 8 * 1024**3, "a" * 64)
+    assert not output.exists()
+    assert source.read_bytes() == b"not a verified image"
+    assert list(tmp_path.iterdir()) == [source]

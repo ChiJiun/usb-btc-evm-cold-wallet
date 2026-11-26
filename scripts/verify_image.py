@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import mmap
 from pathlib import Path
 import struct
 import uuid
@@ -90,11 +91,8 @@ def _sectors(part) -> int:
     return part[3] - part[2] + 1
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("image", type=Path)
-    args = parser.parse_args()
-    data = args.image.read_bytes()
+def verify_image_data(data) -> int:
+    """Validate bounded GPT/FAT slices of a bytes or read-only mmap object."""
     if len(data) < 640 * 1024 * 1024 or len(data) % SECTOR:
         raise SystemExit("single-USB image has invalid geometry")
 
@@ -217,6 +215,22 @@ def main() -> int:
         )
     print("  Windows-visible data partition: TX_TRANSFER only")
     return 0
+
+
+def verify_image(path: Path) -> int:
+    # A capacity-prepared 32/64 GiB image must not be loaded into RAM.
+    with path.open("rb") as source:
+        if path.stat().st_size < 640 * 1024 * 1024:
+            raise SystemExit("single-USB image has invalid geometry")
+        with mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            return verify_image_data(data)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("image", type=Path)
+    args = parser.parse_args()
+    return verify_image(args.image)
 
 
 if __name__ == "__main__":

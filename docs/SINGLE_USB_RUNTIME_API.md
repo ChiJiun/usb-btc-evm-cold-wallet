@@ -139,3 +139,17 @@ fails. A command accepted by PID 1 is not proof of physical power-off.
 No upstream code copied; existing local media parser, watchdog pattern,
 appliance, QMP and CI gate reused. Physical controller/firmware faults,
 Secure Boot and raw-media provenance remain independent acceptance.
+
+
+Capacity preparation now uses the existing structural verifier with a read-only
+mmap (bounded metadata slices rather than loading a large image into RAM).
+The host-only regular-file tool validates the independently pinned raw SHA,
+preserves partition data/entries, relocates the secondary GPT to the exact
+target end, and records the distinct derived digest. Unit tests cover 8/16/32/64
+GiB-class media, and QEMU boots a disposable copy prepared to the actual
+31,457,280,000-byte device capacity. QMP presses 6 and Enter in the normal and
+locked menus and requires the guest kernel power-down evidence plus clean
+QEMU exit. These tests are not physical power-state evidence. EHCI device/bus
+configuration reference: QEMU docs at commit
+d27e7c359330ba7020bdbed7ed2316cb4cf6ffc1, docs/system/devices/usb.rst;
+no upstream source copied.

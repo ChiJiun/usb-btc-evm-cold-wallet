@@ -7,6 +7,7 @@ kernel. The normal OVMF image boot remains a separate required check.
 from pathlib import Path
 import json
 import socket
+import shutil
 import subprocess
 import tempfile
 import time
@@ -32,19 +33,13 @@ def wait_for(log, process, predicate, timeout):
     raise RuntimeError("QEMU guest evidence deadline expired")
 
 
-def hotplug(path, bus):
+def qmp_commands(path, commands):
     with socket.socket(socket.AF_UNIX) as sock:
         sock.settimeout(10)
         sock.connect(str(path))
         with sock.makefile("rwb") as stream:
             json.loads(stream.readline())
-            for command in (
-                {"execute": "qmp_capabilities"},
-                {"execute": "device_add", "arguments": {
-                    "driver": "usb-storage", "bus": bus,
-                    "drive": "walletdisk", "id": "delayed-usb",
-                }},
-            ):
+            for command in ({"execute": "qmp_capabilities"}, *commands):
                 stream.write(json.dumps(command).encode() + b"\n")
                 stream.flush()
                 while True:
@@ -53,9 +48,29 @@ def hotplug(path, bus):
                         raise RuntimeError("QMP command failed: " + str(response["error"]))
                     if "return" in response:
                         break
+                if command["execute"] == "send-key":
+                    time.sleep(0.25)
 
 
-def exercise(attach, *, delay=5, controller='qemu-xhci', bus='xhci'):
+def hotplug(path, bus):
+    qmp_commands(path, [{"execute": "device_add", "arguments": {
+        "driver": "usb-storage", "bus": bus, "drive": "walletdisk", "id": "delayed-usb",
+    }}])
+
+
+def shutdown_with_menu(path, process, serial):
+    # Drive the actual attended option 6, not QEMU system_powerdown or quit.
+    qmp_commands(path, [
+        {"execute": "send-key", "arguments": {"keys": [{"type": "qcode", "data": key}], "hold-time": 100}}
+        for key in ("6", "ret")
+    ])
+    require(process.wait(timeout=30) == 0, "guest poweroff returned nonzero")
+    require("Power down" in serial.read_text(errors="replace"), "guest lacks kernel poweroff evidence")
+    print("PASS: attended option 6 caused guest kernel poweroff")
+
+
+def exercise(attach, *, delay=5, controller='qemu-xhci', bus='xhci', image=None):
+    image = image or IMAGES / "usb-cold-wallet.img"
     with tempfile.TemporaryDirectory(prefix="wallet-delayed-") as directory:
         temp = Path(directory)
         serial = temp / "serial.log"
@@ -68,7 +83,7 @@ def exercise(attach, *, delay=5, controller='qemu-xhci', bus='xhci'):
                 "-qmp", f"unix:{qmp},server=on,wait=off", "-device", f"{controller},id={bus}",
                 "-kernel", str(IMAGES / "bzImage"), "-append",
                 "console=tty1 console=ttyS0,115200 loglevel=7 rdinit=/sbin/init",
-                "-drive", f"if=none,id=walletdisk,format=raw,snapshot=on,file={IMAGES / 'usb-cold-wallet.img'}",
+                "-drive", f"if=none,id=walletdisk,format=raw,snapshot=on,file={image}",
             ]
             process = subprocess.Popen(command, stdout=qemu_log, stderr=qemu_log)
             try:
@@ -97,22 +112,36 @@ def exercise(attach, *, delay=5, controller='qemu-xhci', bus='xhci'):
                     require("USB_WALLET_UEFI_AUDIT_LOCKDOWN" in data, "missing or contradictory guest evidence")
                     require("USB readiness: enumeration or I/O deadline expired" in data, "missing or contradictory guest evidence")
                     print("PASS: real kernel boot timed out without USB and locked down")
+                    wait_for(serial, process, lambda log: "USB_WALLET_LOCKDOWN_CONSOLE_READY" in log, 10)
+                # The readiness marker precedes input(); leave a small interval
+                # for the actual tty menu to reach its read.
+                time.sleep(0.5)
+                shutdown_with_menu(qmp, process, serial)
             except BaseException:
                 if serial.exists():
                     print(serial.read_text(errors="replace")[-32768:])
                 print((temp / "qemu.log").read_text(errors="replace")[-8192:])
                 raise
             finally:
-                process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
 
 
 if __name__ == "__main__":
     exercise(True)
     exercise(True, delay=15, controller="usb-ehci", bus="ehci")
-    exercise(True, delay=30)
+    # Exercise the real operator capacity on a disposable sparse copy, with
+    # strict cold-side GPT checks still enabled.
+    from prepare_usb_capacity_image import relocate_gpt
+    with tempfile.TemporaryDirectory(prefix="wallet-capacity-qemu-") as directory:
+        prepared = Path(directory) / "prepared.img"
+        shutil.copyfile(IMAGES / "usb-cold-wallet.img", prepared)
+        with prepared.open("r+b") as handle:
+            relocate_gpt(handle, 31_457_280_000)
+        exercise(True, delay=30, image=prepared)
     exercise(False)

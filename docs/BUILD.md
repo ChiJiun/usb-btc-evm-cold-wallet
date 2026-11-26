@@ -175,3 +175,28 @@ A normal USB has no hardware write protection. The Linux GPT type merely keeps
 malware, firmware, or raw-disk tool can still modify any USB sector. This
 testnet development image therefore does not claim Secure Boot, authenticated
 boot, anti-rollback, or resistance to an already-compromised Windows host.
+
+
+## Preparing a larger physical USB (testnet development)
+
+The reproducible raw image has a fixed capacity; a larger target device
+requires protective-MBR and secondary-GPT geometry for the actual device.
+Do not relax the cold boot verifier. After confirming the actual byte capacity
+and independently obtained raw CI image SHA-256, on a 64-bit Python host:
+
+```bash
+python -m scripts.prepare_usb_capacity_image usb-cold-wallet.img prepared-32gb.img \
+  --capacity-bytes 31457280000 --expected-sha256 <trusted-raw-ci-sha256>
+python scripts/verify_image.py prepared-32gb.img
+```
+
+The helper only reads regular input files and creates a new regular output;
+it cannot flash a physical USB. It verifies the source hash, strict GPT/FAT
+layout, relocates only GPT metadata, removes the obsolete secondary GPT,
+preserves the exact partition entries and verifies the derived layout again.
+It prints separate source/derived SHA-256 and size. The output is not the
+original reproducible release artifact. It may consume the target capacity
+in disk space, especially on filesystems without sparse-file support.
+The independent post-flash device readback and physical boot still have to
+be verified against the prepared output, and flashing remains an explicitly
+authorized external operation. Secure Boot remains a separate issue.
