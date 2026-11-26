@@ -14,6 +14,10 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGES = ROOT / "build/output/images"
+AUDIT_OK = "USB_WALLET_UEFI_AUDIT_OK"
+AUDIT_LOCKDOWN = "USB_WALLET_UEFI_AUDIT_LOCKDOWN"
+CONSOLE_READY = "USB_WALLET_CONSOLE_READY"
+LOCKDOWN_READY = "USB_WALLET_LOCKDOWN_CONSOLE_READY"
 
 
 def require(condition, reason):
@@ -23,14 +27,33 @@ def require(condition, reason):
 
 def wait_for(log, process, predicate, timeout):
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    while True:
+        remaining = deadline - time.monotonic()
         data = log.read_text(errors="replace") if log.exists() else ""
         if predicate(data):
             return data
         if process.poll() is not None:
             raise RuntimeError("QEMU exited before expected guest evidence")
-        time.sleep(0.2)
-    raise RuntimeError("QEMU guest evidence deadline expired")
+        if remaining <= 0:
+            raise RuntimeError("QEMU guest evidence deadline expired")
+        time.sleep(min(0.2, remaining))
+
+
+def wait_for_boot_console(log, process, *, attach):
+    audit = AUDIT_OK if attach else AUDIT_LOCKDOWN
+    ready = CONSOLE_READY if attach else LOCKDOWN_READY
+    unexpected = (AUDIT_LOCKDOWN, LOCKDOWN_READY) if attach else (AUDIT_OK, CONSOLE_READY)
+
+    def observed(data):
+        require(not any(marker in data for marker in unexpected), "contradictory guest boot mode")
+        if audit not in data or ready not in data:
+            return False
+        require(data.index(audit) < data.index(ready), "guest console ready before startup audit")
+        return True
+
+    # Use one bounded host budget for the audit and the tty1 menu. The audit
+    # marker is emitted during rcS, before BusyBox init launches the console.
+    return wait_for(log, process, observed, 100)
 
 
 def qmp_commands(path, commands):
@@ -112,14 +135,8 @@ def exercise(attach, *, delay=5, controller='qemu-xhci', bus='xhci', image=None)
                     before = serial.read_text(errors="replace")
                     require("USB_WALLET_UEFI_AUDIT_" not in before, "guest decided before hotplug")
                     hotplug(qmp, f'{bus}.0')
-                data = wait_for(serial, process, lambda log: (
-                    "USB_WALLET_UEFI_AUDIT_LOCKDOWN" in log or (
-                        "USB_WALLET_UEFI_AUDIT_OK" in log and "USB_WALLET_CONSOLE_READY" in log
-                    )
-                ), 100)
+                data = wait_for_boot_console(serial, process, attach=attach)
                 if attach:
-                    require("USB_WALLET_UEFI_AUDIT_LOCKDOWN" not in data, "missing or contradictory guest evidence")
-                    require("USB_WALLET_UEFI_AUDIT_OK" in data, "missing or contradictory guest evidence")
                     require("PASS: USB readiness: two complete stable scans" in data, "missing or contradictory guest evidence")
                     require("PASS: COLD_VAULT restrictive mount options verified" in data, "missing or contradictory guest evidence")
                     require("PASS: /proc/net absent" in data, "missing or contradictory guest evidence")
@@ -127,11 +144,8 @@ def exercise(attach, *, delay=5, controller='qemu-xhci', bus='xhci', image=None)
                     require("PASS: root filesystem is RAM-backed" in data, "missing or contradictory guest evidence")
                     print("PASS: real kernel boot accepted delayed USB and audited mount")
                 else:
-                    require("USB_WALLET_UEFI_AUDIT_OK" not in data, "missing or contradictory guest evidence")
-                    require("USB_WALLET_UEFI_AUDIT_LOCKDOWN" in data, "missing or contradictory guest evidence")
                     require("USB readiness: enumeration or I/O deadline expired" in data, "missing or contradictory guest evidence")
                     print("PASS: real kernel boot timed out without USB and locked down")
-                    wait_for(serial, process, lambda log: "USB_WALLET_LOCKDOWN_CONSOLE_READY" in log, 10)
                 # The readiness marker precedes input(); leave a small interval
                 # for the actual tty menu to reach its read.
                 time.sleep(0.5)

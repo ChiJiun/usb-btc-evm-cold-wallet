@@ -595,12 +595,41 @@ def test_serial_watchdog_bounds_failed_and_stuck_driver(monkeypatch, tmp_path):
     sink.touch()
     assert media._emit_serial(media.SERIAL_MARKERS["media-wait"], sink)
     assert sink.read_bytes() == b"USB_WALLET_MEDIA_WAIT\n"
+    absent = tmp_path / "no-uart"
+    assert not media._emit_serial(b"test", absent)
+    assert not absent.exists()
     if Path("/dev/full").exists():
         assert not media._emit_serial(b"test", Path("/dev/full"))
     monkeypatch.setattr(media, "_write_serial", lambda *args: time.sleep(30))
     start = time.monotonic()
     assert not media._emit_serial(b"test", sink, budget=0.1)
     assert time.monotonic() - start < 2
+
+
+def test_serial_writer_completes_partial_writes_and_closes(monkeypatch):
+    from types import SimpleNamespace
+
+    writes = []
+    closed = []
+
+    def write(fd, payload):
+        assert fd == 7
+        if not writes:
+            writes.append(0)
+            raise BlockingIOError
+        count = min(2, len(payload))
+        writes.append(payload[:count])
+        return count
+
+    monkeypatch.setattr(media, "os", SimpleNamespace(
+        O_WRONLY=1, O_NONBLOCK=2, O_NOCTTY=4, O_CLOEXEC=8,
+        open=lambda path, flags: 7 if flags == 15 else pytest.fail("unsafe serial open flags"),
+        write=write, close=closed.append,
+    ))
+    monkeypatch.setattr(media, "select", SimpleNamespace(select=lambda *args: ([], [7], [])))
+    assert media._write_serial(Path("/dev/ttyS0"), b"marker")
+    assert writes == [0, b"ma", b"rk", b"er"]
+    assert closed == [7]
 
 
 @pytest.mark.parametrize("error,transient", [(11, True), (110, True), (16, True), (5, False), (19, False)])
