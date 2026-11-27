@@ -318,14 +318,18 @@ def test_qr_js_and_python_bridge_changes_must_run_qr_integration(path):
     assert ci_checks.gate_errors(env) == []
 
 
-@pytest.mark.parametrize(("status", "expected_ok"), [
-    ("200", True), ("403", False), ("404", False),
-    ("401", False), ("429", False), ("500", False),
-])
-def test_dependency_review_guard_http_status(status, expected_ok):
-    from scripts.dependency_review_guard import dependency_graph_status_error
+def test_dependency_review_calls_the_actual_diff_action_without_sbom_preflight():
+    from pathlib import Path
 
-    assert (dependency_graph_status_error(status) is None) is expected_ok
+    content = (
+        Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml"
+    ).read_text(encoding="utf-8")
+    assert "uses: actions/dependency-review-action@" in content
+    assert "Review dependency changes (required)" in content
+    assert "fail-on-severity: moderate" in content
+    assert "dependency-graph/sbom" not in content
+    assert "dependency_review_guard.py" not in content
+    assert "if: steps.dependency-graph.outputs.available" not in content
 
 
 def test_required_security_review_must_not_accept_skipped_on_dependency_change():
@@ -350,5 +354,6 @@ def test_required_workflow_wires_real_qr_gate_and_unconditional_dependency_revie
     assert "npm run build" in content
     assert "npm audit --audit-level=high" in content
     assert "QR_TRANSPORT: ${{ needs.qr_transport.result }}" in content
-    assert "python3 scripts/dependency_review_guard.py" in content
+    assert "uses: actions/dependency-review-action@" in content
+    assert "dependency-graph/sbom" not in content
     assert "if: steps.dependency-graph.outputs.available" not in content

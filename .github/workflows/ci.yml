@@ -220,23 +220,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Check out source for verified guard
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Require usable Dependency Graph
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          status="$(curl --silent --show-error --output /tmp/dependency-graph-sbom.json --write-out '%{http_code}' \
-            --header 'Accept: application/vnd.github+json' \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            --header 'X-GitHub-Api-Version: 2022-11-28' \
-            "${{ github.api_url }}/repos/${{ github.repository }}/dependency-graph/sbom")"
-          python3 scripts/dependency_review_guard.py "$status"
-
+      # Dependency Review uses the dependency-graph/compare endpoint, not
+      # the unrelated SBOM export API. A failed/404 review action is a failed
+      # job, and CI / Required refuses to merge the PR.
       - name: Review dependency changes (required)
         uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
         with:
