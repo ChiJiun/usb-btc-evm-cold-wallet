@@ -799,7 +799,7 @@ def test_live_usb_cache_reuses_only_verifiable_source_downloads():
     cache_block = live.split("      - name: Restore verified source downloads\n", 1)[1].split(
         "\n      - name: Prepare authenticated offline sources", 1
     )[0]
-    assert "uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809" in cache_block
+    assert "uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9" in cache_block
     for path in ("build/dl", "build/cache", "build/wheelhouse"):
         assert path in cache_block
     for unsafe in ("build/output", "build/reproducibility", "build/verified-artifact"):
