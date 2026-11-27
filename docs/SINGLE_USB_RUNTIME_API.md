@@ -49,6 +49,8 @@ Option 5 runs FAT and device discovery in a read-only worker with a 10-second de
 
 `/run/usb-wallet/media-command-pending` persists across console respawn while the completion of a mount, unmount, sync or poweroff command is unknown. The console and live signing audit reject that state. A shutdown retry in the same console can proceed once the worker has exited. It rereads the kernel mount table and still requires successful unmounts and sync. A respawned console retains the guard if it cannot verify the earlier command ended. A Linux USB descriptor timeout (`error -110`) remains a separate hardware diagnostic.
 
+The live audit requires both the per-mount and superblock layers to be writable for the vault and any mounted transfer. Both the startup and host image verifiers require consistent FAT32 BPB geometry inside the GPT transfer partition. For startup compatibility, two-partition images may carry the historical ESP bootable bit 2 in addition to read-only bit 60. The three-partition ESP requires bit 60 alone.
+
 ### #79 and #75 interface differences (not yet integrated)
 
 - **#79:** `framebuffer_poc.run_vt(plan, font, audit=...)` reads evdev keyboard events and owns VT/fbdev/termios acquisition, restoration, and abort on input removal. `authorize_review_intent(plan, intent, signer_session, rebuild_plan=..., audit=...)` accepts only a revalidated review digest. The `framebuffer-demo.py` entry uses a fixed public test vector, never unlocks a real vault or exports a signed response. PR #76 currently launches `usb-wallet-console` from `usb-wallet-gui-session`, and does not package `framebuffer_poc.py` in its offline wheel; a later integration must review the module allowlist and actual GUI launch separately.

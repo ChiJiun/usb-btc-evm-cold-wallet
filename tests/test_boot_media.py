@@ -24,6 +24,9 @@ def _fat(label: str, *, fat32: bool = False) -> bytes:
     sector[offset:offset + 11] = label.encode("ascii").ljust(11, b" ")
     if fat32:
         sector[82:90] = b"FAT32   "
+        sector[13] = 8
+        struct.pack_into("<HB", sector, 14, 32, 2)
+        struct.pack_into("<IIHHI", sector, 32, media.TRANSFER_SECTORS - 4, 1024, 0, 0, 2)
     else:
         sector[54:62] = b"FAT16   "
     sector[510:512] = b"\x55\xaa"
@@ -246,15 +249,53 @@ def test_primary_and_backup_gpt_preserve_exact_partition_security_fields(tmp_pat
     ]
 
 
-def test_legacy_two_partition_usb_remains_identifiable(tmp_path):
+@pytest.mark.parametrize("boot_attrs", [media.READ_ONLY, media.READ_ONLY | (1 << 2)])
+def test_legacy_two_partition_usb_remains_identifiable(tmp_path, boot_attrs):
     sys_block, dev = tmp_path / "sys", tmp_path / "dev"
-    _create(sys_block, dev, include_transfer=False)
+    _create(sys_block, dev, include_transfer=False, boot_attrs=boot_attrs)
     assert media.identify(sys_block, dev) == (
         str(dev / "sda1"),
         str(dev / "sda2"),
         None,
         "sda",
     )
+
+
+def test_legacy_two_partition_usb_rejects_unrelated_esp_attribute(tmp_path):
+    sys_block, dev = tmp_path / "sys", tmp_path / "dev"
+    _create(sys_block, dev, include_transfer=False, boot_attrs=media.READ_ONLY | (1 << 3))
+    with pytest.raises(media.MediaInvalid, match="layout"):
+        media.identify(sys_block, dev)
+
+
+@pytest.mark.parametrize("verifier", ["boot", "host"])
+@pytest.mark.parametrize(("offset", "encoded"), [
+    (13, b"\x00"),             # zero sectors per cluster
+    (13, b"\x03"),             # cluster size is not a power of two
+    (14, b"\x00\x00"),         # zero reserved sectors
+    (16, b"\x00"),             # no FATs
+    (17, b"\x01\x00"),         # FAT12/16 root directory fields
+    (22, b"\x01\x00"),         # FAT12/16 FAT size
+    (32, struct.pack("<I", media.TRANSFER_SECTORS + 1)),
+    (32, struct.pack("<I", 65536)),  # too few data clusters
+    (36, struct.pack("<I", 1)),      # FAT too small for the data area
+    (40, b"\x82\x00"),         # active FAT index is past the count
+    (42, b"\x01\x00"),         # unsupported version
+    (44, struct.pack("<I", 1)),      # root cluster is reserved
+])
+def test_fat32_type_string_cannot_hide_invalid_geometry(tmp_path, verifier, offset, encoded):
+    from scripts.verify_image import _fat_label
+
+    sector = bytearray(_fat("TX_TRANSFER", fat32=True))
+    sector[offset:offset + len(encoded)] = encoded
+    if verifier == "boot":
+        partition = tmp_path / "partition"
+        partition.write_bytes(sector)
+        with pytest.raises(ValueError, match="FAT32.*geometry"):
+            media.fat_label(partition, require_fat32=True)
+    else:
+        with pytest.raises(SystemExit, match="FAT32.*geometry"):
+            _fat_label(sector, 0, require_fat32=True)
 
 
 def test_duplicated_cloned_usb_is_denied(tmp_path):

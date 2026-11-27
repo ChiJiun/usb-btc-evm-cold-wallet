@@ -276,7 +276,14 @@ def _current_mount_evidence(
         findings.append("FAIL: live root filesystem is not uniquely RAM-backed")
     else:
         findings.append("PASS: live RAM-backed root")
-    required = {"rw", "nodev", "nosuid", "noexec", "sync", "fmask=0177", "dmask=0077"}
+    required = {"nodev", "nosuid", "noexec", "sync", "fmask=0177", "dmask=0077"}
+
+    def safe_vfat_options(mount):
+        options, superblock = mount["options"], mount["super"]
+        return ("rw" in options and "rw" in superblock
+                and "ro" not in (options | superblock)
+                and required <= (options | superblock))
+
     vault_disk = _mounted_disk(vault[0], sys_dev_block) if len(vault) == 1 else None
 
     # Match the kernel's major:minor, including read-only ESP mounts made via
@@ -323,7 +330,7 @@ def _current_mount_evidence(
         findings.append("FAIL: boot USB runtime identity evidence unavailable")
     if (len(vault) != 1 or vault[0]["type"] != "vfat"
             or vault[0]["source"] != source_expected or vault_disk is None
-            or not required <= (vault[0]["options"] | vault[0]["super"])):
+            or not safe_vfat_options(vault[0])):
         findings.append("FAIL: live COLD_VAULT source, type or mount options changed")
     else:
         findings.append("PASS: live COLD_VAULT verified device and mount flags")
@@ -355,7 +362,7 @@ def _current_mount_evidence(
         )
         if (len(transfer) != 1 or transfer[0]["type"] != "vfat"
                 or not safe_identity
-                or not required <= (transfer[0]["options"] | transfer[0]["super"])):
+                or not safe_vfat_options(transfer[0])):
             findings.append(
                 "FAIL: live TX_TRANSFER is not a verified separate disk or exact single-USB partition"
             )

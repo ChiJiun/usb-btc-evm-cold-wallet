@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from usb_cold_wallet.gui import _is_public_test_root, runtime_audit
 from usb_cold_wallet.keys import root_from_mnemonic
 
@@ -158,6 +160,40 @@ def test_live_mount_revalidation_rejects_remount_and_media_swap(tmp_path):
         ok, reasons = runtime_audit(**kwargs)
         assert not ok
         assert any("FAIL: live" in line or "FAIL: unexpected live" in line for line in reasons)
+
+
+@pytest.mark.parametrize("target", ["/mnt/cold-vault", "/mnt/transfer"])
+@pytest.mark.parametrize("layer", ["mount", "superblock"])
+def test_live_audit_rejects_readonly_vfat_on_either_layer(tmp_path, target, layer):
+    checks = tmp_path / "boot-checks.txt"
+    _boot_checks(checks)
+    swaps = tmp_path / "swaps"
+    swaps.write_text("Filename Type Size Used Priority\n", encoding="utf-8")
+    live = _live_mounts(tmp_path)
+    transfer_device = tmp_path / "transfer-device"
+    transfer_device.write_text("/dev/sdb3\n", encoding="ascii")
+    kwargs = dict(boot_checks=checks, lockdown=tmp_path / "no-lockdown",
+                  proc_net=tmp_path / "no-net", proc_swaps=swaps,
+                  transfer_device=transfer_device, **live)
+    mounts = live["proc_mountinfo"]
+    writable = (
+        mounts.read_text(encoding="utf-8")
+        + "4 1 8:19 / /mnt/transfer rw,nodev,nosuid,noexec,sync,fmask=0177,dmask=0077 "
+          "- vfat /dev/sdb3 rw,sync\n"
+    )
+    mounts.write_text(writable, encoding="utf-8")
+    assert runtime_audit(**kwargs)[0]
+
+    lines = writable.splitlines()
+    index = next(i for i, line in enumerate(lines) if line.split()[4] == target)
+    mount, superblock = lines[index].split(" - ")
+    if layer == "mount":
+        mount = mount.replace(" rw,", " ro,", 1)
+    else:
+        superblock = superblock.replace(" rw,", " ro,", 1)
+    lines[index] = f"{mount} - {superblock}"
+    mounts.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert not runtime_audit(**kwargs)[0]
 
 
 def test_live_mount_allows_only_boot_verified_same_device_transfer(tmp_path):

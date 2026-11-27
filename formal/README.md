@@ -60,3 +60,29 @@ done
 The executable regression tests are in `tests/test_live_appliance_runtime.py`.
 They inject a blocked FAT read using a FIFO, a late mount completion, and
 a pending marker after console respawn. No real media or keys are used.
+
+## Boot and live mount audit
+
+`MediaAudit` models the remaining PR #76 findings. `CheckBoot` corresponds to
+`identify_media._layout_valid` and `fat_label`. Its single-USB geometry gate
+also represents the corresponding check in `scripts/verify_image.py`. The
+host verifier supports the three-partition layout. The startup identifier
+also supports historical two-partition images that set GPT bits 2 and 60.
+`Audit` corresponds to the fresh `gui.runtime_audit` decision after a
+mount or superblock becomes read-only. Each of the four writable layers can
+change independently. Geometry is an abstract input classification. The
+sector arithmetic, GPT decoding and mountinfo parsing are exercised in
+`tests/test_boot_media.py` and `tests/test_gui_runtime.py`.
+
+Use the same `scratch` and TLC command with `MediaAudit.tla` and
+`MediaAudit.cfg`. Run the three mutations by changing one constant at a time
+from `TRUE` to `FALSE` in a temporary copy of the configuration. For the
+reachability case, append `INVARIANT NoLiveAcceptance`.
+
+| Case | Observed result |
+| --- | --- |
+| Standard | Exit 0. 7,968 generated states, 464 distinct, all explored. |
+| `RequireGeometry = FALSE` | Exit 12. Label-only single-USB layout passes boot and violates `SingleBootRequiresGeometry`. |
+| `RequireBothWritable = FALSE` | Exit 12. The live audit accepts a read-only layer and violates `LiveRequiresAllWritable`. |
+| `AllowLegacyBootable = FALSE` | Exit 12. A legacy ESP with bits 2 and 60 is rejected and violates `LegacyEspCompatibility`. |
+| Reach live acceptance | Exit 12 for deliberate `NoLiveAcceptance` assertion. Boot admission and a live audit with all four layers writable are reachable. |

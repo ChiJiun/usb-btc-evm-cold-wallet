@@ -29,6 +29,7 @@ EFI_TYPE = uuid.UUID("c12a7328-f81f-11d2-ba4b-00a0c93ec93b")
 LINUX_FS_TYPE = uuid.UUID("0fc63daf-8483-4772-8e79-3d69d8477de4")
 DATA_TYPE = uuid.UUID("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")
 READ_ONLY = 1 << 60
+LEGACY_BOOTABLE = 1 << 2
 SECTOR_SIZE = 512
 BOOT_SECTORS = 64 * 1024 * 1024 // SECTOR_SIZE
 VAULT_SECTORS = 64 * 1024 * 1024 // SECTOR_SIZE
@@ -209,6 +210,28 @@ def read_gpt(
     return disk_id, partitions
 
 
+def _valid_transfer_fat32_geometry(sector: bytes) -> bool:
+    # FAT32 uses the 32-bit sector/FAT size fields and a clustered root.
+    sectors_per_cluster = sector[13]
+    reserved, fat_count, root_entries, total16 = struct.unpack_from("<HBHH", sector, 14)
+    fat16 = struct.unpack_from("<H", sector, 22)[0]
+    total, fat_size, flags, version, root_cluster = struct.unpack_from("<IIHHI", sector, 32)
+    if (
+        sectors_per_cluster not in (1, 2, 4, 8, 16, 32, 64, 128)
+        or reserved == 0 or fat_count not in (1, 2)
+        or root_entries or total16 or fat16 or not fat_size or version
+        or total > TRANSFER_SECTORS
+        or (flags & 0x80 and (flags & 0x0F) >= fat_count)
+    ):
+        return False
+    cluster_count = (total - reserved - fat_count * fat_size) // sectors_per_cluster
+    return (
+        cluster_count >= 65525
+        and cluster_count + 2 <= fat_size * 512 // 4
+        and 2 <= root_cluster < cluster_count + 2
+    )
+
+
 def fat_label(partition: Path, *, require_fat32: bool = False, expected=None) -> str:
     """Read the fixed FAT12/16/FAT32 volume label directly from its boot sector."""
     if partition.is_symlink():
@@ -224,6 +247,8 @@ def fat_label(partition: Path, *, require_fat32: bool = False, expected=None) ->
         raise ValueError("unsupported FAT filesystem")
     if require_fat32 and fat_type != b"FAT32   ":
         raise ValueError("TX_TRANSFER must use FAT32")
+    if require_fat32 and not _valid_transfer_fat32_geometry(sector):
+        raise ValueError("invalid TX_TRANSFER FAT32 geometry")
     raw = sector[71:82] if fat_type == b"FAT32   " else sector[43:54]
     return raw.decode("ascii").rstrip(" ")
 
@@ -280,9 +305,11 @@ def _layout_valid(
     if len(parts) not in (2, 3):
         return False
     boot, vault = parts[0], parts[1]
+    # Historical two-partition images set GPT bit 2 as well as bit 60.
+    allowed_boot_attrs = (READ_ONLY,) if len(parts) == 3 else (READ_ONLY, READ_ONLY | LEGACY_BOOTABLE)
     if (
         boot[:2] != (EFI_TYPE, BOOT_UUID)
-        or boot[2] != READ_ONLY
+        or boot[2] not in allowed_boot_attrs
         or _size(boot) != BOOT_SECTORS
         or boot[3] != BOOT_START_LBA
         or boot[4] != VAULT_START_LBA - 1

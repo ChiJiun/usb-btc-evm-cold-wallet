@@ -29,6 +29,28 @@ VAULT_START_LBA = BOOT_START_LBA + BOOT_SECTORS
 TRANSFER_START_LBA = VAULT_START_LBA + VAULT_SECTORS
 
 
+def _valid_transfer_fat32_geometry(sector: bytes) -> bool:
+    # FAT32 uses the 32-bit sector/FAT size fields and a clustered root.
+    sectors_per_cluster = sector[13]
+    reserved, fat_count, root_entries, total16 = struct.unpack_from("<HBHH", sector, 14)
+    fat16 = struct.unpack_from("<H", sector, 22)[0]
+    total, fat_size, flags, version, root_cluster = struct.unpack_from("<IIHHI", sector, 32)
+    if (
+        sectors_per_cluster not in (1, 2, 4, 8, 16, 32, 64, 128)
+        or reserved == 0 or fat_count not in (1, 2)
+        or root_entries or total16 or fat16 or not fat_size or version
+        or total > TRANSFER_SECTORS
+        or (flags & 0x80 and (flags & 0x0F) >= fat_count)
+    ):
+        return False
+    cluster_count = (total - reserved - fat_count * fat_size) // sectors_per_cluster
+    return (
+        cluster_count >= 65525
+        and cluster_count + 2 <= fat_size * 512 // 4
+        and 2 <= root_cluster < cluster_count + 2
+    )
+
+
 def _fat_label(data: bytes, first_lba: int, *, require_fat32: bool = False) -> str:
     sector = data[first_lba * SECTOR:(first_lba + 1) * SECTOR]
     if len(sector) != SECTOR or sector[510:512] != b"\x55\xaa":
@@ -40,6 +62,8 @@ def _fat_label(data: bytes, first_lba: int, *, require_fat32: bool = False) -> s
         raise SystemExit("unsupported FAT filesystem")
     if require_fat32 and fat_type != b"FAT32   ":
         raise SystemExit("TX_TRANSFER must be FAT32")
+    if require_fat32 and not _valid_transfer_fat32_geometry(sector):
+        raise SystemExit("invalid TX_TRANSFER FAT32 geometry")
     raw = sector[71:82] if fat_type == b"FAT32   " else sector[43:54]
     return raw.decode("ascii").rstrip(" ")
 
