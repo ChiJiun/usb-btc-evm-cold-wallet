@@ -45,13 +45,17 @@ jobs:
       - name: Verify host prerequisites
         run: sh scripts/check_host.sh
 
-      # Cache downloaded, authenticated source archives only. Never restore
-      # Buildroot output, rootfs, kernel, or image from another revision.
+      # Cache source inputs only, never compiler output, rootfs, or images.
+      # fetch_buildroot.sh rechecks the signed release manifest and archive;
+      # fetch_wheelhouse.sh rechecks every wheel against pinned SHA-256.
       - name: Restore verified source downloads
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4
         with:
-          path: build/dl
-          key: live-usb-sources-${{ runner.os }}-${{ hashFiles('infra/buildroot.env', 'infra/wheelhouse.sha256', 'infra/reproducible.env', 'buildroot-external/configs/usb_wallet_x86_64_defconfig') }}
+          path: |
+            build/dl
+            build/cache
+            build/wheelhouse
+          key: live-usb-sources-${{ runner.os }}-${{ hashFiles('infra/buildroot.env', 'infra/buildroot-release-key.asc', 'infra/embit.env', 'infra/wheelhouse.sha256', 'infra/wheelhouse-requirements.txt', 'infra/reproducible.env', 'buildroot-external/configs/usb_wallet_x86_64_defconfig') }}
 
       - name: Prepare authenticated offline sources
         run: sh scripts/fetch_sources.sh
