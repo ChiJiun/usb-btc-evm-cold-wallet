@@ -1,6 +1,4 @@
 """Fail-closed checks for removable transaction transport and appliance routing."""
-from types import SimpleNamespace
-
 from usb_cold_wallet import appliance
 
 
@@ -8,7 +6,7 @@ SAFE = {"rw", "nodev", "noexec", "nosuid", "sync", "fmask=0177", "dmask=0077"}
 
 
 def _identity(monkeypatch, device="/dev/sdb1"):
-    monkeypatch.setattr(appliance, "_unique_transfer_device", lambda: device)
+    monkeypatch.setattr(appliance, "_bounded_transfer_device", lambda: device)
     return device
 
 
@@ -36,7 +34,7 @@ def test_transfer_mount_refuses_lockdown_before_scanning_or_mounting(monkeypatch
     lockdown.touch()
     monkeypatch.setattr(appliance, "LOCKDOWN", lockdown)
     monkeypatch.setattr(
-        appliance, "_unique_transfer_device",
+        appliance, "_bounded_transfer_device",
         lambda: (_ for _ in ()).throw(AssertionError("No device discovery during lockdown")),
     )
     assert appliance.mount_transfer() is False
@@ -44,7 +42,7 @@ def test_transfer_mount_refuses_lockdown_before_scanning_or_mounting(monkeypatch
 
 def test_transfer_mount_rejects_ambiguous_or_missing_label(monkeypatch, tmp_path):
     monkeypatch.setattr(appliance, "TRANSFER", tmp_path)
-    monkeypatch.setattr(appliance, "_unique_transfer_device", lambda: None)
+    monkeypatch.setattr(appliance, "_bounded_transfer_device", lambda: None)
     assert appliance.mount_transfer() is False
 
 
@@ -176,9 +174,7 @@ def test_transfer_mount_checks_new_mount_source_and_flags(monkeypatch, tmp_path)
     monkeypatch.setattr(appliance, "_mount_info", lambda path: next(states))
     calls = []
     monkeypatch.setattr(
-        appliance.subprocess,
-        "run",
-        lambda args, **kwargs: calls.append(args) or SimpleNamespace(returncode=0),
+        appliance, "_run_media_command", lambda args: calls.append(args) or True,
     )
     assert appliance.mount_transfer() is True
     assert calls[0][5] == device

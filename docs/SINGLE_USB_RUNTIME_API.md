@@ -45,6 +45,10 @@ The legacy separate TX_TRANSFER USB remains accepted through the existing separa
 
 The startup audit and every live runtime audit reject an ESP mounted through an alternate path by matching its kernel major:minor, even if mounted read-only. The live audit also rejects unexpected persistent mounts whether read-write or read-only; a missing ESP identity fails closed. `mount_transfer()` refuses lockdown before discovering or mounting media.
 
+Option 5 runs FAT and device discovery in a read-only worker with a 10-second deadline. The console also allows up to 10 seconds per removable-filesystem command. A deadline failure returns control to the text menu in lockdown without emitting the transfer-ready diagnostic. The console requests termination without blocking on a driver that may still be in a kernel I/O call.
+
+`/run/usb-wallet/media-command-pending` persists across console respawn while the completion of a mount, unmount, sync or poweroff command is unknown. The console and live signing audit reject that state. A shutdown retry in the same console can proceed once the worker has exited. It rereads the kernel mount table and still requires successful unmounts and sync. A respawned console retains the guard if it cannot verify the earlier command ended. A Linux USB descriptor timeout (`error -110`) remains a separate hardware diagnostic.
+
 ### #79 and #75 interface differences (not yet integrated)
 
 - **#79:** `framebuffer_poc.run_vt(plan, font, audit=...)` reads evdev keyboard events and owns VT/fbdev/termios acquisition, restoration, and abort on input removal. `authorize_review_intent(plan, intent, signer_session, rebuild_plan=..., audit=...)` accepts only a revalidated review digest. The `framebuffer-demo.py` entry uses a fixed public test vector, never unlocks a real vault or exports a signed response. PR #76 currently launches `usb-wallet-console` from `usb-wallet-gui-session`, and does not package `framebuffer_poc.py` in its offline wheel; a later integration must review the module allowlist and actual GUI launch separately.

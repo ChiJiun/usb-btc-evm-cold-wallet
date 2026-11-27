@@ -19,6 +19,9 @@ SAFE_MOUNT_OPTIONS = "rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077"
 SYS_BLOCK = Path("/sys/class/block")
 DEV_ROOT = Path("/dev")
 DIAGNOSTIC_HELPER = Path("/usr/libexec/usb-wallet-identify-media")
+MEDIA_PROBE_TIMEOUT = 10
+MEDIA_COMMAND_TIMEOUT = 10
+_pending_media_command: subprocess.Popen | None = None
 
 
 def _signal_diagnostic(mode: str) -> None:
@@ -219,28 +222,100 @@ def security_status() -> list[str]:
 
 
 def _security_locked(status: list[str]) -> bool:
-    return LOCKDOWN.exists() or any(item.startswith("FAIL:") for item in status)
+    return (LOCKDOWN.exists() or _media_command_marker().exists()
+            or any(item.startswith("FAIL:") for item in status))
+
+
+def _kill_media_worker(process: subprocess.Popen) -> None:
+    # A signal can stay pending in a blocked kernel I/O call. Never wait here.
+    try:
+        process.kill()
+    except ProcessLookupError:
+        pass
+
+
+def _bounded_transfer_device() -> str | None:
+    # The worker only reads sysfs and FAT headers. Its one-line result is
+    # bounded by the device name, and it cannot change mounts or write media.
+    process = subprocess.Popen(
+        [sys.executable, "-I", "-c",
+         "from usb_cold_wallet.appliance import _unique_transfer_device; "
+         "print(_unique_transfer_device() or '')"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+    )
+    try:
+        output, _ = process.communicate(timeout=MEDIA_PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        LOCKDOWN.touch()
+        print("FAIL: TX_TRANSFER probe timed out; wallet operations locked.", flush=True)
+        _kill_media_worker(process)
+        return None
+    finally:
+        process.stdout.close()
+    device = output.decode("ascii", errors="replace").strip()
+    if process.returncode == 0 and re.fullmatch(r"/dev/sd[a-z]+[1-9][0-9]*", device):
+        return device
+    return None
+
+
+def _media_command_marker() -> Path:
+    return LOCKDOWN.with_name("media-command-pending")
+
+
+def _media_command_quiescent() -> bool:
+    global _pending_media_command
+    marker = _media_command_marker()
+    if _pending_media_command is not None and _pending_media_command.poll() is not None:
+        marker.unlink()
+        _pending_media_command = None
+    # A respawned console cannot prove an earlier console's worker exited.
+    return not marker.exists()
+
+
+def _run_media_command(arguments: list[str]) -> bool:
+    global _pending_media_command
+    marker = _media_command_marker()
+    if not _media_command_quiescent():
+        return False
+    try:
+        marker.touch(exist_ok=False)
+    except FileExistsError:
+        return False
+    try:
+        _pending_media_command = subprocess.Popen(arguments, stdin=subprocess.DEVNULL)
+    except OSError:
+        marker.unlink()
+        raise
+    try:
+        return _pending_media_command.wait(timeout=MEDIA_COMMAND_TIMEOUT) == 0
+    except subprocess.TimeoutExpired:
+        LOCKDOWN.touch()
+        print(f"FAIL: {arguments[0]} timed out; wallet operations locked.", flush=True)
+        _kill_media_worker(_pending_media_command)
+        return False
+    finally:
+        _media_command_quiescent()
 
 
 def mount_transfer() -> bool:
     # Public integration callers may invoke this without the console menu.
     # Never mount removable exchange media after a failed boot audit.
-    if LOCKDOWN.exists():
+    if LOCKDOWN.exists() or not _media_command_quiescent():
         return False
     TRANSFER.mkdir(parents=True, exist_ok=True)
-    device = _unique_transfer_device()
-    if device is None:
+    device = _bounded_transfer_device()
+    if device is None or LOCKDOWN.exists() or not _media_command_quiescent():
         return False
     if _mounted(TRANSFER):
         return _safe_transfer_mount(device)
-    result = subprocess.run(
+    success = _run_media_command(
         ["mount", "-t", "vfat", "-o", SAFE_MOUNT_OPTIONS, device, str(TRANSFER)],
-        check=False,
     )
-    if result.returncode == 0 and _safe_transfer_mount(device):
+    if success and _safe_transfer_mount(device):
         return True
     # A failed or unexpected new mount must not remain usable.
-    unmount_transfer()
+    if not LOCKDOWN.exists():
+        unmount_transfer()
     return False
 
 
@@ -253,10 +328,11 @@ def _unmount_path(path: Path) -> bool:
             raise ValueError("invalid mount table")
         return any(line.split()[1] == str(path) for line in lines)
     try:
+        if not _media_command_quiescent():
+            return False
         if not mounted():
             return True
-        result = subprocess.run(["umount", str(path)], check=False)
-        return result.returncode == 0 and not mounted()
+        return _run_media_command(["umount", str(path)]) and not mounted()
     except (OSError, ValueError):
         return False
 
@@ -297,15 +373,18 @@ def _poweroff() -> bool:
     print("Power off requested; closing removable filesystems.", flush=True)
     try:
         LOCKDOWN.touch()
+        if not _media_command_quiescent():
+            print("FAIL: a removable filesystem command is still unconfirmed; power off cancelled.", flush=True)
+            return False
         # An unavailable mount table is not evidence that media is unmounted.
         Path("/proc/mounts").read_text(encoding="utf-8")
         if not unmount_transfer() or not _unmount_path(VAULT.parent):
             print("FAIL: removable filesystem unmount failed; power off cancelled.", flush=True)
             return False
-        if subprocess.run(["sync"], check=False).returncode != 0:
+        if not _run_media_command(["sync"]):
             print("FAIL: filesystem sync failed; power off cancelled.", flush=True)
             return False
-        if subprocess.run(["poweroff"], check=False).returncode != 0:
+        if not _run_media_command(["poweroff"]):
             print("FAIL: poweroff command failed; system remains locked.", flush=True)
             return False
     except (OSError, UnicodeError):

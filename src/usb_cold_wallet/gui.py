@@ -391,6 +391,8 @@ def runtime_audit(
     findings: list[str] = []
     if lockdown.exists():
         findings.append("FAIL: offline lockdown marker exists")
+    if lockdown.with_name("media-command-pending").exists():
+        findings.append("FAIL: removable filesystem command completion is unconfirmed")
     try:
         lines = boot_checks.read_text(encoding="utf-8").splitlines()
     except OSError:
