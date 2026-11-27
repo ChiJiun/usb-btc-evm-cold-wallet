@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>USB Cold Signer · MetaMask POC</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; object-src 'none'">  <script type="module" crossorigin src="./assets/index-D2oL4Ya5.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-Sw3dB9vX.css">
+</head>
+<body><main>
+<header><h1>USB Cold Signer · MetaMask 整合 POC</h1>
+<p class="alert">僅供 Sepolia 測試網研究，尚未經安全審計。此頁面只會接收公開地址與簽署完成的交易，<strong>不要輸入助記詞、私鑰、BIP39 密碼或 Vault。</strong></p></header>
+<section><h2>1. 連線 Snap</h2><p>僅供本機測試的 Snap。需使用支援 Account Management Snaps 的 MetaMask 開發版本。</p>
+<button id="connect">安裝／連線 Snap</button><button id="permit" class="alt">授權目前選取帳戶</button>
+<p id="status" role="status">尚未連線。</p></section>
+<section><h2>2. 匯入 USB 的公開地址</h2><label for="address">Sepolia 公開地址（與離線端完整核對）</label>
+<input type="text" id="address" autocomplete="off" spellcheck="false" placeholder="0x...">
+<button id="import">加入獨立冷錢包帳戶</button>
+<p class="muted">不能匯入既有 MetaMask 熱錢包的助記詞或將其轉換成冷錢包。</p>
+<pre id="accounts">尚無帳戶</pre></section>
+<section><h2>3. MetaMask 發起交易後，檢視待簽請求</h2>
+<button id="refresh">讀取待簽交易</button><label for="requests">待簽請求</label>
+<select id="requests"></select>
+<pre id="details"></pre>
+<button id="export">下載 #18 QR 請求 JSON</button>
+<p class="muted">使用 #18 的離線 QR transport 工具顯示／掃描此 JSON，並由離線錢包獨立核對金額、收款地址、手續費。不應信任線上顯示作為唯一授權。</p>
+</section>
+<section><h2>4. 回傳已簽 QR response</h2>
+<label for="response">選擇已簽 response JSON 檔（上限 150 KB）</label>
+<input type="file" id="response" accept=".json,application/json">
+<button id="approve">核對鏈／帳戶／Nonce 後交回 MetaMask</button>
+<button id="reject" class="danger">取消本次請求</button>
+<p class="muted">Snap 會重新解析 raw type-2 transaction，驗證 sender、chainId、nonce、recipient、value、gas、fees、data、access list 以及 request ID/digest；驗證失敗絕不通知 MetaMask 核准。不自動重簽、加價或廣播。</p></section>
+<footer><small>Research POC · #22 · 本機 Companion · MetaMask Account Management Snap</small></footer>
+</main></body></html>
