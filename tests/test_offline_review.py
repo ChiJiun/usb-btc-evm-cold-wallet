@@ -8,6 +8,7 @@ from eth_account import Account
 
 from usb_cold_wallet.exchange import package, read as read_exchange, write
 from usb_cold_wallet.keys import btc_address, btc_key, evm_account, root_from_mnemonic
+from usb_cold_wallet.policy import default_profile, set_limit
 from usb_cold_wallet.review import (
     ReviewSession,
     build_review_plan,
@@ -197,25 +198,25 @@ def test_cancel_and_duplicate_sign_are_fail_closed(root):
     _fully_confirm(canceled)
     canceled.cancel()
     with pytest.raises(ValueError, match="explicitly confirmed"):
-        canceled.sign(root)
+        canceled.sign(root, default_profile(root), extra_confirmation="UNVERIFIED RECIPIENT")
 
     session = ReviewSession(plan)
     _fully_confirm(session)
-    signed = session.sign(root)
+    signed = session.sign(root, default_profile(root), extra_confirmation="UNVERIFIED RECIPIENT")
     assert signed["kind"] == "evm-signed"
     with pytest.raises(ValueError, match="explicitly confirmed"):
-        session.sign(root)
+        session.sign(root, default_profile(root), extra_confirmation="UNVERIFIED RECIPIENT")
 
 
 def test_evm_signed_output_matches_reviewed_request_and_backend(root):
     plan = build_review_plan(package("evm-request", _evm_tx()), root)
     session = ReviewSession(plan)
     _fully_confirm(session)
-    signed = session.sign(root)
+    signed = session.sign(root, default_profile(root), extra_confirmation="UNVERIFIED RECIPIENT")
     payload = signed["payload"]
 
-    assert payload["request_sha256"] == plan.request_digest
-    assert payload["review_sha256"] == plan.review_digest
+    assert "request_sha256" not in payload
+    assert "review_sha256" not in payload
     assert payload["chain_id"] == 11155111
     assert payload["to"] == EVM_RECIPIENT
     assert payload["value_wei"] == 1_000_000_000_000
@@ -227,7 +228,7 @@ def test_btc_signed_output_matches_review_and_exports_create_only(tmp_path, root
     plan = build_review_plan(package("btc-request", encoded), root)
     session = ReviewSession(plan)
     _fully_confirm(session)
-    signed = session.sign(root)
+    signed = session.sign(root, default_profile(root), extra_confirmation="UNVERIFIED RECIPIENT")
 
     payload = signed["payload"]
     assert payload["network"] == "bitcoin-testnet"
@@ -235,8 +236,8 @@ def test_btc_signed_output_matches_review_and_exports_create_only(tmp_path, root
     assert payload["amount_sats"] == 60_000
     assert payload["fee_sats"] == 1_200
     assert payload["signature_count"] == 1
-    assert payload["request_sha256"] == plan.request_digest
-    assert payload["review_sha256"] == plan.review_digest
+    assert "request_sha256" not in payload
+    assert "review_sha256" not in payload
 
     out = tmp_path / "signed.json"
     session.export_signed(out)
@@ -249,15 +250,14 @@ def test_review_digest_fields_are_strict_and_never_arbitrary_metadata(root):
     plan = build_review_plan(package("evm-request", _evm_tx()), root)
     session = ReviewSession(plan)
     _fully_confirm(session)
-    signed = session.sign(root)
+    signed = session.sign(root, default_profile(root), extra_confirmation="UNVERIFIED RECIPIENT")
     payload = signed["payload"]
     assert package("evm-signed", payload)["payload"] == payload
 
     from copy import deepcopy
     attacks = [
-        {key: value for key, value in payload.items() if key != "review_sha256"},
-        {**payload, "request_sha256": "not-a-digest"},
-        {**payload, "review_sha256": "a" * 65},
+        {**payload, "request_sha256": plan.request_digest},
+        {**payload, "review_sha256": plan.review_digest},
         {**payload, "extra": {"recovery_words": "abandon " * 11 + "about"}},
     ]
     for bad in attacks:
@@ -273,7 +273,41 @@ def test_signing_with_different_wallet_is_rejected(root):
         "legal winner thank year wave sausage worth useful legal winner thank yellow"
     )
     with pytest.raises(ValueError, match="wallet account changed"):
-        session.sign(other)
+        session.sign(other, default_profile(root), extra_confirmation="UNVERIFIED RECIPIENT")
+
+
+def test_gui_review_signing_requires_current_wallet_policy_and_extra_confirmation(root):
+    plan = build_review_plan(package("evm-request", _evm_tx()), root)
+    session = ReviewSession(plan)
+    _fully_confirm(session)
+    with pytest.raises(ValueError, match="mandatory"):
+        session.sign(root, None, extra_confirmation="UNVERIFIED RECIPIENT")
+    with pytest.raises(ValueError, match="additional typed confirmation"):
+        session.sign(root, default_profile(root))
+    assert session.can_sign
+    signed = session.sign(root, default_profile(root), extra_confirmation="UNVERIFIED RECIPIENT")
+    assert signed["kind"] == "evm-signed"
+
+
+def test_gui_review_policy_denies_evm_over_limit_without_signature(root):
+    plan = build_review_plan(package("evm-request", _evm_tx()), root)
+    session = ReviewSession(plan)
+    _fully_confirm(session)
+    blocked = set_limit(default_profile(root), root, "evm_max_value_wei", 1)
+    with pytest.raises(ValueError, match="denied"):
+        session.sign(root, blocked, extra_confirmation="UNVERIFIED RECIPIENT")
+    assert not session.signed
+
+
+def test_gui_review_policy_denies_bitcoin_fee_over_limit(root):
+    encoded, _ = _btc_psbt(root)
+    plan = build_review_plan(package("btc-request", encoded), root)
+    session = ReviewSession(plan)
+    _fully_confirm(session)
+    blocked = set_limit(default_profile(root), root, "btc_max_fee_sats", 1)
+    with pytest.raises(ValueError, match="denied"):
+        session.sign(root, blocked, extra_confirmation="UNVERIFIED RECIPIENT")
+    assert not session.signed
 
 
 def test_malicious_long_or_invalid_qr_text_never_creates_review(root):
