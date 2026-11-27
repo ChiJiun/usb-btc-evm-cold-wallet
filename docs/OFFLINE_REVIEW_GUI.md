@@ -11,6 +11,13 @@ simulation.
 
 The online computer, QR payload and TX_TRANSFER USB-B are all untrusted.
 
+The offline flow requires a wallet-bound encrypted policy. Before vault
+unlock, the GUI checks the separately recorded current policy SHA-256 against
+the single-read `<vault>.policy` ciphertext. After unlocking, it validates
+the policy's wallet binding and enforces the same #28 decision gate as the CLI.
+Unknown recipients require an additional typed confirmation; missing policy,
+wrong anchor or exceeded BTC/EVM limits reject the signature.
+
 The offline flow is:
 
 ```
@@ -81,8 +88,11 @@ The final confirmation is deliberately not bound to Enter. The user must:
 3. explicitly activate **Confirm signing**.
 
 After the signature is produced, the GUI immediately drops its wallet-root
-reference. The signed transaction is public data and may then be exported to
-USB-B or passed to a future #18 signed-QR presenter.
+and policy references. The signed transaction is public data and may then be
+exported to USB-B or passed to a future #18 signed-QR presenter. The signed
+exchange payload contains **only** the exact #11/#26 signed BTC/EVM fields:
+`request_sha256` and `review_sha256` remain local GUI display metadata and
+must not be appended to the signed payload.
 
 ## Displayed fields
 
@@ -124,8 +134,8 @@ in the other chain's workflow.
 
 `load_review_file()` uses the bounded, no-symlink USB reader from #5.
 `load_review_qr()` accepts text returned by a QR decoder. Both terminate in
-the same `exchange.decode_envelope()` verifier and the same
-`build_review_plan()` path.
+the same strict `exchange.verify()` and `build_review_plan()` pipeline;
+malformed QR JSON, duplicate keys and oversized transport data are rejected.
 
 The current #19 code intentionally does **not** add camera libraries to the
 offline TCB. A QR reader callback is an adapter point for #18. When no QR adapter

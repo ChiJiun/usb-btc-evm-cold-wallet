@@ -16,7 +16,9 @@ import time
 from typing import Callable
 
 from .keys import btc_address, evm_account, root_from_mnemonic
-from .review import ReviewPlan, ReviewSession, load_review_file, load_review_qr
+from .review import (ReviewPlan, ReviewSession, load_review_file,
+                     load_review_qr, review_policy_decision)
+from .policy import read_policy_snapshot, load_policy_snapshot
 from .vault import load_vault
 
 DEFAULT_VAULT = Path("/mnt/cold-vault/wallet.vault")
@@ -326,6 +328,7 @@ class OfflineReviewApp:
         self.root.bind_all("<Any-Button>", self._activity, add="+")
 
         self.wallet_root = None
+        self.policy_profile = None
         self.last_activity = time.monotonic()
         self.selected_kind: str | None = None
         self.session: ReviewSession | None = None
@@ -439,10 +442,25 @@ class OfflineReviewApp:
 
     def _unlock(self) -> bool:
         if self.wallet_root is not None:
+            if self.policy_profile is None:
+                self._lock_wallet(self.t("locked"))
+                return False
             self._activity()
             return True
         if not self.audit_ok and not self.development_mode:
             self.messagebox.showerror(self.t("error"), self.t("audit_failed"), parent=self.root)
+            return False
+        anchor = self.simpledialog.askstring(
+            self.t("unlock"), "Independently recorded policy SHA-256 (64 lowercase hex)",
+            parent=self.root,
+        )
+        if anchor is None:
+            return False
+        try:
+            policy_path = self.vault.with_name(self.vault.name + ".policy")
+            snapshot = read_policy_snapshot(policy_path, anchor)
+        except ValueError as exc:
+            self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
             return False
         password = self.simpledialog.askstring(
             self.t("unlock"),
@@ -460,15 +478,24 @@ class OfflineReviewApp:
         )
         if bip39_password is None:
             return False
+        policy_password = self.simpledialog.askstring(
+            self.t("unlock"), "Encrypted offline policy passphrase",
+            show="*", parent=self.root,
+        )
+        if policy_password is None:
+            return False
         try:
             mnemonic = load_vault(self.vault, password)
             wallet_root = root_from_mnemonic(mnemonic, bip39_password)
+            policy_profile = load_policy_snapshot(snapshot, wallet_root, policy_password)
         except (ValueError, OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
             self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
             return False
         finally:
             password = ""
             bip39_password = ""
+            policy_password = ""
+            snapshot = b""
             if "mnemonic" in locals():
                 mnemonic = ""
         if self.development_mode and not _is_public_test_root(wallet_root):
@@ -479,6 +506,7 @@ class OfflineReviewApp:
             )
             return False
         self.wallet_root = wallet_root
+        self.policy_profile = policy_profile
         self._activity()
         return True
 
@@ -687,11 +715,26 @@ class OfflineReviewApp:
         if not self.session or self.wallet_root is None:
             return
         try:
-            self.session.sign(self.wallet_root)
+            decision = review_policy_decision(
+                self.session.plan, self.wallet_root, self.policy_profile)
+            extra_confirmation = None
+            if decision.status == "REQUIRE_EXTRA_CONFIRMATION":
+                answer = self.simpledialog.askstring(
+                    self.t("error"), "Type UNVERIFIED RECIPIENT to confirm the full address",
+                    parent=self.root,
+                )
+                if answer != "UNVERIFIED RECIPIENT":
+                    raise ValueError("Unknown recipient requires separate confirmation")
+                extra_confirmation = answer
+            self.session.sign(self.wallet_root, self.policy_profile,
+                              extra_confirmation=extra_confirmation)
         except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
+            self._lock_wallet(self.t("locked"))
             self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
+            self._render_home()
             return
         self.wallet_root = None
+        self.policy_profile = None
         self._render_signed()
 
     def _render_signed(self):
@@ -757,6 +800,7 @@ class OfflineReviewApp:
 
     def _lock_wallet(self, message: str = ""):
         self.wallet_root = None
+        self.policy_profile = None
         if self.session and not self.session.signed:
             self.session.cancel()
         self.session = None
@@ -765,6 +809,7 @@ class OfflineReviewApp:
         self.status_message = message
 
     def _done(self):
+        self.policy_profile = None
         self.session = None
         self.selected_kind = None
         self.status_message = self.t("locked")
@@ -772,6 +817,7 @@ class OfflineReviewApp:
 
     def _close(self):
         self.wallet_root = None
+        self.policy_profile = None
         if self.session and not self.session.signed:
             self.session.cancel()
         self.root.destroy()
