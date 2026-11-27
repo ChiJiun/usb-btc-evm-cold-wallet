@@ -148,6 +148,9 @@ def _validate_watch_only(payload):
         account = bip32.HDKey.from_base58(tpub)
         if account.is_private:
             raise ValueError("Private BIP32 keys must never be exported")
+        if (account.depth != 3 or account.child_number != 0x80000000 or
+                account.version != _BTC_NETWORK["xpub"]):
+            raise ValueError("Expected Bitcoin testnet BIP84 account m/84h/1h/0h")
     except Exception as exc:
         raise ValueError("Malformed public tpub") from exc
     if "master_fingerprint" in btc and (
@@ -157,6 +160,8 @@ def _validate_watch_only(payload):
     addrs = btc["receive_addresses"]
     if type(addrs) is not list or not 1 <= len(addrs) <= 20:
         raise ValueError("Watch-only address count out of bounds")
+    if any(type(addr) is not str for addr in addrs):
+        raise ValueError("Invalid Bitcoin watch-only receive address")
     if len(set(addrs)) != len(addrs):
         raise ValueError("Duplicate Bitcoin address")
     for index, addr in enumerate(addrs):
@@ -273,6 +278,10 @@ def _validate_payload(kind, payload):
     _no_secrets(payload)
     if kind == "btc-request":
         _psbt_base64(payload, "BTC request")
+        # Integrity alone is not enough: reject malformed/PSBTv2 framing
+        # before `inspect-transfer` reports a valid exchange envelope.
+        from .btc import _read_psbt
+        _read_psbt(payload)
     elif kind == "evm-request":
         _validate_unsigned_evm(payload)
     elif kind == "watch-only":
@@ -286,7 +295,7 @@ def _validate_payload(kind, payload):
 
 
 def package(kind: str, payload):
-    if kind not in KINDS:
+    if type(kind) is not str or kind not in KINDS:
         raise ValueError("Unrecognized exchange kind")
     _validate_payload(kind, payload)
     content = {"format": FORMAT, "version": VERSION, "kind": kind,
@@ -304,7 +313,7 @@ def verify(data, expected_kind=None):
         raise ValueError("Invalid exchange envelope fields")
     kind = data["kind"]
     if (data["format"] != FORMAT or type(data["version"]) is not int or
-            data["version"] != VERSION or kind not in KINDS or
+            data["version"] != VERSION or type(kind) is not str or kind not in KINDS or
             data["network"] != KINDS[kind] or
             (expected_kind is not None and kind != expected_kind)):
         raise ValueError("Exchange format, type, or network mismatch")
