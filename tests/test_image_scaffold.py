@@ -26,6 +26,7 @@ def test_kernel_removes_network_and_internal_storage():
     assert "# CONFIG_NET is not set" in text
     assert "CONFIG_USB_STORAGE=y" in text
     assert "CONFIG_VFAT_FS=y" in text
+    assert "CONFIG_DRM_FBDEV_EMULATION=y" in text
     # Initramfs cannot load missing FAT charset modules at boot.
     assert "CONFIG_NLS_CODEPAGE_437=y" in text
     assert "CONFIG_NLS_ISO8859_1=y" in text
@@ -68,18 +69,28 @@ def test_image_verifier_audits_the_kernel_used_for_shipped_bzimage():
     assert 'cmp -s "$BUILT_KERNEL" "$OUT/images/bzImage"' in verifier
     assert "grep -q '^# CONFIG_NET is not set$'" in verifier
     assert "Auditing built kernel config:" in verifier
+    assert "required local display/input kernel capability missing" in verifier
+    assert "CONFIG_DRM_FBDEV_EMULATION" in verifier
 
 
-def test_image_has_separate_boot_and_cold_vault_partitions():
+def test_image_has_single_usb_boot_vault_and_transfer_partitions():
     text = (ROOT / "buildroot-external/board/usb-wallet/genimage.cfg").read_text()
     assert 'label = "USBCOLD_EFI"' in text
     assert 'label = "COLD_VAULT"' in text
-    # The blank vault filesystem must not make genimage copy from root/*.
+    assert 'label = "TX_TRANSFER"' in text
     vault_config = text.split("image cold-vault.vfat {", 1)[1].split("vfat {", 1)[0]
     assert "empty = true" in vault_config
     assert "partition boot" in text
     assert "partition vault" in text
-    assert "read-only = true" in text
+    assert "partition transfer" in text
+    assert 'partition-type-uuid = L' in text
+    assert 'partition-uuid = "42f6f5d4-9310-5ac3-b5d4-1540cbe7d6b4"' in text
+    assert "size = 512M" in text
+    boot_config = text.split("partition boot {", 1)[1].split("}", 1)[0]
+    assert "read-only = true" in boot_config
+    # genimage's GPT bootable flag adds attribute bit 2. The ESP must carry
+    # exactly the UEFI read-only attribute (bit 60), with no legacy bit 2.
+    assert "bootable = true" not in boot_config
 
 
 def test_uefi_smoke_uses_matched_flash_firmware_and_serial_audit():
@@ -97,9 +108,25 @@ def test_uefi_smoke_uses_matched_flash_firmware_and_serial_audit():
     assert "console=tty1 console=ttyS0,115200" in grub
     assert "earlyprintk=serial,ttyS0,115200" in grub
     assert "loglevel=7" in grub
-    assert 'grep \'^FAIL:\' "$CHECKS" > /dev/ttyS0' in boot_audit
+    assert "--serial audit-lockdown" in boot_audit
+    assert "--serial audit-ok" in boot_audit
     assert "USB_WALLET_UEFI_AUDIT_LOCKDOWN" in boot_audit
+    assert "USB_WALLET_CONSOLE_READY" in script
+    assert 'python3 "$ROOT/scripts/verify_delayed_usb.py"' in script
+    assert "guest audit marker present but required evidence is missing" in script
+    assert "boot partition is not mounted in cold runtime" in script
     assert "-net none" in script
+
+
+def test_target_exposes_only_single_purpose_appliance_on_interactive_tty():
+    defconfig = (ROOT / "buildroot-external/configs/usb_wallet_x86_64_defconfig").read_text()
+    postbuild = (ROOT / "buildroot-external/board/usb-wallet/post-build.sh").read_text()
+    assert 'BR2_TARGET_GENERIC_GETTY_PORT=""' in defconfig
+    assert "tty1::respawn:/usr/bin/usb-wallet-gui-session" in postbuild
+    assert "interactive getty or shell survived appliance lockdown" in postbuild
+    assert "unexpected interactive inittab entry survived appliance lockdown" in postbuild
+    assert "tty1::respawn:/usr/bin/usb-wallet-gui-session" in postbuild
+    assert ":(askfirst|respawn):.*\\/bin\\/(a|ba|z)?sh" in postbuild
 
 
 def test_image_generation_is_deterministic():
@@ -108,9 +135,11 @@ def test_image_generation_is_deterministic():
     repro = (ROOT / "infra/reproducible.env").read_text()
     assert "BR2_REPRODUCIBLE=y" in defconfig
     assert image.count('extraargs = "--invariant"') == 2
+    assert 'extraargs = "--invariant -F 32"' in image
     assert 'disk-uuid = "f1448aa1-28cc-54bf-8fdd-3008514c0ab5"' in image
     assert 'partition-uuid = "e2bd6d1b-8de5-502d-a897-c53a8e60f46b"' in image
     assert 'partition-uuid = "18f1c36f-d5c0-5052-9cd2-03e9c2a48f00"' in image
+    assert 'partition-uuid = "42f6f5d4-9310-5ac3-b5d4-1540cbe7d6b4"' in image
     assert re.search(r"^SOURCE_DATE_EPOCH=[1-9][0-9]+$", repro, re.MULTILINE)
 
 
@@ -132,11 +161,22 @@ def test_boot_audit_binds_vault_to_unique_partuuid_and_boot_device():
     assert 'BOOT_UUID = uuid.UUID("e2bd6d1b-8de5-502d-a897-c53a8e60f46b")' in helper
     assert 'VAULT_UUID = uuid.UUID("18f1c36f-d5c0-5052-9cd2-03e9c2a48f00")' in helper
     assert "zlib.crc32" in helper
-    assert "missing, duplicated, or inconsistent" in helper
+    assert "class MediaPending" in helper
+    assert "class MediaInvalid" in helper
+    assert "class MediaDuplicate" in helper
+    assert "class MediaReplaced" in helper
+    assert "class MediaTimeout" in helper
+    assert "BLKGETDISKSEQ" in helper
+    assert ' --check "$MEDIA_IDENTITY"' in init
+    assert 'ro,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077' in init
+    assert 'remount,rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077' in init
     assert "usb-wallet-identify-media" in postbuild
     assert "/usr/libexec/usb-wallet-identify-media" in init
     assert "blkid -t" not in init and "blkid -s" not in init
     assert "boot and vault partitions share verified block parent" in init
+    assert 'BOOT_MAJMIN=' in init
+    assert '/proc/self/mountinfo' in init
+    assert '$3 == dev' in init
     assert '"$VAULT_DEVICE" /mnt/cold-vault' in init
     assert "COLD_VAULT mount source matches verified PARTUUID device" in init
     assert "-L COLD_VAULT" not in init
@@ -151,9 +191,13 @@ def test_boot_audit_covers_memory_swap_and_persistence_and_fails_closed():
     assert "root filesystem is RAM-backed" in init
     assert "no active swap" in init
     assert "no unexpected writable persistent filesystem mounted" in init
+    assert "UNEXPECTED_PERSISTENT=" in init
+    assert 'hasopt($4, "rw")' not in init
     assert 'LOCKDOWN=/run/usb-wallet/lockdown' in init
     assert 'BOOT_PARENT_FILE=/run/usb-wallet/boot-parent' in init
     assert 'VAULT_DEVICE_FILE=/run/usb-wallet/vault-device' in init
+    assert 'TRANSFER_DEVICE_FILE=/run/usb-wallet/transfer-device' in init
+    assert "single-USB TX_TRANSFER partition bound to verified boot parent" in init
     assert "_security_locked" in appliance
     assert "wallet creation/signing is disabled" in appliance
 
@@ -239,3 +283,215 @@ def test_reproducibility_builds_keep_isolated_output_trees_at_one_canonical_path
     assert 'BUILD_OUTPUT_DIR="$out"' not in repro
     for script in (configure, build, verify):
         assert 'BUILD_OUTPUT_DIR:-$ROOT/build/output' in script
+
+
+def test_no_network_runtime_uses_socket_free_vt_fbcon_session():
+    config = (ROOT / "buildroot-external/configs/usb_wallet_x86_64_defconfig").read_text()
+    kernel = (ROOT / "buildroot-external/board/usb-wallet/linux.config").read_text()
+    external = (ROOT / "buildroot-external/external.mk").read_text()
+    postbuild = (ROOT / "buildroot-external/board/usb-wallet/post-build.sh").read_text()
+    launcher_path = (
+        ROOT
+        / "buildroot-external/board/usb-wallet/rootfs-overlay/usr/bin/usb-wallet-gui-session"
+    )
+    launcher = launcher_path.read_text()
+
+    # Buildroot preserves rootfs-overlay file modes. Losing this executable bit
+    # makes the fail-closed post-build launcher check abort target-finalize.
+    assert launcher_path.stat().st_mode & 0o111
+    assert "# CONFIG_NET is not set" in kernel
+    for symbol in (
+        "CONFIG_VT=y",
+        "CONFIG_FRAMEBUFFER_CONSOLE=y",
+        "CONFIG_DRM_SIMPLEDRM=y",
+        "CONFIG_DRM_FBDEV_EMULATION=y",
+    ):
+        assert symbol in kernel
+    for forbidden in (
+        "BR2_PACKAGE_XORG7=y",
+        "BR2_PACKAGE_XSERVER_XORG_SERVER=y",
+        "BR2_PACKAGE_XSERVER_XORG_SERVER_KDRIVE=y",
+        "BR2_PACKAGE_XAPP_XINIT=y",
+        "BR2_PACKAGE_TK=y",
+    ):
+        assert forbidden not in config
+    assert "--enable-tk" not in external
+    assert "PYTHON3_DEPENDENCIES += tk" not in external
+    assert "X11 runtime present while CONFIG_NET=n" in postbuild
+    assert "_tkinter" in postbuild
+    assert "/usr/bin/xinit" not in launcher
+    assert "Xfbdev" not in launcher
+    assert "exec /usr/bin/usb-wallet-console" in launcher
+    assert "test -c /dev/tty1" in launcher
+
+
+def test_media_identifier_checks_primary_and_backup_gpt():
+    helper = (ROOT / "buildroot-external/board/usb-wallet/identify_media.py").read_text()
+    verifier = (ROOT / "scripts/verify_image.py").read_text()
+    for text in (helper, verifier):
+        assert "primary/backup GPT" in text
+        assert "GPT_TABLE_SECTORS" in text
+        assert "entries_crc" in text
+    assert "primary/backup GPT partition tables differ" in helper
+    assert "primary/backup GPT partition tables differ" in verifier
+
+def test_post_build_has_valid_posix_shell_syntax():
+    import subprocess
+
+    script = ROOT / "buildroot-external/board/usb-wallet/post-build.sh"
+    assert script.stat().st_mode & 0o111
+    check = subprocess.run(["sh", "-n", str(script)], capture_output=True, text=True)
+    assert check.returncode == 0, check.stderr
+
+
+def test_post_build_enforces_single_appliance_tty_and_fails_closed(tmp_path):
+    import os
+    import subprocess
+
+    script = ROOT / "buildroot-external/board/usb-wallet/post-build.sh"
+    target = tmp_path / "target"
+    images = tmp_path / "images"
+    (target / "etc").mkdir(parents=True)
+    (target / "root").mkdir()
+    (target / "usr/bin").mkdir(parents=True)
+    images.mkdir()
+    for name in ("usb-wallet-console", "usb-wallet-gui-session"):
+        executable = target / "usr/bin" / name
+        executable.write_text("#!/bin/sh\nexit 0\n")
+        executable.chmod(0o755)
+    inittab = target / "etc/inittab"
+    env = {**os.environ, "TARGET_DIR": str(target), "BINARIES_DIR": str(images)}
+
+    # Existing getty/shell entries are removed, leaving only the appliance.
+    inittab.write_text("::sysinit:/etc/init.d/rcS\ntty1::respawn:/bin/sh\ntty2::respawn:/sbin/getty\n")
+    result = subprocess.run(["sh", str(script)], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert inittab.read_text().count("tty1::respawn:/usr/bin/usb-wallet-gui-session") == 1
+    assert "/bin/sh" not in inittab.read_text()
+    assert "getty" not in inittab.read_text()
+
+    # Any second interactive daemon must block the build.
+    inittab.write_text("::sysinit:/etc/init.d/rcS\ntty2::respawn:/usr/bin/unapproved\n")
+    result = subprocess.run(["sh", str(script)], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "unexpected interactive inittab entry" in result.stderr
+
+    # A one-shot unapproved terminal program must not bypass respawn filtering.
+    inittab.write_text("::sysinit:/etc/init.d/rcS\ntty2::once:/usr/bin/unapproved\n")
+    result = subprocess.run(["sh", str(script)], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "unexpected interactive inittab entry" in result.stderr
+
+    # Missing init policy must not silently produce an unguarded Live OS.
+    inittab.unlink()
+    result = subprocess.run(["sh", str(script)], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "missing /etc/inittab" in result.stderr
+
+    # A missing appliance launcher must also block the build.
+    inittab.write_text("::sysinit:/etc/init.d/rcS\n")
+    (target / "usr/bin/usb-wallet-gui-session").unlink()
+    result = subprocess.run(["sh", str(script)], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "required appliance launcher missing" in result.stderr
+
+
+def test_boot_media_wait_survives_unusable_serial_character_device(tmp_path):
+    """Execute the real startup prefix with an actual failing character sink."""
+    import shutil
+    import subprocess
+    import pytest
+
+    if not Path("/dev/full").is_char_device() or not shutil.which("sh"):
+        pytest.skip("requires POSIX shell and /dev/full")
+    script = (
+        ROOT / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d/S01airgap"
+    ).read_text()
+    prefix, separator, _ = script.partition('if MEDIA_IDENTITY=')
+    assert separator
+    # Execute only the pre-discovery prefix: no real mounts, device access,
+    # swap changes or modifications to the host's /run.
+    prefix = (
+        prefix.replace("/run/usb-wallet", str(tmp_path / "run"))
+        .replace("/mnt/cold-vault", str(tmp_path / "vault"))
+        .replace("/mnt/transfer", str(tmp_path / "transfer"))
+        .replace("/dev/ttyS0", "/dev/full")
+    )
+    # Stub the bounded helper's failed exit; real device/watchdog behavior is
+    # exercised separately in test_boot_media.
+    prefix = prefix.replace("/usr/bin/python3 /usr/libexec/usb-wallet-identify-media", "false")
+    prefix = "swapoff() { :; }\n" + prefix
+    result = subprocess.run(
+        ["sh", "-c", prefix + '\nprintf "MEDIA_SCAN_REACHED\\n"\n'],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "MEDIA_SCAN_REACHED" in result.stdout
+    assert (tmp_path / "run/lockdown").exists()
+
+    # Genuine startup failure must still lock down and leave a public reason.
+    result = subprocess.run(
+        ["sh", "-c", prefix + "\nexit 7\n"],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 7
+    assert (tmp_path / "run/lockdown").exists()
+    assert "FAIL: boot security audit aborted unexpectedly (exit 7)" in (
+        tmp_path / "run/boot-checks.txt"
+    ).read_text()
+
+
+def test_boot_final_serial_diagnostics_cannot_change_audit_result(tmp_path):
+    import shutil
+    import subprocess
+    import pytest
+
+    if not Path("/dev/full").is_char_device() or not shutil.which("sh"):
+        pytest.skip("requires POSIX shell and /dev/full")
+    script = (
+        ROOT / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d/S01airgap"
+    ).read_text()
+    _, separator, tail = script.partition("# Report only the final audit result")
+    assert separator
+    checks = tmp_path / "checks"
+    checks.write_text("PASS: test audit\nFAIL: test failure\n")
+    tail = (separator + tail).replace("/usr/bin/python3 /usr/libexec/usb-wallet-identify-media", "false")
+    for failed in (0, 1):
+        result = subprocess.run(
+            ["sh", "-efuc", 'CHECKS=$1\nFAILED=$2\n' + tail,
+             "audit", str(checks), str(failed)],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+
+
+def test_boot_audit_stop_does_not_reset_or_restart_discovery(tmp_path):
+    import shutil
+    import subprocess
+    import pytest
+    if not shutil.which("sh"):
+        pytest.skip("requires POSIX shell")
+    script = (
+        ROOT / "buildroot-external/board/usb-wallet/rootfs-overlay/etc/init.d/S01airgap"
+    ).read_text()
+    run = tmp_path / "run"
+    run.mkdir()
+    checks = run / "boot-checks.txt"
+    checks.write_text("PASS: previous completed boot audit\n")
+    identity = run / "boot-device"
+    identity.write_text("/dev/sda1\n")
+    # If execution incorrectly reaches the normal boot body, fail without
+    # executing any host mounts, swaps, or actual device discovery.
+    prefix, sep, _ = script.partition("FAILED=0")
+    assert sep
+    prefix = prefix.replace("/run/usb-wallet", str(run))
+    code = prefix + "\nexit 97\n"
+    result = subprocess.run(["sh", "-c", code, "audit", "stop"],
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert (run / "lockdown").exists()
+    assert checks.read_text() == "PASS: previous completed boot audit\n"
+    assert identity.read_text() == "/dev/sda1\n"
+    result = subprocess.run(["sh", "-c", code, "audit", "restart"],
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode == 1
