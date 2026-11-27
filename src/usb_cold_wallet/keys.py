@@ -32,6 +32,8 @@ def watch_only(root, count: int = 3) -> dict:
         "bitcoin": {
             "network": "testnet",
             "derivation": BTC_ACCOUNT_PATH,
+            # Public PSBT key-origin metadata; master fingerprint is not a secret.
+            "master_fingerprint": root.my_fingerprint.hex(),
             "account_tpub": root.derive(BTC_ACCOUNT_PATH).to_public().to_base58(version=networks.NETWORKS["test"]["xpub"]),
             "receive_addresses": [btc_address(root, 0, index) for index in range(count)],
         },
