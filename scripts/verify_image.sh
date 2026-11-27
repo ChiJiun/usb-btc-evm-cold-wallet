@@ -23,15 +23,17 @@ printf 'Auditing built kernel config: %s\n' "$KCONFIG"
 # by dependency resolution. Print only relevant public build configuration.
 grep -E '^(CONFIG_NET=|# CONFIG_NET is not set|CONFIG_USB_STORAGE=|# CONFIG_USB_STORAGE is not set|CONFIG_VFAT_FS=|# CONFIG_VFAT_FS is not set)' "$KCONFIG" || true
 
-# Fail closed if the resolved Buildroot config uses mdev/eudev.
 BR_CONFIG="$OUT/.config"
 test -s "$BR_CONFIG" || { echo "ERROR: missing resolved Buildroot config" >&2; exit 1; }
-grep -qx 'BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y' "$BR_CONFIG" || {
-	echo "ERROR: Buildroot must use devtmpfs-only device management" >&2
+# Buildroot enables CONFIG_NET in linux.mk when mdev is selected, even if
+# the source kernel defconfig requests CONFIG_NET=n. Verify the rootfs device
+# manager that actually drove the complete image build.
+grep -q '^BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y$' "$BR_CONFIG" || {
+	echo "ERROR: Buildroot is not using devtmpfs-only device management" >&2
 	exit 1
 }
 if grep -Eq '^BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_(MDEV|EUDEV)=y$' "$BR_CONFIG"; then
-	echo "ERROR: mdev/eudev device management is forbidden" >&2
+	echo "ERROR: userspace device manager may re-enable kernel networking" >&2
 	exit 1
 fi
 

@@ -92,10 +92,16 @@ def main() -> int:
             print(f"{name}={value}")
             if value != "y":
                 failed.append(name)
-        for name in ("BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV", "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV"):
+        # Buildroot linux.mk enables CONFIG_NET whenever mdev is selected.
+        # This air-gapped image must use plain devtmpfs, which handles block
+        # device nodes without a userspace hotplug daemon or network stack.
+        for name in ("BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_MDEV",
+                     "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV"):
             symbol = kconf.syms.get(name)
-            if symbol is not None and symbol.str_value == "y":
-                failed.append(name + " must be disabled")
+            value = "<missing>" if symbol is None else symbol.str_value
+            print(f"{name}={value}")
+            if value != "n":
+                failed.append(f"{name} (must be n)")
         if failed:
             raise SystemExit("Kconfig selections did not resolve: " + ", ".join(failed))
 

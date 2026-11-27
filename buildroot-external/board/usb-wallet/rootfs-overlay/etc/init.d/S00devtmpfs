@@ -1,0 +1,16 @@
+#!/bin/sh
+# CONFIG_DEVTMPFS_MOUNT does not auto-mount /dev when booting initramfs.
+# Mount device nodes before the S01 air-gap audit and BusyBox tty1 console.
+set -eu
+
+case "${1:-start}" in
+    start)
+        mkdir -p /dev
+        if ! grep -q '^[^ ]* /dev devtmpfs ' /proc/mounts; then
+            mount -t devtmpfs -o nosuid,noexec devtmpfs /dev
+        fi
+        test -c /dev/console
+        ;;
+    stop|restart|reload)
+        ;;
+esac

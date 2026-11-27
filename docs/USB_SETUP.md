@@ -89,7 +89,7 @@ Production kernel config 明確設定：
 # CONFIG_NET is not set
 ```
 
-因此不是「Wi-Fi 關掉」而已，而是 Linux networking subsystem 不會被編入 kernel。
+因此不是「Wi-Fi 關掉」而已：Buildroot 改用 **devtmpfs-only** 裝置管理，不使用會強制開啟 `CONFIG_NET` 的 `mdev` 模式。建置時必須以最終 Kernel `.config`（而非只看輸入設定）確認 networking subsystem 確實未編入；若檢查失敗即拒絕產出合格映像。
 
 系統啟動後會直接進入 `usb-wallet-console`，不提供一般 getty/login 作為正常操作介面。
 
