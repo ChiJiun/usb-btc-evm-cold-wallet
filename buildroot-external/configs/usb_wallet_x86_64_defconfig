@@ -35,6 +35,11 @@ BR2_PACKAGE_PYTHON3_DECIMAL=y
 BR2_PACKAGE_PYTHON3_SSL=y
 BR2_PACKAGE_PYTHON3_UNICODEDATA=y
 BR2_PACKAGE_PYTHON3_ZLIB=y
+
+# CONFIG_NET=n removes AF_UNIX, so X11/Tk cannot be a valid local UI transport.
+# Use the kernel VT/fbcon + local keyboard path only. PR #75 owns the eventual
+# framebuffer-native transaction UX integration; this image provides the
+# audited appliance/signing API without weakening the kernel network policy.
 BR2_PACKAGE_USB_WALLET_APP=y
 
 BR2_TARGET_GRUB2=y

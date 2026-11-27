@@ -14,17 +14,61 @@ install -m 0755 "$BOARD_DIR/framebuffer-demo.py" \
 mkdir -p "$BINARIES_DIR/efi-part/EFI/BOOT"
 cp "$BOARD_DIR/grub.cfg" "$BINARIES_DIR/efi-part/EFI/BOOT/grub.cfg"
 
-# Replace Buildroot's login/getty with a single-purpose console. BusyBox sh
-# remains for init scripts but is not presented as the normal user interface.
+# CONFIG_NET=n removes AF_UNIX, so an X11/Tk session cannot work even with
+# -nolisten tcp. tty1 is rendered by the kernel VT/fbcon stack and needs no
+# socket family. Keep the operator on the single-purpose audited appliance.
 if [ -f "$TARGET_DIR/etc/inittab" ]; then
-	sed -i '/tty[1-9].*getty/d' "$TARGET_DIR/etc/inittab"
-	printf '\ntty1::respawn:/usr/bin/usb-wallet-console\n' >> "$TARGET_DIR/etc/inittab"
+	# Remove every interactive login shell/getty, not only tty1. A root shell
+	# would bypass the attended appliance UX even though the signer CLI itself
+	# still has confirmation gates.
+	sed -i -E '/getty|:(askfirst|respawn):.*\/bin\/(a|ba|z)?sh/d' "$TARGET_DIR/etc/inittab"
+	printf '\ntty1::respawn:/usr/bin/usb-wallet-gui-session\n' >> "$TARGET_DIR/etc/inittab"
+	if grep -Eq 'getty|:(askfirst|respawn):.*\/bin\/(a|ba|z)?sh' "$TARGET_DIR/etc/inittab"; then
+		echo "ERROR: interactive getty or shell survived appliance lockdown" >&2
+		grep -E 'getty|:(askfirst|respawn):.*\/bin\/(a|ba|z)?sh' "$TARGET_DIR/etc/inittab" >&2 || true
+		exit 1
+	fi
+	# Fail on every other interactive respawn/askfirst program too (login,
+	# cttyhack, alternate interpreters, etc.). Exactly one tty1 appliance is allowed.
+	UNEXPECTED_INTERACTIVE="$(awk -F: '
+		($1 ~ /^tty[0-9]+$/ || $3 == "respawn" || $3 == "askfirst" || (($3 == "once" || $3 == "wait") && $4 ~ /(getty|login|cttyhack|\/bin\/(a|ba|z)?sh)/)) &&
+		!($1 == "tty1" && $3 == "respawn" && $4 == "/usr/bin/usb-wallet-gui-session") { print }
+	' "$TARGET_DIR/etc/inittab")"
+	if [ -n "$UNEXPECTED_INTERACTIVE" ] || [ "$(grep -c '^tty1::respawn:/usr/bin/usb-wallet-gui-session$' "$TARGET_DIR/etc/inittab" || true)" -ne 1 ]; then
+		echo "ERROR: unexpected interactive inittab entry survived appliance lockdown" >&2
+		printf '%s\n' "$UNEXPECTED_INTERACTIVE" >&2
+		exit 1
+	fi
+else
+	echo "ERROR: missing /etc/inittab; cannot enforce appliance lockdown" >&2
+	exit 1
+fi
+
+for required in \
+    "$TARGET_DIR/usr/bin/usb-wallet-console" \
+    "$TARGET_DIR/usr/bin/usb-wallet-gui-session"; do
+	if [ ! -x "$required" ]; then
+		echo "ERROR: required appliance launcher missing or not executable: $required" >&2
+		ls -l "$required" 2>/dev/null || true
+		exit 1
+	fi
+done
+
+# Fail the build if the impossible X11/Tk path is accidentally reintroduced.
+for path in     "$TARGET_DIR/usr/bin/xinit"     "$TARGET_DIR/usr/bin/Xfbdev"     "$TARGET_DIR/usr/bin/Xorg"; do
+	if [ -e "$path" ]; then
+		echo "ERROR: X11 runtime present while CONFIG_NET=n: $path" >&2
+		exit 1
+	fi
+done
+if find "$TARGET_DIR/usr/lib/python3.14" -name '_tkinter*.so' -print -quit 2>/dev/null | grep -q .; then
+	echo "ERROR: tkinter extension present while CONFIG_NET=n" >&2
+	exit 1
 fi
 
 # Build-time guardrail: no common networking clients may survive in the image.
 for tool in ip ifconfig route ping ping6 wget nc netcat udhcpc udhcpd telnet ftpget ftpput; do
-	if [ -e "$TARGET_DIR/bin/$tool" ] || [ -e "$TARGET_DIR/sbin/$tool" ] || \
-	   [ -e "$TARGET_DIR/usr/bin/$tool" ] || [ -e "$TARGET_DIR/usr/sbin/$tool" ]; then
+	if [ -e "$TARGET_DIR/bin/$tool" ] || [ -e "$TARGET_DIR/sbin/$tool" ] || 	   [ -e "$TARGET_DIR/usr/bin/$tool" ] || [ -e "$TARGET_DIR/usr/sbin/$tool" ]; then
 		echo "ERROR: networking tool survived image construction: $tool" >&2
 		exit 1
 	fi
