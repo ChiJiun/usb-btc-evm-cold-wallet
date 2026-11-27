@@ -37,13 +37,15 @@ The offline-only wheel retains the reviewed signing modules and the
 Python modules: any newly added wallet module fails the release build until
 explicitly security reviewed. It regenerates and verifies the wheel RECORD.
 
-The existing GitHub CI builds the online-capable and offline-only wheels
-twice and checks offline wheel reproducibility, contents, CLI installation,
-and absence of the online entry point. **The separate Live USB builder (#7)
-must consume only the verified offline wheel before a bootable image can be
-accepted**; there is no claim that its present development image already
-enforces this requirement. Online RPC, Esplora, HTTP server, and web assets
-are never valid cold-side runtime dependencies.
+The test suite validates wheel filtering and rejects unreviewed modules.
+In GitHub Actions, it also builds the actual Python wheel and installs the
+sanitized offline output into a temporary test directory, asserting that no
+online module, browser asset or companion command exists. The separate
+Live USB builder (#7) must **install only this verified offline wheel** and
+check the image contents before an offline boot image can be accepted;
+this appliance-level requirement is not yet implemented in #7. Online RPC,
+Esplora, HTTP server, and web assets are never valid cold-side runtime
+dependencies.
 
 The Online Companion's `pack_envelope` / `unpack_envelope` now use the
 same #11 strict validators as the offline signer. A SHA-256 exchange digest
