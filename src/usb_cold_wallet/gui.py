@@ -34,6 +34,10 @@ BOOT_CHECKS = Path("/run/usb-wallet/boot-checks.txt")
 LOCKDOWN = Path("/run/usb-wallet/lockdown")
 MOUNTINFO = Path("/proc/self/mountinfo")
 VAULT_DEVICE = Path("/run/usb-wallet/vault-device")
+BOOT_DEVICE = Path("/run/usb-wallet/boot-device")
+TRANSFER_DEVICE = Path("/run/usb-wallet/transfer-device")
+BOOT_SYSFS_PATH = Path("/run/usb-wallet/boot-sysfs-path")
+BOOT_DISKSEQ = Path("/run/usb-wallet/boot-diskseq")
 SYS_DEV_BLOCK = Path("/sys/dev/block")
 IDLE_SECONDS = DEFAULT_IDLE_SECONDS
 PUBLIC_TEST_EVM = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
@@ -231,7 +235,13 @@ def _mounted_disk(mount: dict, sys_dev_block: Path) -> Path | None:
 
 
 def _current_mount_evidence(
-    mountinfo: Path, vault_device: Path, sys_dev_block: Path = SYS_DEV_BLOCK
+    mountinfo: Path,
+    vault_device: Path,
+    transfer_device: Path = TRANSFER_DEVICE,
+    boot_device: Path = BOOT_DEVICE,
+    boot_sysfs_path: Path = BOOT_SYSFS_PATH,
+    boot_diskseq: Path = BOOT_DISKSEQ,
+    sys_dev_block: Path = SYS_DEV_BLOCK,
 ) -> list[str]:
     """Revalidate current kernel mount identities; boot PASS lines are historical."""
     try:
@@ -266,36 +276,107 @@ def _current_mount_evidence(
         findings.append("FAIL: live root filesystem is not uniquely RAM-backed")
     else:
         findings.append("PASS: live RAM-backed root")
-    required = {"rw", "nodev", "nosuid", "noexec", "sync"}
+    required = {"nodev", "nosuid", "noexec", "sync", "fmask=0177", "dmask=0077"}
+
+    def safe_vfat_options(mount):
+        options, superblock = mount["options"], mount["super"]
+        return ("rw" in options and "rw" in superblock
+                and "ro" not in (options | superblock)
+                and required <= (options | superblock))
+
     vault_disk = _mounted_disk(vault[0], sys_dev_block) if len(vault) == 1 else None
+
+    # Match the kernel's major:minor, including read-only ESP mounts made via
+    # by-partuuid aliases. A string comparison against /dev/sdX1 is insufficient.
+    try:
+        expected_boot = boot_device.read_text(encoding="ascii").strip()
+        if not re.fullmatch(r"/dev/sd[a-z]+1", expected_boot) or vault_disk is None:
+            raise ValueError("Missing exact boot partition")
+        boot_partition = (vault_disk / Path(expected_boot).name).resolve(strict=True)
+        if (boot_partition.parent != vault_disk
+                or (boot_partition / "partition").read_text(encoding="ascii").strip() != "1"):
+            raise ValueError("Boot partition is not on verified vault disk")
+        boot_devno = (boot_partition / "dev").read_text(encoding="ascii").strip()
+        if not re.fullmatch(r"[0-9]+:[0-9]+", boot_devno):
+            raise ValueError("Boot partition major:minor is malformed")
+        if any(m["device"] == boot_devno for m in mounts):
+            findings.append("FAIL: boot partition is mounted in live runtime")
+        else:
+            findings.append("PASS: boot partition remains unmounted")
+    except (OSError, RuntimeError, ValueError):
+        findings.append("FAIL: live boot partition identity unavailable")
+
+    # Pin the kernel block-device instance that passed boot-time GPT/FAT checks.
+    # A later unplug/replug may reuse /dev/sdX and public GUIDs, so the live
+    # audit also requires the boot sysfs ancestry and Linux disk sequence.
+    try:
+        expected_sysfs = boot_sysfs_path.read_text(encoding="utf-8").strip()
+        expected_diskseq = boot_diskseq.read_text(encoding="ascii").strip()
+        live_sysfs = str(vault_disk.resolve(strict=True)) if vault_disk is not None else ""
+        live_diskseq = (
+            (vault_disk / "diskseq").read_text(encoding="ascii").strip()
+            if vault_disk is not None else ""
+        )
+        if (
+            not expected_sysfs.startswith("/")
+            or not expected_diskseq.isdigit()
+            or live_sysfs != expected_sysfs
+            or live_diskseq != expected_diskseq
+        ):
+            findings.append("FAIL: boot USB device instance changed since startup audit")
+        else:
+            findings.append("PASS: boot USB sysfs ancestry and disk sequence unchanged")
+    except (OSError, RuntimeError, ValueError):
+        findings.append("FAIL: boot USB runtime identity evidence unavailable")
     if (len(vault) != 1 or vault[0]["type"] != "vfat"
             or vault[0]["source"] != source_expected or vault_disk is None
-            or not required <= (vault[0]["options"] | vault[0]["super"])):
+            or not safe_vfat_options(vault[0])):
         findings.append("FAIL: live COLD_VAULT source, type or mount options changed")
     else:
         findings.append("PASS: live COLD_VAULT verified device and mount flags")
 
-    # TX_TRANSFER is mounted only during imports/exports. If present, require
-    # separate media and restrictive flags; it must not replace the vault.
+    # TX_TRANSFER is mounted only during imports/exports. Preserve the original
+    # separate-disk rule, with one strict exception: S01airgap may persist the
+    # exact partition path after validating the complete three-partition GPT
+    # layout on the boot USB.
     if transfer:
         transfer_disk = _mounted_disk(transfer[0], sys_dev_block) if len(transfer) == 1 else None
+        same_device_expected = None
+        try:
+            candidate = transfer_device.read_text(encoding="ascii").strip()
+            if re.fullmatch(r"/dev/sd[a-z]+[1-9][0-9]*", candidate):
+                same_device_expected = candidate
+        except OSError:
+            pass
+        safe_identity = (
+            transfer_disk is not None
+            and vault_disk is not None
+            and (
+                transfer_disk != vault_disk
+                or (
+                    same_device_expected is not None
+                    and transfer[0]["source"] == same_device_expected
+                    and transfer_disk == vault_disk
+                )
+            )
+        )
         if (len(transfer) != 1 or transfer[0]["type"] != "vfat"
-                or transfer_disk is None or vault_disk is None
-                or transfer_disk == vault_disk
-                or not required <= (transfer[0]["options"] | transfer[0]["super"])):
-            findings.append("FAIL: live TX_TRANSFER must be a separate physical disk with safe flags")
+                or not safe_identity
+                or not safe_vfat_options(transfer[0])):
+            findings.append(
+                "FAIL: live TX_TRANSFER is not a verified separate disk or exact single-USB partition"
+            )
     safe_pseudo = {
         "rootfs", "tmpfs", "proc", "sysfs", "devtmpfs", "devpts",
         "cgroup2", "pstore", "tracefs",
     }
     for mounted in mounts:
-        options = mounted["options"] | mounted["super"]
-        if ("rw" in options and mounted["type"] not in safe_pseudo
+        if (mounted["type"] not in safe_pseudo
                 and mounted["target"] not in ("/mnt/cold-vault", "/mnt/transfer")):
-            findings.append("FAIL: unexpected live writable persistent mount")
+            findings.append("FAIL: unexpected live persistent mount (including read-only)")
             break
     if not any(x.startswith("FAIL:") for x in findings):
-        findings.append("PASS: no unexpected writable persistent filesystem mounted now")
+        findings.append("PASS: no unexpected persistent filesystem mounted now")
     return findings
 
 
@@ -307,12 +388,18 @@ def runtime_audit(
     proc_swaps: Path = Path("/proc/swaps"),
     proc_mountinfo: Path = MOUNTINFO,
     vault_device: Path = VAULT_DEVICE,
+    transfer_device: Path = TRANSFER_DEVICE,
+    boot_device: Path = BOOT_DEVICE,
+    boot_sysfs_path: Path = BOOT_SYSFS_PATH,
+    boot_diskseq: Path = BOOT_DISKSEQ,
     sys_dev_block: Path = SYS_DEV_BLOCK,
 ) -> tuple[bool, tuple[str, ...]]:
     """Check historical boot evidence AND live kernel state before every unlock/sign."""
     findings: list[str] = []
     if lockdown.exists():
         findings.append("FAIL: offline lockdown marker exists")
+    if lockdown.with_name("media-command-pending").exists():
+        findings.append("FAIL: removable filesystem command completion is unconfirmed")
     try:
         lines = boot_checks.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -327,7 +414,9 @@ def runtime_audit(
             ("network isolation", ("network stack absent", "/proc/net absent")),
             ("no active swap", ("no active swap",)),
             ("RAM-backed root", ("root filesystem is RAM-backed",)),
+            ("boot partition unmounted", ("boot partition is not mounted in cold runtime",)),
             ("COLD_VAULT mount", ("COLD_VAULT mounted",)),
+            ("COLD_VAULT restrictive mount options", ("COLD_VAULT restrictive mount options verified",)),
             ("no unexpected writable persistent filesystem", ("no unexpected writable persistent filesystem",)),
         )
         for name, markers in required_boot:
@@ -345,7 +434,15 @@ def runtime_audit(
         findings.append("PASS: no active swap" if len(swaps) <= 1 else "FAIL: active swap detected")
     except OSError:
         findings.append("FAIL: unable to inspect swap")
-    findings.extend(_current_mount_evidence(proc_mountinfo, vault_device, sys_dev_block))
+    findings.extend(_current_mount_evidence(
+        proc_mountinfo,
+        vault_device,
+        transfer_device,
+        boot_device,
+        boot_sysfs_path,
+        boot_diskseq,
+        sys_dev_block,
+    ))
     ok = bool(findings) and not any(line.startswith("FAIL:") for line in findings)
     return ok, tuple(findings)
 

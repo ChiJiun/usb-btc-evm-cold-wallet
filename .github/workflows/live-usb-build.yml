@@ -50,7 +50,7 @@ jobs:
       DEBIAN_FRONTEND: noninteractive
       BR2_JLEVEL: "2"
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Test and publish bytes from the PR's exact HEAD, not a synthetic merge commit.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -91,7 +91,7 @@ jobs:
       # Restore is untrusted input: Buildroot enforces source hashes and the
       # fetch scripts verify Buildroot's signed release and every wheel hash.
       - name: Restore verified source downloads
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             build/dl
@@ -136,7 +136,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -154,14 +154,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf xz-utils
 
       - name: Download both independent clean-build digests
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: live-usb-clean-hashes-*
           merge-multiple: true
           path: build/reproducibility
 
       - name: Download second clean-build image
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: UNVERIFIED-live-usb-selected-clean-image
           path: build/output/images
