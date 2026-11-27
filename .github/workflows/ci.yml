@@ -86,6 +86,19 @@ jobs:
           npm run build
           npm audit --omit=dev --audit-level=high
 
+      - name: Set up Python for Python-to-QR interoperability vectors
+        if: steps.qr.outputs.present == 'true'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Verify Python signed transaction survives browser UR without integer rounding
+        if: steps.qr.outputs.present == 'true'
+        run: |
+          python -m pip install --require-hashes -r requirements/ci.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+          QR_INTEROP=1 python -m pytest -q tests/test_qr_interop.py
+
   dependency_audit:
     name: Dependency audit
     runs-on: ubuntu-latest

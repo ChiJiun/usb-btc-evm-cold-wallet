@@ -1,6 +1,6 @@
 import QRCode from "qrcode";
 import { BrowserQRCodeReader } from "@zxing/browser";
-import { encodeFrames, BoundedURScanner, MAX_PAYLOAD } from "./ur_transport.mjs";
+import { encodeFrames, BoundedURScanner, MAX_PAYLOAD, serializeEnvelope } from "./ur_transport.mjs";
 import "./web.css";
 
 // This page never signs, calls RPCs, or transmits over the network.
@@ -47,8 +47,8 @@ el("prepare").addEventListener("click", async () => {
   if (!file) return status("請先選擇資料交換 JSON 檔案。");
   if (file.size > MAX_PAYLOAD) return status("檔案太大，超過 150 KB。");
   try {
-    const message = JSON.parse(await file.text());
-    frames = encodeFrames(message);
+    // Pass original JSON tokens; JSON.parse would round wei above 2^53.
+    frames = encodeFrames(await file.text());
     status(`QR 傳入/傳出均不代表簽章授權。已生成 ${frames.length} 張 QR。`);
     startAnimation();
   } catch (e) {
@@ -87,6 +87,10 @@ el("startScan").addEventListener("click", async () => {
     return status("無法使用攝影機：請使用 HTTPS / localhost 安全環境，或 USB-B 備援。");
   }
   if (scanner.done) return status("請先按重新掃描以建立新的掃描 session。");
+  // A page may sit idle for hours. A new scan starts its deadline only on
+  // the first received frame (see BoundedURScanner).
+  if (scanner.count === 0) scanner.reset();
+  scanner.start();
   const reader = new BrowserQRCodeReader(undefined, { delayBetweenScanAttempts: 150 });
   const epoch = ++cameraEpoch;
   cameraOpening = true;
@@ -127,7 +131,7 @@ el("startScan").addEventListener("click", async () => {
 });
 el("save").addEventListener("click", () => {
   if (!scanned) return;
-  const data = new Blob([JSON.stringify(scanned, null, 2)], { type: "application/json" });
+  const data = new Blob([serializeEnvelope(scanned)], { type: "application/json" });
   const href = URL.createObjectURL(data);
   const link = document.createElement("a");
   link.href = href;

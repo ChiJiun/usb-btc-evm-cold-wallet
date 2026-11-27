@@ -23,17 +23,79 @@ const exactKeys = (obj, keys) =>
   obj !== null && typeof obj === "object" && !Array.isArray(obj) &&
   Object.keys(obj).sort().join("|") === [...keys].sort().join("|");
 
-function safeJson(text) {
-  const parsed = JSON.parse(text, (_, v) => {
-    if (typeof v === "number" && !Number.isSafeInteger(v)) {
-      throw new Error("Unsafe JSON number");
+const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+const MIN_SAFE = -MAX_SAFE;
+
+// Keep all JSON integers exact, including Ethereum amounts > 2^53 wei.
+// JSON.parse's standardized reviver source preserves the original integer
+// token, before the JS Number conversion could round it. Fail closed on
+// engines without this feature, rather than risk silently changing a payment.
+function serializeJson(value, sorted = false) {
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value)) throw new Error("Unsafe JSON number");
+    return JSON.stringify(value);
+  }
+  if (value === null || typeof value === "boolean" || typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return "[" + value.map(item => serializeJson(item, sorted)).join(",") + "]";
+  if (value && typeof value === "object") {
+    const keys = Object.keys(value);
+    if (sorted) keys.sort();
+    return "{" + keys.map(key => JSON.stringify(key) + ":" + serializeJson(value[key], sorted)).join(",") + "}";
+  }
+  throw new Error("Unsupported QR JSON value");
+}
+
+function compactWhitespace(text) {
+  let inString = false;
+  let escaped = false;
+  let compact = "";
+  for (const ch of text) {
+    if (inString) {
+      compact += ch;
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') {
+      inString = true;
+      compact += ch;
+    } else if (ch !== " " && ch !== "\t" && ch !== "\r" && ch !== "\n") {
+      compact += ch;
     }
-    return v;
+  }
+  return compact;
+}
+
+function losslessJson(text, { compact = false } = {}) {
+  if (typeof text !== "string" || encoder.encode(text).length > MAX_PAYLOAD) {
+    throw new Error("QR payload too large");
+  }
+  const parsed = JSON.parse(text, (_, value, context) => {
+    if (typeof value !== "number") return value;
+    const source = context?.source;
+    if (typeof source !== "string") {
+      throw new Error("Browser lacks lossless JSON number parsing");
+    }
+    if (!/^-?(0|[1-9][0-9]*)$/.test(source) || source.replace(/^-/, "").length > 80) {
+      throw new Error("QR JSON requires bounded decimal integers");
+    }
+    const exact = BigInt(source);
+    return exact < MIN_SAFE || exact > MAX_SAFE ? exact : Number(source);
   });
-  // Sender emits exactly compact JSON.stringify. Reject duplicate JSON keys,
-  // trailing content and alternative representations through roundtrip.
-  if (JSON.stringify(parsed) !== text) throw new Error("Noncanonical or duplicate JSON fields");
+  // Compare token-preserving serialized bytes to reject duplicate keys,
+  // rounded/noncanonical numbers and ambiguous JSON representations.
+  const normalized = serializeJson(parsed);
+  if (normalized !== compactWhitespace(text) || (compact && normalized !== text)) {
+    throw new Error("Noncanonical or duplicate JSON fields");
+  }
   return parsed;
+}
+
+// Save and frame envelopes without silently changing large numeric tokens.
+export function serializeEnvelope(envelope) {
+  return serializeJson(envelope);
 }
 
 function noSecrets(value, depth = 0) {
@@ -65,11 +127,7 @@ function noSecrets(value, depth = 0) {
 // Python qr_session.py computes SHA256 over sorted compact ensure_ascii JSON.
 // Restrict payload to ASCII; this serialization is byte-identical in both runtimes.
 function canonical(value) {
-  if (Array.isArray(value)) return "[" + value.map(canonical).join(",") + "]";
-  if (value && typeof value === "object") {
-    return "{" + Object.keys(value).sort().map(k => JSON.stringify(k) + ":" + canonical(value[k])).join(",") + "}";
-  }
-  return JSON.stringify(value);
+  return serializeJson(value, true);
 }
 function sha256(payload) {
   return bytesToHex(hash256(encoder.encode(canonical(payload))));
@@ -83,7 +141,7 @@ function equalDigest(a, b) {
 
 function parseEnvelope(payload) {
   const text = decoder.decode(payload);
-  const parsed = safeJson(text);
+  const parsed = losslessJson(text, { compact: true });
   if (!exactKeys(parsed, ["version", "direction", "network", "account", "request_id", "payload_digest", "payload"]) &&
       !exactKeys(parsed, ["version", "direction", "network", "account", "request_id", "request_digest", "payload_digest", "payload"])) {
     throw new Error("QR envelope schema mismatch");
@@ -111,8 +169,9 @@ export function encodeFrames(envelope, { fragmentBytes = 220, maxFrames = MAX_FR
       maxFrames < 1 || maxFrames > MAX_FRAGMENTS) {
     throw new Error("Invalid frame parameters");
   }
-  const checked = parseEnvelope(encoder.encode(JSON.stringify(envelope)));
-  const raw = encoder.encode(JSON.stringify(checked));
+  const input = typeof envelope === "string" ? losslessJson(envelope) : envelope;
+  const checked = parseEnvelope(encoder.encode(serializeEnvelope(input)));
+  const raw = encoder.encode(serializeEnvelope(checked));
   if (raw.length === 0 || raw.length > MAX_PAYLOAD) throw new Error("QR payload too large");
   const ur = UR.from("bytes", cbor(raw));
   if (ur.toQRString().length <= 1200) {
@@ -137,8 +196,13 @@ export class BoundedURScanner {
     if (!Number.isSafeInteger(maxDurationMs) || maxDurationMs < 1 || maxDurationMs > MAX_SCAN_MS)
       throw new Error("Invalid scan lifetime");
     this.#now = now;
-    this.#start = now();
+    // The scan window starts at first received frame, not on page load.
+    this.#start = null;
     this.duration = maxDurationMs;
+  }
+  // Explicit UI scan start; a page may be open indefinitely beforehand.
+  start() {
+    if (this.#start === null) this.#start = this.#now();
   }
   get progress() { return this.#finished ? 1 : this.#decoder.progress; }
   get count() { return this.#frames; }
@@ -148,12 +212,13 @@ export class BoundedURScanner {
     this.#decoder = new MultipartDecoder();
     this.#seen.clear();
     this.#type = null;
-    this.#start = this.#now();
+    this.#start = null;
     this.#frames = 0;
     this.#finished = null;
   }
   add(frame) {
     if (this.done) throw new Error("QR session already completed; reset before rescanning");
+    this.start();
     const time = this.#now() - this.#start;
     if (time < 0 || time > this.duration) throw new Error("QR scan timed out");
     if (typeof frame !== "string" || frame.length > MAX_FRAME_CHARS ||

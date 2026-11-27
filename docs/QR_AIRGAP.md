@@ -25,7 +25,8 @@ binding layer, but registry-specific UR types are a separate remaining task.
   `eth-sign-request`/`eth-signature` ERC-4527 CBOR schema or interoperable
   `crypto-psbt` typed payload. Never claim external wallet compatibility.
 - Frame limits: QR payload 150 KB, <=512 observed distinct frames, max frame
-  3,000 characters, fragment length <=480 bytes and 120-second scan deadline.
+  3,000 characters, fragment length <=480 bytes and 120-second scan deadline
+  **starting with the first received frame**, not at page load.
   Reject malformed, mixed, duplicate-key, unknown-network, incorrect-digest,
   unknown-version and oversize input. Repeated individual frames are ignored;
   a second finished response requires resetting scanner state. File imports
@@ -59,6 +60,15 @@ Camera functionality is not tested on physical hardware in Devspace.
 
 The browser only displays and scans; it never imports a vault, invokes a
 signer, signs transactions or broadcasts to a chain.
+
+**Lossless wei support:** The browser requires a JavaScript engine with
+`JSON.parse` reviver `context.source` (Node 22+/current Chromium-based browsers).
+If unsupported, numeric requests fail closed rather than silently rounding
+amounts above `Number.MAX_SAFE_INTEGER`. Import the original JSON as text,
+and export exact integer tokens without `JSON.stringify` on rounded Numbers.
+The CI interoperability test exercises Python `prepare-evm` → browser UR
+encode/decode → offline Python signing → browser UR → Python verification at
+0.01 ETH, 1 ETH, and values just over 2^53 wei.
 
 ## Example: Sepolia QR roundtrip
 
@@ -96,8 +106,9 @@ usb-cold-wallet-qr verify-evm \
 ```
 
 Verification checks Sepolia chain ID, full unsigned nonce/gas/fee/value,
-recipient, empty calldata/access list, signature recovery and account
-binding. This **does not broadcast**. External wallet/node code must
+recipient, empty calldata/access list, signature recovery, transaction hash,
+maximum fee/total and the full decoded signed-transaction metadata against raw
+signed bytes and account binding. This **does not broadcast**. External wallet/node code must
 separately handle broadcast, nonce freshness and finality.
 
 ## Bitcoin testnet
@@ -118,6 +129,9 @@ and `--change-index 0`. Return the signed JSON by QR and run
 --response btc-response.json` on the online host. This checks that the
 unsigned transaction remained unchanged, P2WPKH witness UTXOs and all
 ECDSA/SIGHASH_ALL signatures match, output amount/recipient and fee policy.
+It also strictly parses the submitted finalized raw transaction, checks its
+base transaction byte-for-byte against the unsigned PSBT, and matches every
+input witness to the independently verified signed PSBT.
 It does **not** assert UTXOs are unspent or perform full consensus
 script validation; prefer Bitcoin Core validation before broadcast.
 

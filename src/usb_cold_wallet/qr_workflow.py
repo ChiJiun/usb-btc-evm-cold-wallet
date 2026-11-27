@@ -4,13 +4,10 @@ The QR bytes are an UNTRUSTED transport, not an authorization. User-selected
 recipient and amount are always supplied independently to the offline signer.
 """
 import base64
-from embit import ec, psbt, script
-from eth_account import Account
-from eth_account.typed_transactions import TypedTransaction
-from hexbytes import HexBytes
+from embit import ec, psbt, script, transaction
 
 from .btc import review_btc_psbt, sign_btc_psbt
-from .evm import review_evm_transaction, sign_evm
+from .evm import review_evm_transaction, review_signed_evm_transaction, sign_evm
 from .keys import evm_account
 from .qr_session import QRSession, _check, REQUEST_KEYS, make_request, make_response
 
@@ -69,32 +66,42 @@ def verify_evm_response(request, response, *, session=None):
         try:
             data = original["payload"]
             signed = signed_response["payload"]
-            raw = signed["signed_raw_transaction"]
-            if (signed.get("chain_id") != 11155111 or
-                    signed.get("from", "").lower() != original["account"].lower()):
+            if set(signed) != {
+                "chain_id", "from", "to", "value_wei", "max_fee_wei",
+                "max_total_wei", "transaction_hash", "signed_raw_transaction",
+                "decoded_transaction",
+            }:
                 return False
-            sender = Account.recover_transaction(raw)
-            if sender.lower() != original["account"].lower():
+            reviewed = review_evm_transaction(
+                data["transaction"], data["recipient"], data["amount_wei"],
+            )
+            result = review_signed_evm_transaction(
+                signed["signed_raw_transaction"], data["recipient"], data["amount_wei"],
+            )
+            decoded = result["decoded_transaction"]
+            raw_unsigned = {
+                "type": decoded["type"], "chainId": decoded["chain_id"],
+                "nonce": decoded["nonce"], "to": decoded["to"],
+                "value": decoded["value_wei"], "gas": decoded["gas"],
+                "maxFeePerGas": decoded["max_fee_per_gas"],
+                "maxPriorityFeePerGas": decoded["max_priority_fee_per_gas"],
+                "data": decoded["data"], "accessList": decoded["access_list"],
+            }
+            if raw_unsigned != reviewed["transaction"]:
                 return False
-            decoded = TypedTransaction.from_bytes(HexBytes(raw)).as_dict()
-            if decoded.get("chainId") != 11155111 or decoded.get("type") != 2:
+            if result["from"].lower() != original["account"].lower():
                 return False
-            reviewed = review_evm_transaction(data["transaction"],
-                                              data["recipient"], data["amount_wei"])["transaction"]
-            for field in ("chainId", "nonce", "value", "gas", "maxFeePerGas", "maxPriorityFeePerGas"):
-                if decoded.get(field) != reviewed[field]:
-                    return False
-            recipient = decoded.get("to")
-            if isinstance(recipient, (bytes, bytearray)):
-                recipient = "0x" + recipient.hex()
-            if not isinstance(recipient, str) or recipient.lower() != reviewed["to"].lower():
-                return False
-            payload = decoded.get("data", b"")
-            if payload not in (b"", "", "0x"):
-                return False
-            if decoded.get("accessList", ()) not in ([], ()):
-                return False
-            if signed.get("to", "").lower() != reviewed["to"].lower() or signed.get("value_wei") != reviewed["value"]:
+            if (signed["chain_id"] != reviewed["chain_id"]
+                    or signed["from"] != result["from"]
+                    or signed["to"] != reviewed["recipient"]
+                    or type(signed["value_wei"]) is not int
+                    or signed["value_wei"] != reviewed["value_wei"]
+                    or type(signed["max_fee_wei"]) is not int
+                    or signed["max_fee_wei"] != result["max_fee_wei"]
+                    or type(signed["max_total_wei"]) is not int
+                    or signed["max_total_wei"] != result["max_total_wei"]
+                    or signed["transaction_hash"] != result["transaction_hash"]
+                    or signed["decoded_transaction"] != decoded):
                 return False
             return True
         except Exception:
@@ -144,7 +151,27 @@ def verify_btc_response(request, response, *, session=None):
             if (signed.get("fee_sats") != calculated_fee or calculated_fee < 0 or
                     calculated_fee > data["max_fee_sats"]):
                 return False
-            return True
+            # Never return attacker-supplied finalized bytes merely because the
+            # PSBT signatures are valid: verify the exact raw transaction too.
+            raw_hex = signed.get("finalized_tx_hex")
+            if (type(raw_hex) is not str or len(raw_hex) % 2 != 0 or
+                    len(raw_hex) > 400_000):
+                return False
+            raw_bytes = bytes.fromhex(raw_hex)
+            finalized = transaction.Transaction.parse(raw_bytes)
+            if finalized.serialize() != raw_bytes or finalized.txid() != initial.tx.txid():
+                return False
+            if (len(finalized.vin) != len(final.inputs)
+                    or len(finalized.vout) != len(initial.tx.vout)):
+                return False
+            # Stripping only the witness must reproduce the exact reviewed
+            # unsigned transaction (version, locktime, prevouts and outputs).
+            for i, (inp, txin) in enumerate(zip(final.inputs, finalized.vin, strict=True)):
+                pub, sig = next(iter(inp.partial_sigs.items()))
+                if txin.script_sig.data or txin.witness.items != [sig, pub.sec()]:
+                    return False
+                txin.witness = transaction.Witness()
+            return finalized.serialize() == initial.tx.serialize()
         except Exception:
             return False
 

@@ -9,7 +9,7 @@ from usb_cold_wallet.keys import btc_address, btc_key, evm_account, root_from_mn
 from usb_cold_wallet.qr_workflow import (
     prepare_evm_qr, prepare_btc_qr, sign_offline, verify_evm_response, verify_btc_response,
 )
-from usb_cold_wallet.qr_session import QRSession
+from usb_cold_wallet.qr_session import QRSession, make_response
 
 
 @pytest.fixture(scope="module")
@@ -55,6 +55,26 @@ def test_sepolia_qr_tampered_response_rejected(root):
         verify_evm_response(request, fake)
 
 
+def test_sepolia_qr_rejects_rehashed_forged_signed_metadata(root):
+    tx = evm_tx()
+    request = prepare_evm_qr(tx, evm_account(root).address, tx["to"], tx["value"])
+    response = sign_offline(root, request, recipient=tx["to"], amount=tx["value"])
+    mutations = (
+        ("transaction_hash", "0x" + "00" * 32),
+        ("max_fee_wei", response["payload"]["max_fee_wei"] + 1),
+        ("max_total_wei", response["payload"]["max_total_wei"] + 1),
+        ("decoded_transaction", {**response["payload"]["decoded_transaction"], "nonce": 13}),
+        ("value_wei", tx["value"] + 1),
+        ("chain_id", 1),
+    )
+    for field, forged_value in mutations:
+        payload = copy.deepcopy(response["payload"])
+        payload[field] = forged_value
+        forged = make_response(request, payload)  # Rehash unkeyed QR envelope.
+        with pytest.raises(ValueError, match="verification"):
+            verify_evm_response(request, forged)
+
+
 def test_btc_testnet_qr_psbt_signed_and_correlated(root):
     key = btc_key(root, 0, 0)
     target = btc_address(root, 0, 1)
@@ -85,6 +105,21 @@ def test_btc_testnet_qr_psbt_signed_and_correlated(root):
     signed = psbt.PSBT.parse(base64.b64decode(response["payload"]["signed_psbt_base64"]))
     assert len(signed.inputs[0].partial_sigs) == 1
     assert verify_btc_response(request, response)["signature_count"] == 1
+
+    original_final = transaction.Transaction.parse(
+        bytes.fromhex(response["payload"]["finalized_tx_hex"])
+    )
+    changed_output = transaction.Transaction.parse(original_final.serialize())
+    changed_output.vout[0].value -= 1
+    changed_witness = transaction.Transaction.parse(original_final.serialize())
+    changed_witness.vin[0].witness.items[0] = b"\x31" + changed_witness.vin[0].witness.items[0][1:]
+    for forged_tx_hex in ("00", changed_output.serialize().hex(), changed_witness.serialize().hex()):
+        payload = copy.deepcopy(response["payload"])
+        payload["finalized_tx_hex"] = forged_tx_hex
+        forged = make_response(request, payload)  # Signed PSBT still valid.
+        with pytest.raises(ValueError, match="verification"):
+            verify_btc_response(request, forged)
+
     with pytest.raises(ValueError):
         sign_offline(root, request, recipient=target, amount=60000,
                      max_fee_sats=1000, change_index=0)

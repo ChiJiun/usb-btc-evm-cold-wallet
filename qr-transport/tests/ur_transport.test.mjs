@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { BoundedURScanner, encodeFrames } from "../src/ur_transport.mjs";
+import { BoundedURScanner, encodeFrames, serializeEnvelope } from "../src/ur_transport.mjs";
 import { UR } from "@blockchaincommons/uniform-resources";
 import { cbor } from "@blockchaincommons/dcbor";
 
@@ -63,12 +63,30 @@ test("reject mismatched UR type, malformed part, huge and mixed framing", () => 
   assert.throws(() => scanner.add(single), /Mixed single/);
 });
 
-test("reject timeout and retry after reset", () => {
+test("scan timeout begins at first frame, not page load", () => {
+  let now = 1000;
+  const single = encodeFrames(fake(1))[0];
+  const scanner = new BoundedURScanner({ now: () => now, maxDurationMs: 100 });
+  now += 500_000; // Page was idle before the user enabled the camera.
+  assert.equal(scanner.add(single).done, true);
+  scanner.reset();
+  const multi = encodeFrames(fake(5000), { fragmentBytes: 80 });
+  scanner.add(multi[0]); // Start a multipart scan.
+  now += 101;
+  assert.throws(() => scanner.add(multi[1]), /timed out/);
+  scanner.reset();
+  assert.equal(scanner.add(single).done, true);
+});
+
+test("explicit camera start after long idle still enforces active scan timeout", () => {
   let now = 1000;
   const scanner = new BoundedURScanner({ now: () => now, maxDurationMs: 100 });
+  now += 3_600_000; // Page loaded long before the user clicked Start.
+  scanner.start();
   now += 101;
   assert.throws(() => scanner.add(encodeFrames(fake(1))[0]), /timed out/);
   scanner.reset();
+  scanner.start();
   assert.equal(scanner.add(encodeFrames(fake(1))[0]).done, true);
 });
 
@@ -111,6 +129,32 @@ test("reject unknown version, network and malformed account", () => {
   assert.throws(() => encodeFrames({ ...fake(), version: 2 }), /binding/);
   assert.throws(() => encodeFrames({ ...fake(), network: "ethereum-mainnet" }), /binding/);
   assert.throws(() => encodeFrames({ ...fake(), account: "x" }), /binding/);
+});
+
+test("lossless Ethereum wei amounts roundtrip through UR and saved JSON", () => {
+  for (const wei of ["9007199254740993", "10000000000000000", "1000000000000000000"]) {
+    const data = fake();
+    data.payload = { transaction: { value: BigInt(wei), maxFeePerGas: 2000000000 }, amount_wei: BigInt(wei) };
+    const canonical = (value) => {
+      if (typeof value === "bigint") return value.toString();
+      if (Array.isArray(value)) return "[" + value.map(canonical).join(",") + "]";
+      if (value && typeof value === "object")
+        return "{" + Object.keys(value).sort().map(key => JSON.stringify(key) + ":" + canonical(value[key])).join(",") + "}";
+      return JSON.stringify(value);
+    };
+    data.payload_digest = createHash("sha256").update(canonical(data.payload)).digest("hex");
+    // Emulate Python's indented JSON output without Number coercion.
+    const raw = serializeEnvelope(data).replaceAll(",", ",\n ");
+    const restored = scan(encodeFrames(raw, { fragmentBytes: 120 })).payload;
+    assert.equal(restored.payload.amount_wei, BigInt(wei));
+    assert.equal(restored.payload.transaction.value, BigInt(wei));
+    assert.equal(scan(encodeFrames(serializeEnvelope(restored), { fragmentBytes: 120 })).payload.payload.amount_wei, BigInt(wei));
+    assert.match(serializeEnvelope(restored), new RegExp(wei));
+  }
+  const unsafe = fake();
+  unsafe.payload = { amount_wei: 10000000000000000 };
+  assert.throws(() => encodeFrames(unsafe), /Unsafe JSON number/);
+  assert.throws(() => encodeFrames('{"a":1,"a":2}'), /duplicate/);
 });
 
 test("reject offline-incompatible container sizes, Unicode keys, and account identifiers", () => {
