@@ -1,29 +1,48 @@
 """Fail-closed checks for removable transaction transport and appliance routing."""
-from types import SimpleNamespace
-
 from usb_cold_wallet import appliance
 
 
-SAFE = {"rw", "nodev", "noexec", "nosuid", "sync"}
+SAFE = {"rw", "nodev", "noexec", "nosuid", "sync", "fmask=0177", "dmask=0077"}
 
 
 def _identity(monkeypatch, device="/dev/sdb1"):
-    monkeypatch.setattr(appliance, "_unique_transfer_device", lambda: device)
+    monkeypatch.setattr(appliance, "_bounded_transfer_device", lambda: device)
     return device
 
 
-def _identity_files(monkeypatch, tmp_path, boot_parent="sda", vault_device="/dev/sda2"):
+def _identity_files(
+    monkeypatch,
+    tmp_path,
+    boot_parent="sda",
+    vault_device="/dev/sda2",
+    transfer_device=None,
+):
     boot_file = tmp_path / "boot-parent"
     vault_file = tmp_path / "vault-device"
+    transfer_file = tmp_path / "transfer-device"
     boot_file.write_text(boot_parent + "\n", encoding="utf-8")
     vault_file.write_text(vault_device + "\n", encoding="utf-8")
+    if transfer_device is not None:
+        transfer_file.write_text(transfer_device + "\n", encoding="ascii")
     monkeypatch.setattr(appliance, "BOOT_PARENT_FILE", boot_file)
     monkeypatch.setattr(appliance, "VAULT_DEVICE_FILE", vault_file)
+    monkeypatch.setattr(appliance, "TRANSFER_DEVICE_FILE", transfer_file)
+
+
+def test_transfer_mount_refuses_lockdown_before_scanning_or_mounting(monkeypatch, tmp_path):
+    lockdown = tmp_path / "lockdown"
+    lockdown.touch()
+    monkeypatch.setattr(appliance, "LOCKDOWN", lockdown)
+    monkeypatch.setattr(
+        appliance, "_bounded_transfer_device",
+        lambda: (_ for _ in ()).throw(AssertionError("No device discovery during lockdown")),
+    )
+    assert appliance.mount_transfer() is False
 
 
 def test_transfer_mount_rejects_ambiguous_or_missing_label(monkeypatch, tmp_path):
     monkeypatch.setattr(appliance, "TRANSFER", tmp_path)
-    monkeypatch.setattr(appliance, "_unique_transfer_device", lambda: None)
+    monkeypatch.setattr(appliance, "_bounded_transfer_device", lambda: None)
     assert appliance.mount_transfer() is False
 
 
@@ -32,10 +51,17 @@ def test_unique_transfer_device_rejects_duplicate_label(monkeypatch):
     assert appliance._unique_transfer_device() is None
 
 
-def test_unique_transfer_device_rejects_boot_parent(monkeypatch, tmp_path):
-    _identity_files(monkeypatch, tmp_path)
+def test_unique_transfer_device_same_parent_requires_exact_boot_verified_partition(monkeypatch, tmp_path):
     monkeypatch.setattr(appliance, "_transfer_candidates", lambda: ["/dev/sda3"])
     monkeypatch.setattr(appliance, "_block_parent", lambda _device: "sda")
+
+    _identity_files(monkeypatch, tmp_path)
+    assert appliance._unique_transfer_device() is None
+
+    _identity_files(monkeypatch, tmp_path, transfer_device="/dev/sda3")
+    assert appliance._unique_transfer_device() == "/dev/sda3"
+
+    _identity_files(monkeypatch, tmp_path, transfer_device="/dev/sda4")
     assert appliance._unique_transfer_device() is None
 
 
@@ -70,14 +96,20 @@ def test_fat_label_detection_checks_signature_and_exact_name(tmp_path):
     assert appliance._fat_label(volume) == "NEVER_TRUST"
 
 
-def test_sysfs_transfer_search_ignores_non_sd_partitions(monkeypatch, tmp_path):
+def test_sysfs_transfer_search_requires_usb_ancestry_and_sd_partition(monkeypatch, tmp_path):
     sys_block = tmp_path / "sys"
     dev_root = tmp_path / "dev"
     sys_block.mkdir()
     dev_root.mkdir()
-    for name in ("sda1", "sdb1", "nvme0n1p1"):
-        entry = sys_block / name
-        entry.mkdir()
+    for name, usb in (
+        ("sda1", True), ("sdb1", True), ("sdc1", False), ("nvme0n1p1", True),
+    ):
+        ancestry = (
+            "usb1/1-1/1-1:1.0" if usb else "ata1/host0"
+        )
+        entry = tmp_path / "devices" / ancestry / "block" / name
+        entry.mkdir(parents=True)
+        (sys_block / name).symlink_to(entry, target_is_directory=True)
         (entry / "partition").write_text("1\n", encoding="ascii")
         sector = bytearray(512)
         sector[11:13] = b"\x00\x02"
@@ -85,12 +117,14 @@ def test_sysfs_transfer_search_ignores_non_sd_partitions(monkeypatch, tmp_path):
         sector[82:90] = b"FAT32   "
         sector[510:512] = b"\x55\xaa"
         (dev_root / name).write_bytes(sector)
-    # If two matching sd* partitions appear, the higher layer rejects both.
     monkeypatch.setattr(appliance, "SYS_BLOCK", sys_block)
     monkeypatch.setattr(appliance, "DEV_ROOT", dev_root)
     assert sorted(appliance._transfer_candidates()) == [
         str(dev_root / "sda1"), str(dev_root / "sdb1")
     ]
+    assert appliance._usb_mass_storage(sys_block / "sda1") is True
+    assert appliance._usb_mass_storage(sys_block / "sdc1") is False
+
 
 
 def test_transfer_mount_rejects_wrong_existing_source(monkeypatch, tmp_path):
@@ -118,6 +152,14 @@ def test_transfer_mount_rejects_nonfat_existing_mount(monkeypatch, tmp_path):
     assert appliance.mount_transfer() is False
 
 
+def test_transfer_mount_rejects_insecure_fat_access_masks(monkeypatch, tmp_path):
+    monkeypatch.setattr(appliance, "TRANSFER", tmp_path)
+    device = _identity(monkeypatch)
+    for missing in ("fmask=0177", "dmask=0077"):
+        monkeypatch.setattr(appliance, "_mount_info", lambda _path, missing=missing: (device, "vfat", SAFE - {missing}))
+        assert appliance.mount_transfer() is False
+
+
 def test_transfer_mount_accepts_expected_source_and_flags(monkeypatch, tmp_path):
     monkeypatch.setattr(appliance, "TRANSFER", tmp_path)
     device = _identity(monkeypatch)
@@ -132,9 +174,7 @@ def test_transfer_mount_checks_new_mount_source_and_flags(monkeypatch, tmp_path)
     monkeypatch.setattr(appliance, "_mount_info", lambda path: next(states))
     calls = []
     monkeypatch.setattr(
-        appliance.subprocess,
-        "run",
-        lambda args, **kwargs: calls.append(args) or SimpleNamespace(returncode=0),
+        appliance, "_run_media_command", lambda args: calls.append(args) or True,
     )
     assert appliance.mount_transfer() is True
     assert calls[0][5] == device

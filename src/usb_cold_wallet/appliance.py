@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
 VAULT = Path("/mnt/cold-vault/wallet.vault")
 TRANSFER = Path("/mnt/transfer")
@@ -13,9 +14,29 @@ BOOT_CHECKS = Path("/run/usb-wallet/boot-checks.txt")
 LOCKDOWN = Path("/run/usb-wallet/lockdown")
 BOOT_PARENT_FILE = Path("/run/usb-wallet/boot-parent")
 VAULT_DEVICE_FILE = Path("/run/usb-wallet/vault-device")
+TRANSFER_DEVICE_FILE = Path("/run/usb-wallet/transfer-device")
 SAFE_MOUNT_OPTIONS = "rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077"
 SYS_BLOCK = Path("/sys/class/block")
 DEV_ROOT = Path("/dev")
+DIAGNOSTIC_HELPER = Path("/usr/libexec/usb-wallet-identify-media")
+MEDIA_PROBE_TIMEOUT = 10
+MEDIA_COMMAND_TIMEOUT = 10
+_pending_media_command: subprocess.Popen | None = None
+
+
+def _signal_diagnostic(mode: str) -> None:
+    """Use the same bounded, best-effort serial diagnostic as startup."""
+    try:
+        subprocess.run(
+            [sys.executable, str(DIAGNOSTIC_HELPER), "--serial", mode],
+            check=False, timeout=4, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _signal_console_ready(*, locked: bool = False) -> None:
+    _signal_diagnostic("lockdown-ready" if locked else "console-ready")
 
 
 def _mount_info(path: Path) -> tuple[str, str, set[str]] | None:
@@ -44,6 +65,20 @@ def _block_parent(device: str) -> str | None:
     if not (Path("/sys/class/block") / parent).exists():
         return None
     return parent
+
+
+def _usb_mass_storage(entry: Path) -> bool:
+    """Require kernel sysfs USB ancestry, not merely a spoofable FAT label."""
+    try:
+        resolved = entry.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    parts = resolved.parts
+    return any(
+        re.fullmatch(r"usb[0-9]+", parts[i])
+        and re.fullmatch(r"[0-9]+-[0-9]+(?:\.[0-9]+)*", parts[i + 1])
+        for i in range(len(parts) - 1)
+    )
 
 
 def _fat_label(partition: Path) -> str | None:
@@ -79,12 +114,17 @@ def _transfer_candidates() -> list[str]:
                 not (entry / "partition").is_file()):
             continue
         device = DEV_ROOT / entry.name
+        if device.is_symlink():
+            continue
+        if not _usb_mass_storage(entry):
+            continue
         if _fat_label(device) == "TX_TRANSFER":
             matches.append(str(device))
     return matches
 
 
 def _unique_transfer_device() -> str | None:
+    """Allow legacy separate USB, or the exact boot-verified single-USB partition."""
     devices = _transfer_candidates()
     if len(devices) != 1:
         return None
@@ -95,11 +135,24 @@ def _unique_transfer_device() -> str | None:
         vault_device = VAULT_DEVICE_FILE.read_text(encoding="utf-8").strip()
     except OSError:
         return None
-
     if not re.fullmatch(r"sd[a-z]+", boot_parent):
         return None
+
     parent = _block_parent(device)
-    if not parent or parent == boot_parent or device == vault_device:
+    if not parent or device == vault_device:
+        return None
+
+    if parent != boot_parent:
+        # Preserve the original two-USB policy for legacy images.
+        return device
+
+    # Same-parent media is allowed only when S01airgap verified the complete
+    # three-partition GPT layout and persisted the exact transfer device path.
+    try:
+        expected = TRANSFER_DEVICE_FILE.read_text(encoding="ascii").strip()
+    except OSError:
+        return None
+    if expected != device or not re.fullmatch(r"/dev/sd[a-z]+[1-9][0-9]*", expected):
         return None
     return device
 
@@ -112,7 +165,7 @@ def _safe_transfer_mount(expected_source: str) -> bool:
     return (
         source == expected_source
         and filesystem == "vfat"
-        and {"rw", "noexec", "nodev", "nosuid", "sync"} <= options
+        and {"rw", "noexec", "nodev", "nosuid", "sync", "fmask=0177", "dmask=0077"} <= options
     )
 
 
@@ -123,8 +176,10 @@ def security_status() -> list[str]:
         return ["FAIL: boot security audit missing"]
 
     status = [line for line in boot_lines if line.startswith(("PASS:", "FAIL:"))]
+    stages = [line for line in boot_lines if line.startswith("INFO:")]
     if not status:
-        return ["FAIL: boot security audit contained no checks"]
+        return stages + ["FAIL: boot security audit contained no checks"]
+    status = [line for line in boot_lines if line.startswith(("INFO:", "PASS:", "FAIL:"))]
 
     try:
         boot_parent = BOOT_PARENT_FILE.read_text(encoding="utf-8").strip()
@@ -167,26 +222,184 @@ def security_status() -> list[str]:
 
 
 def _security_locked(status: list[str]) -> bool:
-    return LOCKDOWN.exists() or any(item.startswith("FAIL:") for item in status)
+    return (LOCKDOWN.exists() or _media_command_marker().exists()
+            or any(item.startswith("FAIL:") for item in status))
+
+
+def _kill_media_worker(process: subprocess.Popen) -> None:
+    # A signal can stay pending in a blocked kernel I/O call. Never wait here.
+    try:
+        process.kill()
+    except ProcessLookupError:
+        pass
+
+
+def _bounded_transfer_device() -> str | None:
+    # The worker only reads sysfs and FAT headers. Its one-line result is
+    # bounded by the device name, and it cannot change mounts or write media.
+    process = subprocess.Popen(
+        [sys.executable, "-I", "-c",
+         "from usb_cold_wallet.appliance import _unique_transfer_device; "
+         "print(_unique_transfer_device() or '')"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+    )
+    try:
+        output, _ = process.communicate(timeout=MEDIA_PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        LOCKDOWN.touch()
+        print("FAIL: TX_TRANSFER probe timed out; wallet operations locked.", flush=True)
+        _kill_media_worker(process)
+        return None
+    finally:
+        process.stdout.close()
+    device = output.decode("ascii", errors="replace").strip()
+    if process.returncode == 0 and re.fullmatch(r"/dev/sd[a-z]+[1-9][0-9]*", device):
+        return device
+    return None
+
+
+def _media_command_marker() -> Path:
+    return LOCKDOWN.with_name("media-command-pending")
+
+
+def _media_command_quiescent() -> bool:
+    global _pending_media_command
+    marker = _media_command_marker()
+    if _pending_media_command is not None and _pending_media_command.poll() is not None:
+        marker.unlink()
+        _pending_media_command = None
+    # A respawned console cannot prove an earlier console's worker exited.
+    return not marker.exists()
+
+
+def _run_media_command(arguments: list[str]) -> bool:
+    global _pending_media_command
+    marker = _media_command_marker()
+    if not _media_command_quiescent():
+        return False
+    try:
+        marker.touch(exist_ok=False)
+    except FileExistsError:
+        return False
+    try:
+        _pending_media_command = subprocess.Popen(arguments, stdin=subprocess.DEVNULL)
+    except OSError:
+        marker.unlink()
+        raise
+    try:
+        return _pending_media_command.wait(timeout=MEDIA_COMMAND_TIMEOUT) == 0
+    except subprocess.TimeoutExpired:
+        LOCKDOWN.touch()
+        print(f"FAIL: {arguments[0]} timed out; wallet operations locked.", flush=True)
+        _kill_media_worker(_pending_media_command)
+        return False
+    finally:
+        _media_command_quiescent()
 
 
 def mount_transfer() -> bool:
+    # Public integration callers may invoke this without the console menu.
+    # Never mount removable exchange media after a failed boot audit.
+    if LOCKDOWN.exists() or not _media_command_quiescent():
+        return False
     TRANSFER.mkdir(parents=True, exist_ok=True)
-    device = _unique_transfer_device()
-    if device is None:
+    device = _bounded_transfer_device()
+    if device is None or LOCKDOWN.exists() or not _media_command_quiescent():
         return False
     if _mounted(TRANSFER):
         return _safe_transfer_mount(device)
-    result = subprocess.run(
+    success = _run_media_command(
         ["mount", "-t", "vfat", "-o", SAFE_MOUNT_OPTIONS, device, str(TRANSFER)],
-        check=False,
     )
-    return result.returncode == 0 and _safe_transfer_mount(device)
+    if success and _safe_transfer_mount(device):
+        return True
+    # A failed or unexpected new mount must not remain usable.
+    if not LOCKDOWN.exists():
+        unmount_transfer()
+    return False
 
 
-def unmount_transfer() -> None:
-    if _mounted(TRANSFER):
-        subprocess.run(["umount", str(TRANSFER)], check=False)
+def _unmount_path(path: Path) -> bool:
+    # Inspect the actual mount table before and after unmount. A failed read
+    # is not equivalent to an absent mount.
+    def mounted():
+        lines = Path("/proc/mounts").read_text(encoding="utf-8").splitlines()
+        if not lines or any(len(line.split()) < 4 for line in lines):
+            raise ValueError("invalid mount table")
+        return any(line.split()[1] == str(path) for line in lines)
+    try:
+        if not _media_command_quiescent():
+            return False
+        if not mounted():
+            return True
+        return _run_media_command(["umount", str(path)]) and not mounted()
+    except (OSError, ValueError):
+        return False
+
+
+def unmount_transfer() -> bool:
+    return _unmount_path(TRANSFER)
+
+
+def _rescan_transfer() -> bool:
+    """Attended option 5, with live audit before and after changing mounts."""
+    if _security_locked(security_status()):
+        print("FAIL: runtime audit rejected TX_TRANSFER re-scan.", flush=True)
+        return False
+    if not unmount_transfer():
+        print("FAIL: TX_TRANSFER unmount failed; re-scan cancelled.", flush=True)
+        return False
+    try:
+        mounted = mount_transfer()
+    except OSError:
+        mounted = False
+    if not mounted:
+        print("TX_TRANSFER not found or unsafe.", flush=True)
+        return False
+    if _security_locked(security_status()):
+        if not unmount_transfer():
+            print("FAIL: TX_TRANSFER cleanup failed.", flush=True)
+        # A failed live audit cannot be reset by mounting another partition.
+        LOCKDOWN.touch()
+        print("FAIL: TX_TRANSFER post-mount runtime audit failed.", flush=True)
+        return False
+    print("TX_TRANSFER mounted.", flush=True)
+    _signal_diagnostic("transfer-ready")
+    return True
+
+
+def _poweroff() -> bool:
+    """Normal shutdown only; no forced halt and no silent error."""
+    print("Power off requested; closing removable filesystems.", flush=True)
+    try:
+        LOCKDOWN.touch()
+        if not _media_command_quiescent():
+            print("FAIL: a removable filesystem command is still unconfirmed; power off cancelled.", flush=True)
+            return False
+        # An unavailable mount table is not evidence that media is unmounted.
+        Path("/proc/mounts").read_text(encoding="utf-8")
+        if not unmount_transfer() or not _unmount_path(VAULT.parent):
+            print("FAIL: removable filesystem unmount failed; power off cancelled.", flush=True)
+            return False
+        if not _run_media_command(["sync"]):
+            print("FAIL: filesystem sync failed; power off cancelled.", flush=True)
+            return False
+        if not _run_media_command(["poweroff"]):
+            print("FAIL: poweroff command failed; system remains locked.", flush=True)
+            return False
+    except (OSError, UnicodeError):
+        print("FAIL: shutdown operation unavailable; system remains locked.", flush=True)
+        return False
+    print("Poweroff accepted by OS; waiting for hardware shutdown.", flush=True)
+    return True
+
+
+def _attended_poweroff() -> None:
+    if _poweroff():
+        # BusyBox poweroff requests shutdown from PID 1. Do not exit into its
+        # tty1 respawn loop while shutdown is in progress.
+        time.sleep(10)
+        print("Poweroff requested but system is still running; retry option 6.", flush=True)
 
 
 def _run_cli(arguments: list[str]) -> None:
@@ -205,8 +418,8 @@ def _run_cli(arguments: list[str]) -> None:
 def _select_file(suffix: str | tuple[str, ...]) -> Path | None:
     if not mount_transfer():
         print(
-            "TX_TRANSFER USB unavailable or ambiguous. "
-            "Use exactly one separate VFAT USB labelled TX_TRANSFER."
+            "TX_TRANSFER unavailable or ambiguous. "
+            "Use the verified single-USB transfer partition or one separate legacy VFAT USB."
         )
         return None
     suffixes = (suffix,) if isinstance(suffix, str) else suffix
@@ -313,20 +526,30 @@ def _sign_btc() -> None:
 
 def main() -> int:
     os.environ["HISTFILE"] = "/dev/null"
+    shutdown_requested = False
+    normal_ready = False
+    locked_ready = False
     while True:
         print("\n=== USB BTC + EVM COLD WALLET ===")
         print("TESTNET DEVELOPMENT BUILD — NOT APPROVED FOR MAINNET ASSETS")
         status = security_status()
         for item in status:
             print(item)
-        if _security_locked(status):
-            print("\nLOCKDOWN: wallet creation/signing is disabled because a boot security check failed.")
+        if shutdown_requested or _security_locked(status):
+            print("\nLOCKDOWN: wallet creation/signing is disabled because a boot security check failed or shutdown was requested.")
             print("6) Power off")
+            if not locked_ready:
+                _signal_console_ready(locked=True)
+                locked_ready = True
             if input("> ").strip() == "6":
-                unmount_transfer()
-                subprocess.run(["poweroff"], check=False)
-                return 1
+                shutdown_requested = True
+                _attended_poweroff()
             continue
+        # This is emitted only after the live runtime audit passed and the
+        # single-purpose console reached its attended menu.
+        if not normal_ready:
+            _signal_console_ready()
+            normal_ready = True
         print("\n1) Create encrypted TESTNET wallet")
         print("2) Show public BTC testnet + Sepolia addresses")
         print("3) Sign Sepolia native ETH transaction")
@@ -344,14 +567,12 @@ def main() -> int:
         elif choice == "4":
             _sign_btc()
         elif choice == "5":
-            unmount_transfer()
-            print("TX_TRANSFER mounted." if mount_transfer() else "TX_TRANSFER not found or unsafe.")
+            _rescan_transfer()
         elif choice == "7":
             _initialize_policy()
         elif choice == "6":
-            unmount_transfer()
-            subprocess.run(["poweroff"], check=False)
-            return 0
+            shutdown_requested = True
+            _attended_poweroff()
         else:
             print("Unknown option.")
 
