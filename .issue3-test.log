@@ -1,0 +1,55 @@
+........................................................................ [ 12%]
+........................................................................ [ 25%]
+........................................................................ [ 38%]
+........................................................................ [ 50%]
+........................................................................ [ 63%]
+.............F.........................................................s [ 76%]
+ss...................................................................... [ 88%]
+...............................................................          [100%]
+=================================== FAILURES ===================================
+_______ test_real_project_offline_wheel_install_contains_no_online_code ________
+
+tmp_path = PosixPath('/tmp/pytest-of-devspace/pytest-127/test_real_project_offline_whee0')
+
+    def test_real_project_offline_wheel_install_contains_no_online_code(tmp_path):
+        """CI must build the actual distribution, strip it and install offline-only."""
+        if importlib.util.find_spec("build") is None:
+            if os.environ.get("CI") == "true":
+                pytest.fail("CI must install pinned Python build tooling")
+            pytest.skip("Local developer environment lacks the build tool")
+        project = Path(__file__).resolve().parents[1]
+        dist = tmp_path / "combined"
+        dist.mkdir()
+        subprocess.run([
+            sys.executable, "-m", "build", "--no-isolation", "--wheel",
+            "--outdir", str(dist), str(project),
+        ], cwd=project, check=True, timeout=90, capture_output=True, text=True)
+        source = list(dist.glob("*.whl"))
+        assert len(source) == 1
+>       offline = build_offline_wheel(source[0], tmp_path / "offline")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_offline_wheel.py:91: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+scripts/build_offline_wheel.py:100: in build_offline_wheel
+    result = _offline_files(entries, from_combined=True)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+entries = {'usb_btc_evm_cold_wallet-0.1.0.dist-info/licenses/LICENSE': b'MIT License\n\nCopyright (c) 2026 ChiJiun and contribut...rint(f"ERROR: {exc}", file=sys.stderr)\n        return 1\n\n\nif __name__ == "__main__":\n    sys.exit(main())\n', ...}
+from_combined = True
+
+    def _offline_files(entries: dict[str, bytes], *, from_combined: bool) -> dict[str, bytes]:
+        names = tuple(entries)
+        if len(names) != len(set(names)) or any(name.endswith("/") for name in names):
+            raise ValueError("Duplicate or non-file wheel members")
+        modules = {name[len(PACKAGE):] for name in names
+                   if name.startswith(PACKAGE) and name.endswith(".py") and "/" not in name[len(PACKAGE):]}
+        unknown = modules - ALLOWED_OFFLINE_MODULES - ONLINE_MODULES
+        if unknown or not ALLOWED_OFFLINE_MODULES <= modules:
+>           raise ValueError(f"Unexpected offline wallet Python modules: {sorted(unknown)}")
+E           ValueError: Unexpected offline wallet Python modules: ['evm_eip712.py', 'evm_erc20.py']
+
+scripts/build_offline_wheel.py:39: ValueError
+=========================== short test summary info ============================
+FAILED tests/test_offline_wheel.py::test_real_project_offline_wheel_install_contains_no_online_code
