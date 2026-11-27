@@ -30,6 +30,7 @@ CASES = (
 )
 HEX40 = re.compile(r"^[a-fA-F0-9]{40}$")
 HEX64 = re.compile(r"^[a-fA-F0-9]{64}$")
+MEDIA_READBACK_SCOPE = "LBA0..TX_TRANSFER start; raw image with capacity-relocated MBR size and primary GPT header"
 TXHASH = re.compile(r"^(?:0x)?[a-fA-F0-9]{64}$")
 SAFE = re.compile(r"^[A-Za-z0-9 _.,:/+@()#=-]{1,300}$")
 
@@ -194,6 +195,7 @@ def verify_evidence(journal_path: Path, observation: dict) -> None:
             # The device is flashed from a capacity-relocated image and Windows
             # rewrites TX_TRANSFER metadata, so readback binds the stable region
             # hash derived from the verified raw image, not the whole-file hash.
+            or report.get("mediaReadbackScope") != MEDIA_READBACK_SCOPE
             or not HEX64.fullmatch(str(report.get("expectedStableRegionSha256", "")))
             or report.get("mediaReadbackSha256") != report.get("expectedStableRegionSha256")
         ):

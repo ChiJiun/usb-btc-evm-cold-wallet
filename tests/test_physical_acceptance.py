@@ -46,6 +46,7 @@ def inventory_report(**overrides) -> dict:
         "imageSha256": DIGEST,
         "mediaReadbackSha256": "e" * 64,
         "expectedStableRegionSha256": "e" * 64,
+        "mediaReadbackScope": module.MEDIA_READBACK_SCOPE,
         "collectedAtUtc": module.utc_now(),
         "observed": {
             "driveLetter": "F",
@@ -133,6 +134,8 @@ class TestPhysicalAcceptance(unittest.TestCase):
                 {"expectedStableRegionSha256": "c" * 64},
                 {"expectedStableRegionSha256": None, "mediaReadbackSha256": None},
                 {"expectedStableRegionSha256": "not-hex", "mediaReadbackSha256": "not-hex"},
+                {"mediaReadbackScope": "LBA0..end"},
+                {"mediaReadbackScope": None},
                 {"collectedAtUtc": "2020-01-01T00:00:00+00:00"},
                 {"observed": {}},
             ):
@@ -242,3 +245,142 @@ class TestPhysicalAcceptance(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- Readback regression against the real capacity preparation tool -------
+import shutil
+import struct
+import subprocess
+import sys
+import uuid
+import zlib
+
+ROOT = SCRIPT.parents[1]
+PS_MODULE = ROOT / "scripts" / "physical_usb_inventory_core.psm1"
+POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
+
+
+def _load_capacity_tool():
+    scripts = str(ROOT / "scripts")
+    sys.path.insert(0, scripts)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "prepare_usb_capacity_image", ROOT / "scripts" / "prepare_usb_capacity_image.py")
+        assert spec and spec.loader
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        return tool
+    finally:
+        sys.path.remove(scripts)
+
+
+def _fat(label: str, sectors: int, *, fat32: bool) -> bytes:
+    sector = bytearray(512)
+    struct.pack_into("<H", sector, 11, 512)
+    offset = 71 if fat32 else 43
+    sector[offset:offset + 11] = label.encode("ascii").ljust(11, b" ")
+    if fat32:
+        sector[82:90] = b"FAT32   "
+        sector[13] = 8
+        struct.pack_into("<HB", sector, 14, 32, 2)
+        struct.pack_into("<IIHHI", sector, 32, sectors - 4, 1024, 0, 0, 2)
+    else:
+        sector[54:62] = b"FAT16   "
+    sector[510:512] = b"\x55\xaa"
+    return bytes(sector)
+
+
+def _header(v, *, current, backup, first_usable, last_usable, entries_lba, entries_crc) -> bytes:
+    header = bytearray(512)
+    header[:8] = b"EFI PART"
+    struct.pack_into("<II", header, 8, 0x00010000, 92)
+    struct.pack_into("<QQQQ", header, 24, current, backup, first_usable, last_usable)
+    header[56:72] = v.EXPECTED_DISK_UUID.bytes_le
+    struct.pack_into("<QIII", header, 72, entries_lba, v.GPT_ENTRY_COUNT, v.GPT_ENTRY_SIZE, entries_crc)
+    struct.pack_into("<I", header, 16, zlib.crc32(header[:92]))
+    return bytes(header)
+
+
+def _write_raw_image(v, path: Path) -> None:
+    """Minimal valid single-USB raw image in the exact #76 layout."""
+    entries = bytearray(v.GPT_ENTRY_COUNT * v.GPT_ENTRY_SIZE)
+    specs = (
+        (v.EFI_TYPE, v.EXPECTED_BOOT_UUID, v.GPT_READ_ONLY, v.BOOT_START_LBA, v.BOOT_SECTORS, "USBCOLD_EFI"),
+        (v.LINUX_FS_TYPE, v.EXPECTED_VAULT_UUID, 0, v.VAULT_START_LBA, v.VAULT_SECTORS, "COLD_VAULT"),
+        (v.BASIC_DATA_TYPE, v.EXPECTED_TRANSFER_UUID, 0, v.TRANSFER_START_LBA, v.TRANSFER_SECTORS, "TX_TRANSFER"),
+    )
+    for slot, (kind, uid, attrs, start, sectors, _) in enumerate(specs):
+        offset = slot * v.GPT_ENTRY_SIZE
+        entries[offset:offset + 16] = kind.bytes_le
+        entries[offset + 16:offset + 32] = uid.bytes_le
+        struct.pack_into("<QQQ", entries, offset + 32, start, start + sectors - 1, attrs)
+    crc = zlib.crc32(entries)
+    last_lba = v.TRANSFER_START_LBA + v.TRANSFER_SECTORS + 2047
+    table = last_lba - v.GPT_TABLE_SECTORS
+    first_usable = 2 + v.GPT_TABLE_SECTORS
+    mbr = bytearray(512)
+    mbr[450] = 0xEE
+    struct.pack_into("<II", mbr, 454, 1, min(last_lba, 0xFFFFFFFF))
+    mbr[510:512] = b"\x55\xaa"
+    with path.open("wb") as handle:
+        handle.write(mbr)
+        handle.write(_header(v, current=1, backup=last_lba, first_usable=first_usable,
+                             last_usable=table - 1, entries_lba=2, entries_crc=crc))
+        handle.write(entries)
+        for _, _, _, start, sectors, label in specs:
+            handle.seek(start * 512)
+            handle.write(_fat(label, sectors, fat32=label == "TX_TRANSFER"))
+            handle.write(label.encode("ascii") + b"-payload")
+        handle.seek(table * 512)
+        handle.write(entries)
+        handle.write(_header(v, current=last_lba, backup=1, first_usable=first_usable,
+                             last_usable=table - 1, entries_lba=table, entries_crc=crc))
+
+
+def _ps_hash(function: str, image: Path, offset: int, capacity: int | None = None) -> str:
+    extra = " -DeviceSizeBytes ([long]$env:PHYS_CAPACITY)" if capacity is not None else ""
+    stream_arg = "-ImageStream" if capacity is not None else "-Stream"
+    command = (
+        "$ErrorActionPreference='Stop'; Import-Module $env:PHYS_MODULE -Force; "
+        "$s=[System.IO.File]::OpenRead($env:PHYS_IMAGE); "
+        f"try {{ {function} {stream_arg} $s{extra} -TransferOffsetBytes ([long]$env:PHYS_OFFSET) }} "
+        "finally { $s.Dispose() }"
+    )
+    env = {**os.environ, "PHYS_MODULE": str(PS_MODULE), "PHYS_IMAGE": str(image),
+           "PHYS_OFFSET": str(offset), "PHYS_CAPACITY": str(capacity or 0)}
+    result = subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", command],
+                            env=env, capture_output=True, text=True, timeout=600)
+    if result.returncode:
+        raise AssertionError(result.stderr or result.stdout)
+    return result.stdout.strip()
+
+
+class TestCapacityImageReadback(unittest.TestCase):
+    def test_expected_hash_matches_real_capacity_preparation(self):
+        if not POWERSHELL:
+            if os.name == "nt":
+                self.fail("PowerShell is required for the Windows readback regression")
+            self.skipTest("PowerShell is not installed on this host")
+        tool = _load_capacity_tool()
+        v = sys.modules["verify_image"]
+        offset = v.TRANSFER_START_LBA * 512
+        with tempfile.TemporaryDirectory() as root:
+            image = Path(root) / "raw.img"
+            _write_raw_image(v, image)
+            with image.open("rb") as handle:
+                self.assertEqual(v.verify_image_data(handle.read()), 0)
+            capacity = image.stat().st_size + 2 * 1024 * 1024
+            expected = _ps_hash("Get-ExpectedMediaRegionSha256", image, offset, capacity)
+            raw_region = _ps_hash("Get-MediaRegionSha256", image, offset)
+            self.assertNotEqual(expected, raw_region)  # MBR/GPT header really changes
+            with image.open("r+b") as handle:
+                tool.relocate_gpt(handle, capacity)
+            self.assertEqual(_ps_hash("Get-MediaRegionSha256", image, offset), expected)
+            with image.open("r+b") as handle:  # Windows rewrites TX_TRANSFER metadata
+                handle.seek(offset + 600)
+                handle.write(b"\x01")
+            self.assertEqual(_ps_hash("Get-MediaRegionSha256", image, offset), expected)
+            with image.open("r+b") as handle:  # COLD_VAULT changed after first boot
+                handle.seek(v.VAULT_START_LBA * 512 + 4096)
+                handle.write(b"\x01")
+            self.assertNotEqual(_ps_hash("Get-MediaRegionSha256", image, offset), expected)

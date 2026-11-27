@@ -42,7 +42,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/physical_usb_invento
 
 每次拔插都需重新執行 drive letter → partition → parent disk discovery。PhysicalDriveN 只在當次新辨識後供唯讀 raw media 開啟，不能保存重用或當作寫入目標。逐一驗證全部三個 partition 的 disk number、unique GUID、type GUID、offset、size、filesystem、FAT label、drive letter，並拒絕非 USB、GUID 重複、假 label、錯誤 parent 或轉接替換。
 
-`-ImagePath` 是 raw `.img`。實際刷寫的是 `scripts/prepare_usb_capacity_image.py` 依裝置容量產生的刷寫檔（冷端開機稽核要求 backup GPT 在裝置最後一個 LBA），它只改寫 primary GPT header（LBA 1）並把 backup GPT 移到碟尾；Windows 掛載 `TX_TRANSFER` 時也會改寫其 FAT 中繼資料。因此 readback 只比對「穩定區域」：LBA 0（protective MBR）與 LBA 2 到 `TX_TRANSFER` 起點（GPT entries、ESP、`COLD_VAULT`），兩邊都用 raw image 的同一區域計算 SHA-256（輸出 `expectedStableRegionSha256` 與 `mediaReadbackSha256`）。`COLD_VAULT` 在冷端建立錢包後會改變，所以 readback 必須在刷寫後、第一次冷端開機前執行。
+`-ImagePath` 是 raw `.img`。實際刷寫的是 `scripts/prepare_usb_capacity_image.py` 依裝置容量產生的刷寫檔（冷端開機稽核要求 backup GPT 在裝置最後一個 LBA）：它改寫 protective MBR 的分割區大小欄位（offset 458）與 primary GPT header（LBA 1 的 backup LBA、last usable LBA、CRC32），並把 backup GPT 移到碟尾；Windows 掛載 `TX_TRANSFER` 時也會改寫其 FAT 中繼資料。因此 readback 比對 LBA 0 到 `TX_TRANSFER` 起點（protective MBR、primary GPT header、GPT entries、ESP、`COLD_VAULT`）：預期值由 raw image 的同一區域計算，但先在記憶體中以 `Get-Disk` 回報的裝置容量重做與刷寫工具相同的 MBR／GPT header 改寫並重算 CRC32，再與實體媒體逐位元組比對 SHA-256（輸出 `expectedStableRegionSha256`、`mediaReadbackSha256` 與 `mediaReadbackScope`）。刷寫檔必須以 `Get-Disk` 的 Size 作為 capacity 產生，否則比對失敗。`COLD_VAULT` 在冷端建立錢包後會改變，所以 readback 必須在刷寫後、第一次冷端開機前執行。開啟 `\.\PhysicalDriveN` 唯讀讀取需要系統管理員權限；沒有 `-VerifyMediaReadback` 時不需要管理員，但 writtenMediaVerified 為 false。
 
 輸出 imageFileVerified（主機檔案 hash）、deviceLayoutVerified（分割區/原始 FAT metadata）、writtenMediaVerified（上述穩定區域的唯讀 readback hash，範圍 ≤ 1 GiB）三個獨立狀態；三者全真只產生 INVENTORY_VERIFIED，physicalAcceptance 始終 NOT TESTED。Windows 無法取得唯讀 physical readback 時直接 BLOCKED。此比對不提供硬體不可複製身分、Secure Boot 或防回滾保證。
 
@@ -66,7 +66,7 @@ py -3 scripts/physical_acceptance.py show --file C:\\wallet-tests\\evidence\\run
 
 | Case | 實際操作／預期結果 | 證據 |
 | --- | --- | --- |
-| WIN_USB_ID | Windows 10/11 無管理員環境，重新辨識 USB bus、型號、容量、partition；候選不一致拒絕 | `inventory-redacted.json` |
+| WIN_USB_ID | Windows 10/11 以系統管理員執行 `-VerifyMediaReadback`（唯讀 raw readback 需要），重新辨識 USB bus、型號、容量、partition；候選不一致拒絕 | `inventory-redacted.json` |
 | IMAGE_SHA256 | 與可信 exact image manifest 比對完整 raw .img SHA-256，拒絕 mismatch | raw digest / artifact run URL |
 | UEFI_BOOT | 真實 x86_64 UEFI 明確選 USB，完整啟動 cold appliance，記錄 firmware/Secure Boot、冷開機時間 | 螢幕、計時 |
 | GPT_LAYOUT | 最終單 USB 映像應依 #76 exact 3 partitions：EFI、COLD_VAULT、TX_TRANSFER；核對 backup GPT、Guid/type、容量、Windows 可見性；不套用 #68 的 two-USB 規格 | Windows inventory + 現有 verify_image.py + 現場照片 |

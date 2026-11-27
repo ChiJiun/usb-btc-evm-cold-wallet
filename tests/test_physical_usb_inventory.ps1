@@ -149,43 +149,71 @@ if ((Test-PhysicalInventorySnapshot -Snapshot $baseline -Manifest $manifestBad).
 }
 $count++
 
-# Stable-region readback: LBA 1 (capacity-relocated primary GPT header) and
-# TX_TRANSFER (Windows-mounted FAT) may differ; every other byte must match.
+# Media readback region: [LBA 0, TX_TRANSFER). The expected hash re-applies the
+# capacity relocation (MBR size + primary GPT header) to the raw image in memory.
+# Byte-exact equality with scripts/prepare_usb_capacity_image.py output is
+# covered by tests/test_physical_acceptance.py (TestCapacityImageReadback).
 $txOffset = 8192
-function New-MediaBytes { $b = New-Object byte[] 12288; for ($i = 0; $i -lt $b.Length; $i++) { $b[$i] = [byte]($i % 251) }; return ,$b }
-function Get-StableHash([byte[]]$Bytes) {
-    $s = New-Object System.IO.MemoryStream (,$Bytes)
-    try { return Get-StableMediaRegionSha256 -Stream $s -TransferOffsetBytes $txOffset } finally { $s.Dispose() }
+$deviceSize = 65536
+function New-RawImage {
+    $b = New-Object byte[] 12288
+    for ($i = 0; $i -lt $b.Length; $i++) { $b[$i] = [byte]($i % 251) }
+    [Array]::Copy([System.Text.Encoding]::ASCII.GetBytes('EFI PART'), 0, $b, 512, 8)
+    [Array]::Copy([BitConverter]::GetBytes([uint32]92), 0, $b, 524, 4)
+    [Array]::Copy([BitConverter]::GetBytes([uint64]1), 0, $b, 536, 8)
+    [Array]::Copy([BitConverter]::GetBytes([uint64]2), 0, $b, 584, 8)
+    [Array]::Copy([BitConverter]::GetBytes([uint32]128), 0, $b, 592, 4)
+    [Array]::Copy([BitConverter]::GetBytes([uint32]128), 0, $b, 596, 4)
+    return ,$b
 }
-function Assert-Stable([string]$Name, [int]$Offset, [bool]$ExpectedEqual) {
-    $raw = New-MediaBytes
-    $media = New-MediaBytes
-    if ($Offset -ge 0) { $media[$Offset] = [byte]($media[$Offset] -bxor 0xFF) }
-    if (((Get-StableHash $raw) -eq (Get-StableHash $media)) -ne $ExpectedEqual) {
-        throw "Stable readback fixture $Name failed"
-    }
+function Get-Expected([byte[]]$Bytes, [long]$Size = $deviceSize, [long]$Offset = $txOffset) {
+    $s = New-Object System.IO.MemoryStream (,$Bytes)
+    try { return Get-ExpectedMediaRegionSha256 -ImageStream $s -DeviceSizeBytes $Size -TransferOffsetBytes $Offset } finally { $s.Dispose() }
+}
+function Get-Media([byte[]]$Bytes, [long]$Offset = $txOffset) {
+    $s = New-Object System.IO.MemoryStream (,$Bytes)
+    try { return Get-MediaRegionSha256 -Stream $s -TransferOffsetBytes $Offset } finally { $s.Dispose() }
+}
+function Assert-Throws([string]$Name, [scriptblock]$Block) {
+    $threw = $false
+    try { [void](& $Block) } catch { $threw = $true }
+    if (-not $threw) { throw "Readback fixture $Name must fail closed" }
     $script:count++
 }
-Assert-Stable 'identical media' -1 $true
-Assert-Stable 'relocated primary GPT header (LBA 1)' 600 $true
-Assert-Stable 'Windows-modified TX_TRANSFER metadata' ($txOffset + 3) $true
-Assert-Stable 'protective MBR changed' 10 $false
-Assert-Stable 'GPT entry array changed (LBA 2)' 1024 $false
-Assert-Stable 'ESP/vault byte changed' ($txOffset - 1) $false
-foreach ($bad in @(0, 1024, 1000, 1073741825)) {
-    $s = New-Object System.IO.MemoryStream (,(New-MediaBytes))
-    try {
-        $threw = $false
-        try { [void](Get-StableMediaRegionSha256 -Stream $s -TransferOffsetBytes $bad) } catch { $threw = $true }
-        if (-not $threw) { throw "Unsafe stable region offset $bad must fail closed" }
-    } finally { $s.Dispose() }
-    $count++
+function Assert-True([string]$Name, [bool]$Condition) {
+    if (-not $Condition) { throw "Readback fixture $Name failed" }
+    $script:count++
 }
-$short = New-Object System.IO.MemoryStream (,(New-Object byte[] 4096))
-try {
-    $threw = $false
-    try { [void](Get-StableMediaRegionSha256 -Stream $short -TransferOffsetBytes $txOffset) } catch { $threw = $true }
-    if (-not $threw) { throw 'Truncated media must fail closed' }
-} finally { $short.Dispose() }
-$count++
+$raw = New-RawImage
+$expected = Get-Expected $raw
+Assert-True 'expected hash is deterministic' ($expected -eq (Get-Expected (New-RawImage)))
+Assert-True 'expected hash relocates MBR/GPT header' ($expected -ne (Get-Media $raw))
+Assert-True 'expected hash depends on device capacity' ($expected -ne (Get-Expected $raw ($deviceSize + 512)))
+$changed = New-RawImage; $changed[$txOffset + 3] = [byte]($changed[$txOffset + 3] -bxor 0xFF)
+Assert-True 'TX_TRANSFER bytes excluded (expected)' ($expected -eq (Get-Expected $changed))
+$changed = New-RawImage; $changed[$txOffset - 1] = [byte]($changed[$txOffset - 1] -bxor 0xFF)
+Assert-True 'ESP/vault byte changes expected hash' ($expected -ne (Get-Expected $changed))
+$changed = New-RawImage; $changed[1024] = [byte]($changed[1024] -bxor 0xFF)
+Assert-True 'GPT entry array (LBA 2) changes expected hash' ($expected -ne (Get-Expected $changed))
+$changed = New-RawImage; $changed[10] = [byte]($changed[10] -bxor 0xFF)
+Assert-True 'protective MBR boot code changes expected hash' ($expected -ne (Get-Expected $changed))
+$media = New-RawImage; $tx = New-RawImage; $tx[$txOffset + 3] = 0
+Assert-True 'TX_TRANSFER bytes excluded (media)' ((Get-Media $media) -eq (Get-Media $tx))
+$changed = New-RawImage; $changed[600] = [byte]($changed[600] -bxor 0xFF)
+Assert-True 'media primary GPT header compared byte-exactly' ((Get-Media $media) -ne (Get-Media $changed))
+
+foreach ($case in @(@{o=512; v=0x41}, @{o=524; v=93}, @{o=536; v=2}, @{o=584; v=3}, @{o=592; v=64})) {
+    $bad = New-RawImage
+    $bad[$case.o] = [byte]$case.v
+    Assert-Throws "bad raw GPT header offset $($case.o)" { Get-Expected $bad }
+}
+foreach ($size in @(12288, (12288 + 33 * 512 - 512), ($deviceSize + 1), (137438953472 + 512))) {
+    Assert-Throws "incompatible device capacity $size" { Get-Expected $raw $size }
+}
+foreach ($bad in @(0, 1024, 1000, 1073741825)) {
+    Assert-Throws "unsafe media offset $bad" { Get-Media $raw $bad }
+    Assert-Throws "unsafe expected offset $bad" { Get-Expected $raw $deviceSize $bad }
+}
+Assert-Throws 'truncated media' { Get-Media (New-Object byte[] 4096) }
+Assert-Throws 'truncated raw image' { Get-Expected ((New-RawImage)[0..4095]) }
 Write-Output "PowerShell mocked physical inventory fixtures: $count PASS (hardware NOT TESTED)"

@@ -160,13 +160,14 @@ try {
             $imageStream = [System.IO.FileStream]::new($file.FullName, [System.IO.FileMode]::Open,
                 [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
             try {
-                $expectedStableHash = Get-StableMediaRegionSha256 -Stream $imageStream -TransferOffsetBytes $transferOffset
+                $expectedStableHash = Get-ExpectedMediaRegionSha256 -ImageStream $imageStream `
+                    -DeviceSizeBytes ([long]$snapshot.disk.sizeBytes) -TransferOffsetBytes $transferOffset
             } finally { $imageStream.Dispose() }
             $path = '\\.\PhysicalDrive' + [string]$snapshot.disk.diskNumber
             $stream = [System.IO.FileStream]::new($path, [System.IO.FileMode]::Open,
                 [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
             try {
-                $mediaHash = Get-StableMediaRegionSha256 -Stream $stream -TransferOffsetBytes $transferOffset
+                $mediaHash = Get-MediaRegionSha256 -Stream $stream -TransferOffsetBytes $transferOffset
                 if ($mediaHash -ne $expectedStableHash) { throw 'Flashed physical media readback SHA-256 mismatch' }
                 foreach ($p in @($snapshot.partitions)) {
                     $fat = Read-FatIdentity $stream ([long]$p.offsetBytes)
@@ -219,7 +220,7 @@ try {
         imageSha256 = $rawHash
         mediaReadbackSha256 = $mediaHash
         expectedStableRegionSha256 = $expectedStableHash
-        mediaReadbackScope = 'LBA0 + LBA2..TX_TRANSFER start (excludes primary GPT header and TX_TRANSFER)'
+        mediaReadbackScope = 'LBA0..TX_TRANSFER start; raw image with capacity-relocated MBR size and primary GPT header'
         exactImageCommit = $ExpectedCommit
         observed = $snapshot
         physicalAcceptance = 'NOT TESTED'
