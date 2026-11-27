@@ -10,11 +10,17 @@ from usb_cold_wallet.qr_workflow import (
     prepare_evm_qr, prepare_btc_qr, sign_offline, verify_evm_response, verify_btc_response,
 )
 from usb_cold_wallet.qr_session import QRSession, make_response
+from usb_cold_wallet.policy import default_profile, set_limit
 
 
 @pytest.fixture(scope="module")
 def root():
     return root_from_mnemonic("abandon " * 11 + "about")
+
+
+def _policy_sign(root, request, **kwargs):
+    return sign_offline(root, request, policy_profile=default_profile(root),
+                        accept_unverified_recipient=True, **kwargs)
 
 
 def evm_tx():
@@ -25,10 +31,64 @@ def evm_tx():
             "data": "0x"}
 
 
+
+def test_qr_policy_gate_denies_missing_profile_and_unknown_recipient(root):
+    tx = evm_tx()
+    request = prepare_evm_qr(tx, evm_account(root).address, tx["to"], tx["value"])
+    with pytest.raises(ValueError, match="mandatory"):
+        sign_offline(root, request, recipient=tx["to"], amount=tx["value"])
+    with pytest.raises(ValueError, match="additional independent confirmation"):
+        sign_offline(root, request, recipient=tx["to"], amount=tx["value"],
+                     policy_profile=default_profile(root))
+    assert _policy_sign(root, request, recipient=tx["to"], amount=tx["value"])["direction"] == "signed"
+
+
+def test_qr_policy_gate_denies_sepolia_value_or_fee_exceeding_caps(root):
+    tx = evm_tx()
+    request = prepare_evm_qr(tx, evm_account(root).address, tx["to"], tx["value"])
+    for field, value in (("evm_max_value_wei", 1), ("evm_max_fee_wei", 1)):
+        profile = set_limit(default_profile(root), root, field, value)
+        with pytest.raises(ValueError, match="denied"):
+            sign_offline(root, request, recipient=tx["to"], amount=tx["value"],
+                         policy_profile=profile, accept_unverified_recipient=True)
+
+
+def test_qr_policy_gate_denies_bitcoin_over_fee_cap(root):
+    from embit import bip32
+    key = btc_key(root, 0, 0)
+    target = btc_address(root, 0, 1)
+    previous = transaction.Transaction(
+        vin=[transaction.TransactionInput(bytes.fromhex("11" * 32), 0)],
+        vout=[transaction.TransactionOutput(120000, script.p2wpkh(key.key))],
+    )
+    tx = transaction.Transaction(
+        vin=[transaction.TransactionInput(previous.txid(), 0)],
+        vout=[
+            transaction.TransactionOutput(60000, script.address_to_scriptpubkey(target)),
+            transaction.TransactionOutput(58800, script.p2wpkh(btc_key(root, 1, 0).key)),
+        ],
+    )
+    p = psbt.PSBT(tx)
+    p.unknown = {}
+    p.inputs[0].unknown = {}
+    for out in p.outputs:
+        out.unknown = {}
+    p.inputs[0].witness_utxo = previous.vout[0]
+    p.inputs[0].non_witness_utxo = previous
+    p.inputs[0].bip32_derivations[key.key.get_public_key()] = psbt.DerivationPath(
+        root.my_fingerprint, bip32.parse_path("m/84h/1h/0h/0/0")
+    )
+    request = prepare_btc_qr(p.to_base64(), root.my_fingerprint.hex(), target, 60000, 1500, 0)
+    limited = set_limit(default_profile(root), root, "btc_max_fee_sats", 1)
+    with pytest.raises(ValueError, match="denied"):
+        sign_offline(root, request, recipient=target, amount=60000, max_fee_sats=1500,
+                     change_index=0, policy_profile=limited, accept_unverified_recipient=True)
+
+
 def test_sepolia_qr_sign_and_verify_roundtrip(root):
     tx = evm_tx()
     request = prepare_evm_qr(tx, evm_account(root).address, tx["to"], tx["value"])
-    response = sign_offline(root, request, recipient=tx["to"], amount=tx["value"])
+    response = _policy_sign(root, request, recipient=tx["to"], amount=tx["value"])
     assert verify_evm_response(request, response)["chain_id"] == 11155111
 
 
@@ -36,17 +96,17 @@ def test_sepolia_qr_deny_wrong_recipient_and_wrong_sender(root):
     tx = evm_tx()
     request = prepare_evm_qr(tx, evm_account(root).address, tx["to"], tx["value"])
     with pytest.raises(ValueError, match="independently|Independently"):
-        sign_offline(root, request, recipient="0x0000000000000000000000000000000000000001", amount=tx["value"])
+        _policy_sign(root, request, recipient="0x0000000000000000000000000000000000000001", amount=tx["value"])
     request = copy.deepcopy(request)
     request["account"] = "0x0000000000000000000000000000000000000001"
     with pytest.raises(ValueError):
-        sign_offline(root, request, recipient=tx["to"], amount=tx["value"])
+        _policy_sign(root, request, recipient=tx["to"], amount=tx["value"])
 
 
 def test_sepolia_qr_tampered_response_rejected(root):
     tx = evm_tx()
     request = prepare_evm_qr(tx, evm_account(root).address, tx["to"], tx["value"])
-    response = sign_offline(root, request, recipient=tx["to"], amount=tx["value"])
+    response = _policy_sign(root, request, recipient=tx["to"], amount=tx["value"])
     fake = copy.deepcopy(response)
     fake["payload"]["signed_raw_transaction"] = "0x02"
     from usb_cold_wallet.qr_session import make_response
@@ -80,16 +140,16 @@ def test_btc_testnet_qr_psbt_signed_and_correlated(root):
         root.my_fingerprint, bip32.parse_path("m/84h/1h/0h/0/0")
     )
     request = prepare_btc_qr(p.to_base64(), root.my_fingerprint.hex(), target, 60000, 1500, 0)
-    response = sign_offline(root, request, recipient=target, amount=60000,
+    response = _policy_sign(root, request, recipient=target, amount=60000,
                             max_fee_sats=1500, change_index=0)
     signed = psbt.PSBT.parse(base64.b64decode(response["payload"]["signed_psbt_base64"]))
     assert len(signed.inputs[0].partial_sigs) == 1
     assert verify_btc_response(request, response)["signature_count"] == 1
     with pytest.raises(ValueError):
-        sign_offline(root, request, recipient=target, amount=60000,
+        _policy_sign(root, request, recipient=target, amount=60000,
                      max_fee_sats=1000, change_index=0)
     with pytest.raises(ValueError):
-        sign_offline(root, request, recipient=target, amount=60000,
+        _policy_sign(root, request, recipient=target, amount=60000,
                      max_fee_sats=1500, change_index=1)
 
     # The signed PSBT remains correct while attacker changes the separate
@@ -109,7 +169,7 @@ def test_btc_testnet_qr_psbt_signed_and_correlated(root):
 def test_sepolia_qr_rejects_metadata_tamper_with_matching_transport_digest(root):
     tx = evm_tx()
     request = prepare_evm_qr(tx, evm_account(root).address, tx["to"], tx["value"])
-    genuine = sign_offline(root, request, recipient=tx["to"], amount=tx["value"])
+    genuine = _policy_sign(root, request, recipient=tx["to"], amount=tx["value"])
     for key, value in (
         ("transaction_hash", "0x" + "a" * 64),
         ("max_fee_wei", genuine["payload"]["max_fee_wei"] + 1),

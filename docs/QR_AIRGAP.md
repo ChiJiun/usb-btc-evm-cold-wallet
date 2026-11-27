@@ -18,8 +18,11 @@ binding layer, but registry-specific UR types are a separate remaining task.
   `qr_workflow.py` checks the unlocked wallet, policy and raw signed
   transaction or BTC PSBT signatures.
 - `usb-cold-wallet-qr`: standalone CLI. Uses no RPC/broadcast code. On the
-  offline computer, asks for an independently sourced recipient/amount,
-  displays network and fees, demands typed confirmation, and only then signs.
+  offline computer it verifies the independently recorded SHA-256 of the
+  wallet-bound encrypted policy **before vault unlock**, enforces the same
+  BTC/EVM policy as the CLI and GUI, displays recipient and actual fees, and
+  requires separate typed confirmation for an unverified recipient. Missing,
+  expired or mismatched policy, or a value/fee above its caps, always denies signing.
 - The QR wrapper is `UR:BYTES` carrying an ASCII-only compact JSON message.
   This is a **standards-based UR framing format**, but is NOT yet the
   `eth-sign-request`/`eth-signature` ERC-4527 CBOR schema or interoperable
@@ -93,7 +96,9 @@ usb-cold-wallet-qr offline-sign --offline-ack \
   --vault /offline/wallet.vault \
   --request /offline/scanned-request.json \
   --to 0xYOUR_INDEPENDENTLY_VERIFIED_RECIPIENT \
-  --amount 1000000000000 --out /offline/signed-response.json
+  --amount 1000000000000 \
+  --expected-policy-sha256 CURRENT_INDEPENDENT_POLICY_SHA256 \
+  --out /offline/signed-response.json
 ```
 
 Import signed response JSON into the **offline** QR page. Scan it with the
@@ -123,8 +128,10 @@ usb-cold-wallet-qr prepare-btc \
 ```
 
 Transfer the JSON by QR. Offline `offline-sign` requires identical
-independently reviewed `--to`, `--amount 50000`, `--max-fee-sats 1500`
-and `--change-index 0`. Return the signed JSON by QR and run
+independently reviewed `--to`, `--amount 50000`, `--max-fee-sats 1500`,
+`--change-index 0` and `--expected-policy-sha256` from a trusted independent
+record. Any excess Bitcoin miner fee is denied by the shared policy. Return
+signed JSON by QR and run
 `usb-cold-wallet-qr verify-btc --request btc-request.json
 --response btc-response.json` on the online host. This checks that the
 unsigned transaction remained unchanged, P2WPKH witness UTXOs and all
@@ -143,8 +150,9 @@ script validation; prefer Bitcoin Core validation before broadcast.
   A cancelled or expired `QRSession` refuses results; the same session
   can consume its response only once. Replaying in a new independent
   process still needs chain nonce / UTXO checks and manual approval.
-- USB-B file exchange from Issue #5 remains a supported operational fallback
-  after that branch is integrated. This PR does **not** alter the existing
+- USB-B exchange from merged #11 and the Online Companion from merged #26
+  remain supported. The QR signer uses the same fail-closed #28 offline
+  policy decision as the CLI and GUI; this PR does **not** alter the existing
   `sign-evm --tx` or `sign-btc --psbt` fallback paths.
 - Never scan a QR containing a mnemonic, seed, private key, decrypted vault
   or login/authorization token. Avoid QR/HID virtual keyboard bridges.

@@ -11,6 +11,7 @@ from .btc import review_btc_psbt, sign_btc_psbt
 from .evm import (review_evm_transaction, sign_evm, decode_signed_eip1559,
                   review_signed_evm_transaction)
 from .keys import evm_account
+from .policy import enforce_review_policy
 from .qr_session import QRSession, _check, REQUEST_KEYS, make_request, make_response
 
 
@@ -33,8 +34,15 @@ def prepare_btc_qr(psbt_base64, account_fingerprint, expected_recipient,
     }, request_id=request_id)
 
 
-def sign_offline(root, request, *, recipient, amount, max_fee_sats=None, change_index=None):
-    """Caller MUST confirm recipient/amount/fee independently on trusted offline screen."""
+def sign_offline(root, request, *, recipient, amount, max_fee_sats=None, change_index=None,
+                 policy_profile=None, accept_unverified_recipient=False):
+    """Strict policy gate for QR signing; no policy or excess fee/value always denies.
+
+    Callers must independently load the anchored, wallet-bound policy snapshot
+    and provide explicit typed confirmation for an unverified recipient.
+    """
+    if policy_profile is None:
+        raise ValueError("Wallet-bound encrypted offline policy is mandatory for QR signing")
     _check(request, REQUEST_KEYS, "unsigned")
     data = request["payload"]
     if not isinstance(data, dict):
@@ -45,7 +53,10 @@ def sign_offline(root, request, *, recipient, amount, max_fee_sats=None, change_
             raise ValueError("EVM QR account does not match unlocked wallet")
         if data.get("recipient", "").lower() != recipient.lower() or data.get("amount_wei") != amount:
             raise ValueError("Independently verified EVM recipient or amount differs")
-        review_evm_transaction(data["transaction"], recipient, amount)
+        review = review_evm_transaction(data["transaction"], recipient, amount)
+        _, decision = enforce_review_policy(policy_profile, root, review, kind="evm")
+        if decision.status == "REQUIRE_EXTRA_CONFIRMATION" and not accept_unverified_recipient:
+            raise ValueError("Unknown recipient requires additional independent confirmation")
         signed = sign_evm(root, data["transaction"], recipient, amount)
         return make_response(request, signed)
     if request["network"] == "bitcoin-testnet" and data.get("kind") == "btc":
@@ -54,7 +65,10 @@ def sign_offline(root, request, *, recipient, amount, max_fee_sats=None, change_
         if (data.get("recipient") != recipient or data.get("amount_sats") != amount or
                 data.get("max_fee_sats") != max_fee_sats or data.get("change_index") != change_index):
             raise ValueError("Independently verified BTC recipient/amount/fee/change mismatch")
-        review_btc_psbt(root, data["psbt"], recipient, amount, max_fee_sats, change_index)
+        review = review_btc_psbt(root, data["psbt"], recipient, amount, max_fee_sats, change_index)
+        _, decision = enforce_review_policy(policy_profile, root, review, kind="btc")
+        if decision.status == "REQUIRE_EXTRA_CONFIRMATION" and not accept_unverified_recipient:
+            raise ValueError("Unknown recipient requires additional independent confirmation")
         signed = sign_btc_psbt(root, data["psbt"], recipient, amount, max_fee_sats, change_index)
         return make_response(request, signed)
     raise ValueError("Unsupported network or signing payload")
