@@ -192,8 +192,12 @@ def test_cli_approved_btc_envelope_signing_roundtrip(tmp_path, monkeypatch):
     signing_key = btc_key(root, 0, 0)
     dest = btc_address(root, 0, 1)
     output = transaction.TransactionOutput(120000, script.p2wpkh(signing_key.key))
+    previous = transaction.Transaction(
+        vin=[transaction.TransactionInput(bytes.fromhex("22" * 32), 0)],
+        vout=[output],
+    )
     tx = transaction.Transaction(
-        vin=[transaction.TransactionInput(bytes.fromhex("11" * 32), 0)],
+        vin=[transaction.TransactionInput(previous.txid(), 0)],
         vout=[
             transaction.TransactionOutput(60000, script.address_to_scriptpubkey(dest)),
             transaction.TransactionOutput(58800, script.p2wpkh(btc_key(root, 1, 0).key)),
@@ -205,6 +209,7 @@ def test_cli_approved_btc_envelope_signing_roundtrip(tmp_path, monkeypatch):
     p.inputs[0].unknown = {}
     for scope in p.outputs:
         scope.unknown = {}
+    p.inputs[0].non_witness_utxo = previous
     p.inputs[0].witness_utxo = output
     p.inputs[0].bip32_derivations[signing_key.key.get_public_key()] = psbt.DerivationPath(
         root.my_fingerprint, bip32.parse_path("m/84h/1h/0h/0/0")
