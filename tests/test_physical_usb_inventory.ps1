@@ -10,7 +10,7 @@ $manifest = [pscustomobject]@{
     layout = 'single-usb-issue-37'
     sourceCommit = $commit
     imageSha256 = $hash
-    imageSizeBytes = 671088640
+    imageSizeBytes = 672157696
     diskGuid = 'f1448aa1-28cc-54bf-8fdd-3008514c0ab5'
     model = 'Mock USB'
     partitions = @(
@@ -147,5 +147,45 @@ $manifestBad.imageSha256 = 'invalid'
 if ((Test-PhysicalInventorySnapshot -Snapshot $baseline -Manifest $manifestBad).deviceLayoutVerified) {
     throw 'Invalid trusted hash should fail closed'
 }
+$count++
+
+# Stable-region readback: LBA 1 (capacity-relocated primary GPT header) and
+# TX_TRANSFER (Windows-mounted FAT) may differ; every other byte must match.
+$txOffset = 8192
+function New-MediaBytes { $b = New-Object byte[] 12288; for ($i = 0; $i -lt $b.Length; $i++) { $b[$i] = [byte]($i % 251) }; return ,$b }
+function Get-StableHash([byte[]]$Bytes) {
+    $s = New-Object System.IO.MemoryStream (,$Bytes)
+    try { return Get-StableMediaRegionSha256 -Stream $s -TransferOffsetBytes $txOffset } finally { $s.Dispose() }
+}
+function Assert-Stable([string]$Name, [int]$Offset, [bool]$ExpectedEqual) {
+    $raw = New-MediaBytes
+    $media = New-MediaBytes
+    if ($Offset -ge 0) { $media[$Offset] = [byte]($media[$Offset] -bxor 0xFF) }
+    if (((Get-StableHash $raw) -eq (Get-StableHash $media)) -ne $ExpectedEqual) {
+        throw "Stable readback fixture $Name failed"
+    }
+    $script:count++
+}
+Assert-Stable 'identical media' -1 $true
+Assert-Stable 'relocated primary GPT header (LBA 1)' 600 $true
+Assert-Stable 'Windows-modified TX_TRANSFER metadata' ($txOffset + 3) $true
+Assert-Stable 'protective MBR changed' 10 $false
+Assert-Stable 'GPT entry array changed (LBA 2)' 1024 $false
+Assert-Stable 'ESP/vault byte changed' ($txOffset - 1) $false
+foreach ($bad in @(0, 1024, 1000, 1073741825)) {
+    $s = New-Object System.IO.MemoryStream (,(New-MediaBytes))
+    try {
+        $threw = $false
+        try { [void](Get-StableMediaRegionSha256 -Stream $s -TransferOffsetBytes $bad) } catch { $threw = $true }
+        if (-not $threw) { throw "Unsafe stable region offset $bad must fail closed" }
+    } finally { $s.Dispose() }
+    $count++
+}
+$short = New-Object System.IO.MemoryStream (,(New-Object byte[] 4096))
+try {
+    $threw = $false
+    try { [void](Get-StableMediaRegionSha256 -Stream $short -TransferOffsetBytes $txOffset) } catch { $threw = $true }
+    if (-not $threw) { throw 'Truncated media must fail closed' }
+} finally { $short.Dispose() }
 $count++
 Write-Output "PowerShell mocked physical inventory fixtures: $count PASS (hardware NOT TESTED)"

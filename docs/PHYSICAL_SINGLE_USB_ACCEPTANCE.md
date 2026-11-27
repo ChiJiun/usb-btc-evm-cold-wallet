@@ -1,6 +1,6 @@
 # 單 USB 真機驗收（預備工具；尚無實機 PASS）
 
-範圍：Issue #24 / #37 / #43。**目前主線的 two-USB M0 與 #37 單 USB 是不同驗收關卡。** PR #68 提供的 testnet-only artifact 主要是 two-USB 基準；#75 / #76 尚在整合，不能把 #68 的兩分割區映像認成 #76 的三分割區單 USB 映像。執行前必須取得最終整合 SHA、對應 exact image、兩次 clean-build + QEMU/OVMF 證據，確認同版本的 Windows Companion 與冷端 runtime。只用專用測試幣與測試錢包。
+範圍：Issue #24 / #37 / #43。**目前主線的 two-USB M0 與 #37 單 USB 是不同驗收關卡。** PR #68 提供的 testnet-only artifact 主要是 two-USB 基準；#76 的三分割區單 USB 映像已合入主線，#75／#79 仍在整合；不能把 #68 的兩分割區映像認成 #76 的三分割區單 USB 映像。執行前必須取得最終整合 SHA、對應 exact image、兩次 clean-build + QEMU/OVMF 證據，確認同版本的 Windows Companion 與冷端 runtime。只用專用測試幣與測試錢包。
 
 ## 安全限制與來源核對
 
@@ -13,7 +13,7 @@
 
 ## Windows 唯讀 inventory 與 media readback（PowerShell 5.1+）
 
-目前尚無 #76 自動發布、具獨立可信來源雜湊的最終 manifest；缺少來源驗證時必須 BLOCKED。先以最終整合版本的 verify_image.py 核對 image 本身的 primary/backup GPT、FAT 與 geometry，再建立以下 JSON manifest，從可信 CI/簽章另行取得 manifest SHA-256、image SHA-256、source commit。不得信任同一個未驗證檔案包自述的 digest。
+#76 已合入主線（`da6accda646b5690cf97339ea8652b68af840fae`），但仍沒有自動發布、具獨立可信來源雜湊的最終 manifest；缺少來源驗證時必須 BLOCKED。先以最終整合版本的 verify_image.py 核對 image 本身的 primary/backup GPT、FAT 與 geometry，再建立以下 JSON manifest，從可信 CI/簽章另行取得 manifest SHA-256、image SHA-256、source commit。不得信任同一個未驗證檔案包自述的 digest。
 
 Manifest schemaVersion 1 的三分割區內容如下（sourceCommit、imageSha256、imageSizeBytes、model 需填入最終 exact-image 驗證結果）：
 
@@ -34,7 +34,7 @@ Manifest schemaVersion 1 的三分割區內容如下（sourceCommit、imageSha25
 }
 ~~~
 
-上述 layout GUID/geometry 來自 #76 當前 genimage.cfg/identify_media.py；不得在 #76/#79 整合後未重新檢驗就沿用。
+上述 layout GUID/geometry 與主線（#76 合入後）的 `buildroot-external/board/usb-wallet/genimage.cfg`、`identify_media.py` 一致；#75／#79 整合或 layout 變更後必須重新檢驗再沿用。
 
 ~~~powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/physical_usb_inventory.ps1 -DriveLetter F -ImagePath "C:\wallet-tests\usb-cold-wallet.img" -LayoutManifest "C:\wallet-tests\trusted-layout.json" -ExpectedManifestSha256 "<independent 64-hex manifest SHA>" -ExpectedCommit "<exact 40-hex commit>" -ExpectedSha256 "<trusted 64-hex image SHA>" -VerifyMediaReadback -Json
@@ -42,7 +42,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/physical_usb_invento
 
 每次拔插都需重新執行 drive letter → partition → parent disk discovery。PhysicalDriveN 只在當次新辨識後供唯讀 raw media 開啟，不能保存重用或當作寫入目標。逐一驗證全部三個 partition 的 disk number、unique GUID、type GUID、offset、size、filesystem、FAT label、drive letter，並拒絕非 USB、GUID 重複、假 label、錯誤 parent 或轉接替換。
 
-輸出 imageFileVerified（主機檔案 hash）、deviceLayoutVerified（分割區/原始 FAT metadata）、writtenMediaVerified（≤ 1 GiB 的 raw image 長度 prefix 唯讀 readback hash）三個獨立狀態；三者全真只產生 INVENTORY_VERIFIED，physicalAcceptance 始終 NOT TESTED。Windows 無法取得唯讀 physical readback 時直接 BLOCKED。此比對不提供硬體不可複製身分、Secure Boot 或防回滾保證。
+`-ImagePath` 是 raw `.img`。實際刷寫的是 `scripts/prepare_usb_capacity_image.py` 依裝置容量產生的刷寫檔（冷端開機稽核要求 backup GPT 在裝置最後一個 LBA），它只改寫 primary GPT header（LBA 1）並把 backup GPT 移到碟尾；Windows 掛載 `TX_TRANSFER` 時也會改寫其 FAT 中繼資料。因此 readback 只比對「穩定區域」：LBA 0（protective MBR）與 LBA 2 到 `TX_TRANSFER` 起點（GPT entries、ESP、`COLD_VAULT`），兩邊都用 raw image 的同一區域計算 SHA-256（輸出 `expectedStableRegionSha256` 與 `mediaReadbackSha256`）。`COLD_VAULT` 在冷端建立錢包後會改變，所以 readback 必須在刷寫後、第一次冷端開機前執行。
+
+輸出 imageFileVerified（主機檔案 hash）、deviceLayoutVerified（分割區/原始 FAT metadata）、writtenMediaVerified（上述穩定區域的唯讀 readback hash，範圍 ≤ 1 GiB）三個獨立狀態；三者全真只產生 INVENTORY_VERIFIED，physicalAcceptance 始終 NOT TESTED。Windows 無法取得唯讀 physical readback 時直接 BLOCKED。此比對不提供硬體不可複製身分、Secure Boot 或防回滾保證。
 
 ## 跨重開機紀錄
 

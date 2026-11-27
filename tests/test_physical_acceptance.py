@@ -44,7 +44,8 @@ def inventory_report(**overrides) -> dict:
         "imageFileVerified": True, "deviceLayoutVerified": True,
         "writtenMediaVerified": True, "exactImageCommit": COMMIT,
         "imageSha256": DIGEST,
-        "mediaReadbackSha256": DIGEST,
+        "mediaReadbackSha256": "e" * 64,
+        "expectedStableRegionSha256": "e" * 64,
         "collectedAtUtc": module.utc_now(),
         "observed": {
             "driveLetter": "F",
@@ -129,6 +130,9 @@ class TestPhysicalAcceptance(unittest.TestCase):
                 {"imageSha256": "d" * 64},
                 {"physicalAcceptance": "PASS"},
                 {"mediaReadbackSha256": "c" * 64},
+                {"expectedStableRegionSha256": "c" * 64},
+                {"expectedStableRegionSha256": None, "mediaReadbackSha256": None},
+                {"expectedStableRegionSha256": "not-hex", "mediaReadbackSha256": "not-hex"},
                 {"collectedAtUtc": "2020-01-01T00:00:00+00:00"},
                 {"observed": {}},
             ):

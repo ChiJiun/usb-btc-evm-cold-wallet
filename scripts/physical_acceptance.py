@@ -191,7 +191,11 @@ def verify_evidence(journal_path: Path, observation: dict) -> None:
             or not isinstance(partitions, list) or len(partitions) != 3
             or not isinstance(snapshot.get("driveLetter"), str)
             or len(snapshot["driveLetter"]) != 1
-            or report.get("mediaReadbackSha256") != observation["imageSha256"]
+            # The device is flashed from a capacity-relocated image and Windows
+            # rewrites TX_TRANSFER metadata, so readback binds the stable region
+            # hash derived from the verified raw image, not the whole-file hash.
+            or not HEX64.fullmatch(str(report.get("expectedStableRegionSha256", "")))
+            or report.get("mediaReadbackSha256") != report.get("expectedStableRegionSha256")
         ):
             raise ValueError("Physical media inventory/readback provenance incomplete")
         part_ids = set()

@@ -2,7 +2,8 @@
 <#
 Pure verification logic. The caller supplies a freshly discovered Windows snapshot
 and an independently SHA-256-verified manifest for an exact #76 image.
-No disk I/O, mutation, signing or broadcast occurs in this module.
+No disk is opened, mutated, signed or broadcast by this module; stream hashing
+only reads a stream the caller already opened read-only.
 #>
 Set-StrictMode -Version Latest
 
@@ -103,4 +104,41 @@ function Test-PhysicalInventorySnapshot {
         return [ordered]@{ deviceLayoutVerified = $false; result = 'FAIL'; reasons = @($failure.ToArray()) }
     }
 }
-Export-ModuleMember -Function Test-PhysicalInventorySnapshot
+function Get-StableMediaRegionSha256 {
+    <#
+    Hash only the media regions that must stay byte-identical to the raw image
+    after flashing: the protective MBR (LBA 0) and everything from LBA 2 up to
+    the start of TX_TRANSFER (GPT entries, ESP, COLD_VAULT).
+    LBA 1 is excluded because scripts/prepare_usb_capacity_image.py rewrites the
+    primary GPT header (backup LBA, last usable LBA, CRC) for the device capacity.
+    TX_TRANSFER is excluded because Windows rewrites FAT metadata when mounting it.
+    The caller supplies an already opened read-only stream; no path is opened here.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][System.IO.Stream]$Stream,
+        [Parameter(Mandatory=$true)][long]$TransferOffsetBytes
+    )
+    if ($TransferOffsetBytes -le 1024 -or $TransferOffsetBytes -gt 1073741824 -or
+        ($TransferOffsetBytes % 512) -ne 0) {
+        throw 'Unsafe stable readback region'
+    }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $buffer = New-Object byte[] 1048576
+    try {
+        foreach ($range in @(@(0, 512), @(1024, $TransferOffsetBytes))) {
+            [void]$Stream.Seek([long]$range[0], [System.IO.SeekOrigin]::Begin)
+            $remaining = [long]$range[1] - [long]$range[0]
+            while ($remaining -gt 0) {
+                $count = [int][Math]::Min($remaining, $buffer.Length)
+                $n = $Stream.Read($buffer, 0, $count)
+                if ($n -le 0) { throw 'Truncated read-only stable media region' }
+                [void]$sha.TransformBlock($buffer, 0, $n, $buffer, 0)
+                $remaining -= $n
+            }
+        }
+        [void]$sha.TransformFinalBlock((New-Object byte[] 0), 0, 0)
+        return [BitConverter]::ToString($sha.Hash).Replace('-', '').ToLowerInvariant()
+    } finally { $sha.Dispose() }
+}
+Export-ModuleMember -Function Test-PhysicalInventorySnapshot, Get-StableMediaRegionSha256

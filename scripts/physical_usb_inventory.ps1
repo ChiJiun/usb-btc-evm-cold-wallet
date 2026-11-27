@@ -44,24 +44,6 @@ function Read-FatIdentity([System.IO.Stream]$Stream, [long]$Offset) {
     $label = $ascii.GetString($sector, $labelOffset, 11).TrimEnd()
     return @{ label = $label; filesystem = if ($fat32) { 'FAT32' } else { 'FAT' } }
 }
-function Hash-Prefix([System.IO.Stream]$Stream, [long]$Bytes) {
-    if ($Bytes -le 0 -or $Bytes -gt 1073741824) { throw 'Unsafe media readback length' }
-    [void]$Stream.Seek(0, [System.IO.SeekOrigin]::Begin)
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    $buffer = New-Object byte[] 1048576
-    try {
-        $remaining = $Bytes
-        while ($remaining -gt 0) {
-            $count = [int][Math]::Min($remaining, $buffer.Length)
-            $n = $Stream.Read($buffer, 0, $count)
-            if ($n -le 0) { throw 'Truncated read-only physical media image' }
-            [void]$sha.TransformBlock($buffer, 0, $n, $buffer, 0)
-            $remaining -= $n
-        }
-        [void]$sha.TransformFinalBlock((New-Object byte[] 0), 0, 0)
-        return [BitConverter]::ToString($sha.Hash).Replace('-', '').ToLowerInvariant()
-    } finally { $sha.Dispose() }
-}
 function Collect-Snapshot([string]$Letter) {
     $target = @(Get-Partition -DriveLetter $Letter -ErrorAction Stop)
     if ($target.Count -ne 1) { throw 'Ambiguous drive-letter mapping' }
@@ -127,6 +109,7 @@ try {
     $manifest = $null
     $rawHash = $null
     $mediaHash = $null
+    $expectedStableHash = $null
     if (-not $LayoutManifest -or -not $ExpectedManifestSha256 -or
         -not $ExpectedCommit -or -not $ExpectedSha256 -or -not $ImagePath) {
         $checks += 'Required exact image/commit/manifest evidence missing'
@@ -169,12 +152,22 @@ try {
         if ($VerifyMediaReadback -and $fileVerified) {
             # PhysicalDriveN is used only after fresh drive letter -> partition ->
             # USB parent discovery, never as a stored target or for write access.
+            $transferOffset = [long]@($manifest.partitions)[2].offsetBytes
+            if ($transferOffset -ne [long]$snapshot.partitions[2].offsetBytes -or
+                $transferOffset -gt [long]$manifest.imageSizeBytes) {
+                throw 'TX_TRANSFER offset mismatch before media readback'
+            }
+            $imageStream = [System.IO.FileStream]::new($file.FullName, [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+            try {
+                $expectedStableHash = Get-StableMediaRegionSha256 -Stream $imageStream -TransferOffsetBytes $transferOffset
+            } finally { $imageStream.Dispose() }
             $path = '\\.\PhysicalDrive' + [string]$snapshot.disk.diskNumber
             $stream = [System.IO.FileStream]::new($path, [System.IO.FileMode]::Open,
                 [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
             try {
-                $mediaHash = Hash-Prefix $stream ([long]$manifest.imageSizeBytes)
-                if ($mediaHash -ne $rawHash) { throw 'Flashed physical media readback SHA-256 mismatch' }
+                $mediaHash = Get-StableMediaRegionSha256 -Stream $stream -TransferOffsetBytes $transferOffset
+                if ($mediaHash -ne $expectedStableHash) { throw 'Flashed physical media readback SHA-256 mismatch' }
                 foreach ($p in @($snapshot.partitions)) {
                     $fat = Read-FatIdentity $stream ([long]$p.offsetBytes)
                     if ($p.label -and [string]$p.label -cne [string]$fat.label) {
@@ -225,6 +218,8 @@ try {
         writtenMediaVerified = $readbackVerified
         imageSha256 = $rawHash
         mediaReadbackSha256 = $mediaHash
+        expectedStableRegionSha256 = $expectedStableHash
+        mediaReadbackScope = 'LBA0 + LBA2..TX_TRANSFER start (excludes primary GPT header and TX_TRANSFER)'
         exactImageCommit = $ExpectedCommit
         observed = $snapshot
         physicalAcceptance = 'NOT TESTED'
