@@ -193,6 +193,9 @@ function Get-ExpectedMediaRegionSha256 {
     That tool keeps every byte except the protective MBR size field (offset 458)
     and the primary GPT header geometry (backup LBA, last usable LBA, CRC), so
     the same relocation is applied in memory to the raw image's LBA 0..1.
+    KEEP IN SYNC with relocate_gpt() in scripts/prepare_usb_capacity_image.py;
+    tests/test_physical_acceptance.py::TestCapacityImageReadback compares
+    this function against that tool's real output.
     #>
     [CmdletBinding()]
     param(
