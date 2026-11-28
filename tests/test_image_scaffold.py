@@ -1,10 +1,12 @@
 from pathlib import Path
 import re
+import struct
 
 from scripts.install_target_python import (
     TARGET_EMBIT_PREBUILT,
     _keep_target_embit_prebuilt,
 )
+from scripts.generate_framebuffer_font import build_psf2
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -269,6 +271,38 @@ def test_buildroot_device_manager_preserves_offline_kernel_policy():
     assert "BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_(MDEV|EUDEV)=y" in verifier
 
 
+def test_framebuffer_guest_path_is_explicit_dormant_and_network_free():
+    kernel = (ROOT / "buildroot-external/board/usb-wallet/linux.config").read_text()
+    postbuild = (ROOT / "buildroot-external/board/usb-wallet/post-build.sh").read_text()
+    appliance = (ROOT / "src/usb_cold_wallet/appliance.py").read_text()
+    verifier = (ROOT / "scripts/verify_framebuffer_qemu.sh").read_text()
+    workflow = (ROOT / ".github/workflows/live-usb-build.yml").read_text()
+    package = (ROOT / "buildroot-external/package/usb-wallet-app/usb-wallet-app.mk").read_text()
+
+    assert "# CONFIG_NET is not set" in kernel
+    assert "CONFIG_DRM_FBDEV_EMULATION=y" in kernel
+    assert "framebuffer-demo.py" in postbuild
+    assert "EXPERIMENTAL framebuffer review demo" in appliance
+    assert "subprocess.run([sys.executable, str(FRAMEBUFFER_DEMO)]" in appliance
+    assert "-net none" in verifier
+    assert "screendump" in verifier
+    assert "reviewed=1 reason=reviewed" in verifier
+    assert "reviewed=0 reason=cancelled" in verifier
+    assert "verify_framebuffer_qemu.sh" in workflow
+    assert "generate_framebuffer_font.py" in package
+    assert 'tty1::respawn:/usr/bin/usb-wallet-gui-session' in postbuild
+    assert 'tty1::respawn:/usr/libexec/usb-wallet-framebuffer-demo' not in postbuild
+
+
+def test_generated_framebuffer_font_is_fixed_psf2():
+    data = build_psf2()
+    assert len(data) == 32 + 256 * 16
+    magic, version, header, flags, length, charsize, height, width = struct.unpack_from("<8I", data)
+    assert (magic, version, header, flags) == (0x864AB572, 0, 32, 0)
+    assert (length, charsize, height, width) == (256, 16, 16, 8)
+    assert any(data[32 + 32 * 16:32 + 128 * 16])
+
+
 def test_reproducibility_builds_keep_isolated_output_trees_at_one_canonical_path():
     repro = (ROOT / "scripts/check_reproducible.sh").read_text()
     configure = (ROOT / "scripts/configure_buildroot.sh").read_text()
@@ -495,3 +529,13 @@ def test_boot_audit_stop_does_not_reset_or_restart_discovery(tmp_path):
     result = subprocess.run(["sh", "-c", code, "audit", "restart"],
                             capture_output=True, text=True, timeout=5)
     assert result.returncode == 1
+
+
+def test_verify_image_tty1_session_matches_post_build():
+    """Regression for CI run 46045030811: a stale tty1 check fails silently under set -e."""
+    postbuild = (ROOT / "buildroot-external/board/usb-wallet/post-build.sh").read_text()
+    verify = (ROOT / "scripts/verify_image.sh").read_text()
+    written = re.findall(r"tty1::respawn:(/[\w/.-]+)", postbuild)
+    checked = re.findall(r"grep -q '\^tty1::respawn:(/[\w/.-]+)\$'", verify)
+    assert written and checked
+    assert set(checked) == set(written) == {"/usr/bin/usb-wallet-gui-session"}

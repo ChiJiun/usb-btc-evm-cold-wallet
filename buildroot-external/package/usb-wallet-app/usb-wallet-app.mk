@@ -17,6 +17,9 @@ define USB_WALLET_APP_INSTALL_TARGET_CMDS
 		--source $(@D) \
 		--wheelhouse $(BR2_EXTERNAL_USB_WALLET_PATH)/../build/wheelhouse \
 		--target $(TARGET_DIR)
+	mkdir -p $(TARGET_DIR)/usr/share/usb-cold-wallet
+	$(HOST_DIR)/bin/python3 $(@D)/scripts/generate_framebuffer_font.py \
+		$(TARGET_DIR)/usr/share/usb-cold-wallet/font8x16.psf
 endef
 
 $(eval $(generic-package))

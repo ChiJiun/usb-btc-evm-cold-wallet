@@ -15,7 +15,7 @@ OFFLINE_MODULES = frozenset((
     "transaction_state.py", "keys.py", "recovery.py", "vault.py",
     "policy.py", "gui.py", "review.py", "signer_session.py",
     "qr_session.py", "qr_workflow.py", "qr_cli.py",
-    "keystone_public.py", "gui_qr_bridge.py",
+    "keystone_public.py", "gui_qr_bridge.py", "framebuffer_poc.py",
 ))
 ONLINE_MODULES = frozenset((
     "companion_core.py", "companion_btc.py", "companion_web.py",
@@ -27,6 +27,7 @@ IMAGE_SCRIPTS = frozenset((
     "fetch_sources.sh", "fetch_wheelhouse.sh", "install_target_python.py",
     "launch_locked_signer.sh", "validate_buildroot_config.py",
     "verify_image.py", "verify_image.sh", "verify_uefi_boot.sh",
+    "generate_framebuffer_font.py", "verify_framebuffer_qemu.sh",
 ))
 WINDOWS_SCRIPTS = frozenset((
     "windows_companion.py", "check_windows_companion_archive.py",

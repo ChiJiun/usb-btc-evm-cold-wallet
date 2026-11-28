@@ -18,6 +18,9 @@ TRANSFER_DEVICE_FILE = Path("/run/usb-wallet/transfer-device")
 SAFE_MOUNT_OPTIONS = "rw,noexec,nodev,nosuid,sync,fmask=0177,dmask=0077"
 SYS_BLOCK = Path("/sys/class/block")
 DEV_ROOT = Path("/dev")
+SERIAL = Path("/dev/ttyS0")
+FRAMEBUFFER_DEMO = Path("/usr/libexec/usb-wallet-framebuffer-demo")
+
 DIAGNOSTIC_HELPER = Path("/usr/libexec/usb-wallet-identify-media")
 MEDIA_PROBE_TIMEOUT = 10
 MEDIA_COMMAND_TIMEOUT = 10
@@ -54,6 +57,22 @@ def _mount_info(path: Path) -> tuple[str, str, set[str]] | None:
 
 def _mounted(path: Path) -> bool:
     return _mount_info(path) is not None
+
+
+def _serial_marker(message: str) -> None:
+    """Emit only fixed public readiness markers for QEMU acceptance automation."""
+    fd = None
+    try:
+        fd = os.open(SERIAL, os.O_WRONLY | os.O_NONBLOCK | os.O_NOCTTY)
+        os.write(fd, (message + "\n").encode("ascii"))
+    except OSError:
+        pass
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _block_parent(device: str) -> str | None:
@@ -456,6 +475,21 @@ def _addresses() -> None:
     _run_cli(["addresses", "--count", "5"])
 
 
+def _framebuffer_demo() -> None:
+    """Run only the fixed public-vector display POC; it cannot sign."""
+    if not FRAMEBUFFER_DEMO.is_file():
+        print("Experimental framebuffer demo is unavailable.")
+        return
+    if _security_locked(security_status()):
+        print("LOCKDOWN: runtime audit failed; framebuffer demo cancelled.")
+        return
+    _serial_marker("USB_WALLET_CONSOLE_DEMO_START")
+    try:
+        subprocess.run([sys.executable, str(FRAMEBUFFER_DEMO)], check=False)
+    finally:
+        _serial_marker("USB_WALLET_CONSOLE_DEMO_RETURN")
+
+
 def _initialize_policy() -> None:
     """Explicitly create the encrypted policy; the hash must be kept separately."""
     if not VAULT.is_file():
@@ -557,6 +591,10 @@ def main() -> int:
         print("5) Re-scan TX_TRANSFER USB")
         print("6) Power off")
         print("7) Initialize encrypted offline signing policy (record SHA256 on paper)")
+        print("8) EXPERIMENTAL framebuffer review demo (public vector; never signs)")
+        # One marker per attended menu draw. Main's one-shot
+        # USB_WALLET_CONSOLE_READY (first menu only) is a different signal.
+        _serial_marker("USB_WALLET_CONSOLE_MENU")
         choice = input("> ").strip()
         if choice == "1":
             _new_wallet()
@@ -570,10 +608,13 @@ def main() -> int:
             _rescan_transfer()
         elif choice == "7":
             _initialize_policy()
+        elif choice == "8":
+            _framebuffer_demo()
         elif choice == "6":
             shutdown_requested = True
             _attended_poweroff()
         else:
+            _serial_marker("USB_WALLET_CONSOLE_CHOICE_INVALID")
             print("Unknown option.")
 
 

@@ -74,6 +74,15 @@ fi
 
 test -x "$OUT/target/usr/bin/usb-wallet-console"
 test -x "$OUT/target/usr/bin/usb-cold-wallet"
+test -x "$OUT/target/usr/libexec/usb-wallet-framebuffer-demo"
+test -s "$OUT/target/usr/share/usb-cold-wallet/font8x16.psf"
+# The experimental framebuffer POC is manual only. The default tty1 session
+# must remain the existing single-purpose appliance (#76 GUI session wrapper).
+grep -q '^tty1::respawn:/usr/bin/usb-wallet-gui-session$' "$OUT/target/etc/inittab"
+if grep -q 'tty1::respawn:.*usb-wallet-framebuffer-demo' "$OUT/target/etc/inittab"; then
+	echo "ERROR: unverified framebuffer demo became the default Live OS session" >&2
+	exit 1
+fi
 for tool in ip ifconfig route ping wget nc netcat udhcpc telnet; do
 	for dir in bin sbin usr/bin usr/sbin; do
 		test ! -e "$OUT/target/$dir/$tool" || {

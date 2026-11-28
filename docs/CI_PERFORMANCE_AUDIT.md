@@ -97,6 +97,8 @@ Lead Time（推論，含映像變更、Review 與 CI 平行、2 次 Push）：A 
 | main 連續合併時，後一次 main CI 的 reusable Live USB 以 `github.ref` 分組並 `cancel-in-progress: true`，會取消前一次 main 驗證並使其 Required 失敗 | Live USB concurrency 改為 PR 以 PR 編號分組可取消；main／手動以 `run_id` 分組不取消 | `test_live_usb_concurrency_only_supersedes_pull_requests` |
 | [PR #76](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/76)：Live USB GPT 唯讀屬性稽核失敗（過往紀錄） | 映像分割區屬性必須對照**實際 raw GPT entry bytes**、產生器設定與稽核解析；不得為了綠燈只修改預期值或測試 | 執行映像稽核並核對 raw image；QEMU 不等於實體 USB 驗收 |
 | [PR #79](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/pull/79)：`framebuffer_poc.py` 未列入離線模組 Allowlist（過往紀錄） | 新增冷端 Python 模組時，同步審查 runtime imports、離線 Allowlist、Buildroot 安裝清單；不得藉由開啟 `CONFIG_NET` 解決 | 離線模組測試＋Buildroot 安裝稽核＋QEMU 畫面證據 |
+| [CI #46045030811](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/actions/runs/46045030811)（PR #79 `c666838`）：`clean-builds (2)` 映像建置與 SHA 都成功，`verify_image.sh` 在 `img: OK` 後以 exit 1 結束、無錯誤訊息 | #76 合入後 tty1 預設 session 改為 `usb-wallet-gui-session`，#79 的 `verify_image.sh` 仍以 `grep -q` 要求 `usb-wallet-console`，`set -e` 下靜默失敗。整合 main 後，所有寫死 inittab／session 名稱的稽核都要對照 `post-build.sh` 實際寫入的行 | `test_verify_image_tty1_session_matches_post_build`：要求 `verify_image.sh` 檢查的 tty1 行與 `post-build.sh` 寫入的行相同 |
+| [CI #46144840043](https://github.com/ChiJiun/usb-btc-evm-cold-wallet/actions/runs/46144840043)（PR #79 `9989b71`）：雙 clean build 與 OVMF 開機都過，framebuffer QEMU 在第一次選單就報 `unexpected menu return count before session 1: 2` | main 已在第一次選單由 `identify_media.py --serial console-ready` 送出一次性的 `USB_WALLET_CONSOLE_READY`；#79 又在每次畫選單時送同一字串，第一次就數到 2。每次選單改用獨立的 `USB_WALLET_CONSOLE_MENU`，一次性 READY 只用來等開機完成。新增 serial marker 前先 `git grep` 確認字串沒有其他送出者 | `test_menu_marker_is_distinct_from_one_shot_console_ready` |
 
 ### CI 修改前的固定檢查順序
 

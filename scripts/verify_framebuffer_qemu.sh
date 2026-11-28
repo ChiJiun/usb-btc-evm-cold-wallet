@@ -1,0 +1,305 @@
+#!/bin/sh
+# Boot the exact generated USB image with OVMF, manually enter the dormant
+# public-vector framebuffer POC, capture actual guest pixels, and exercise both
+# positive review intent and cancellation. The guest has no NIC.
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+IMAGE="$ROOT/build/output/images/usb-cold-wallet.img"
+OUT="$ROOT/build/reproducibility"
+SCREENSHOT="$OUT/framebuffer-gui.ppm"
+METRICS="$OUT/framebuffer-metrics.txt"
+ACTIONS="$OUT/framebuffer-actions.log"
+test -s "$IMAGE"
+command -v qemu-system-x86_64 >/dev/null
+command -v python3 >/dev/null
+mkdir -p "$OUT"
+rm -f "$SCREENSHOT" "$METRICS" "$ACTIONS"
+
+OVMF_CODE=""
+OVMF_VARS=""
+for candidate in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd; do
+    [ -f "$candidate" ] || continue
+    case "$candidate" in
+        */OVMF_CODE_4M.fd) vars="${candidate%CODE_4M.fd}VARS_4M.fd" ;;
+        */OVMF_CODE.fd) vars="${candidate%CODE.fd}VARS.fd" ;;
+    esac
+    if [ -f "$vars" ]; then
+        OVMF_CODE="$candidate"
+        OVMF_VARS="$vars"
+        break
+    fi
+done
+if [ -z "$OVMF_CODE" ]; then
+    echo "ERROR: matching OVMF_CODE/OVMF_VARS firmware pair not found" >&2
+    exit 1
+fi
+
+TMP="$(mktemp -d)"
+PID=""
+cleanup() {
+    status=$?
+    if [ "$status" -ne 0 ]; then
+        {
+            echo "framebuffer POC QEMU verification failed"
+            echo "--- serial tail ---"
+            tail -100 "$TMP/serial.log" 2>/dev/null || true
+            echo "--- qemu tail ---"
+            tail -80 "$TMP/qemu.log" 2>/dev/null || true
+        } >> "$ACTIONS" 2>/dev/null || true
+    fi
+    if [ -n "$PID" ]; then
+        kill "$PID" 2>/dev/null || true
+        wait "$PID" 2>/dev/null || true
+    fi
+    rm -rf "$TMP"
+    exit "$status"
+}
+trap cleanup EXIT HUP INT TERM
+
+cp "$OVMF_VARS" "$TMP/ovmf-vars.fd"
+chmod 0600 "$TMP/ovmf-vars.fd"
+START_MS="$(date +%s%3N)"
+
+qemu-system-x86_64 \
+    -machine q35,accel=tcg -cpu max -smp 2 -m 1536 \
+    -drive if=pflash,unit=0,format=raw,readonly=on,file="$OVMF_CODE" \
+    -drive if=pflash,unit=1,format=raw,file="$TMP/ovmf-vars.fd" \
+    -display none -serial "file:$TMP/serial.log" \
+    -monitor "unix:$TMP/hmp.sock,server=on,wait=off" \
+    -net none -no-reboot \
+    -device qemu-xhci,id=xhci \
+    -device usb-kbd,id=inputkbd,bus=xhci.0 \
+    -drive if=none,id=walletdisk,format=raw,snapshot=on,file="$IMAGE" \
+    -device usb-storage,bus=xhci.0,drive=walletdisk,bootindex=1 \
+    > "$TMP/qemu.log" 2>&1 &
+PID=$!
+
+marker_count() {
+    found="$(grep -F -c "$1" "$TMP/serial.log" 2>/dev/null || true)"
+    case "$found" in
+        ''|*[!0-9]*) found=0 ;;
+    esac
+    printf '%s' "$found"
+}
+
+diagnose_stage() {
+    # All counters correspond to fixed public markers. Never dump request or
+    # keystroke bytes into artifacts.
+    summary="console=$(marker_count USB_WALLET_CONSOLE_READY) menu=$(marker_count USB_WALLET_CONSOLE_MENU) start=$(marker_count USB_WALLET_CONSOLE_DEMO_START) return=$(marker_count USB_WALLET_CONSOLE_DEMO_RETURN) gui_ready=$(marker_count USB_WALLET_FB_POC_READY) vt_acquired=$(marker_count 'phase=vt_acquired') vt_released=$(marker_count 'phase=vt_released') invalid_menu=$(marker_count USB_WALLET_CONSOLE_CHOICE_INVALID)"
+    printf 'GUEST_STAGE %s\n' "$summary" | tee -a "$ACTIONS" >&2
+}
+
+wait_count() {
+    marker="$1"
+    expected="$2"
+    limit="$3"
+    count=0
+    while [ "$count" -lt "$limit" ]; do
+        found="$(marker_count "$marker")"
+        if [ "$found" -ge "$expected" ]; then
+            return 0
+        fi
+        if grep -q 'USB_WALLET_UEFI_AUDIT_LOCKDOWN' "$TMP/serial.log" 2>/dev/null; then
+            echo "ERROR: guest startup audit entered LOCKDOWN" >&2
+            return 1
+        fi
+        if ! kill -0 "$PID" 2>/dev/null; then
+            echo "ERROR: QEMU exited while waiting for $marker" >&2
+            return 1
+        fi
+        count=$((count + 1))
+        sleep 1
+    done
+    echo "ERROR: timed out waiting for $marker count $expected" >&2
+    diagnose_stage
+    return 1
+}
+
+hmp() {
+    python3 - "$TMP/hmp.sock" "$@" <<'PY'
+import socket
+import sys
+import time
+
+path = sys.argv[1]
+commands = sys.argv[2:]
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+for _ in range(100):
+    try:
+        client.connect(path)
+        break
+    except (FileNotFoundError, ConnectionRefusedError):
+        time.sleep(0.05)
+else:
+    raise SystemExit("HMP socket unavailable")
+client.settimeout(1.0)
+try:
+    client.recv(65536)
+except TimeoutError:
+    pass
+for command in commands:
+    client.sendall((command + "\n").encode("ascii"))
+    time.sleep(0.15)
+    try:
+        client.recv(65536)
+    except TimeoutError:
+        pass
+client.close()
+PY
+}
+
+launch_demo() {
+    session="$1"
+    wait_count "USB_WALLET_CONSOLE_MENU" "$session" 30
+    observed="$(marker_count USB_WALLET_CONSOLE_MENU)"
+    if [ "$observed" -ne "$session" ]; then
+        echo "ERROR: unexpected menu return count before session $session: $observed" >&2
+        diagnose_stage
+        return 1
+    fi
+    # Each injection has its own HMP round trip, so key-up and the menu's
+    # canonical line discipline settle before Return is delivered.
+    hmp "sendkey 8"
+    sleep 1
+    hmp "sendkey ret"
+    wait_count "USB_WALLET_CONSOLE_DEMO_START" "$session" 15
+    wait_count "USB_WALLET_FB_POC_LIFECYCLE phase=vt_acquired" "$session" 30
+    wait_count "USB_WALLET_FB_POC_READY" "$session" 30
+}
+
+wait_count "USB_WALLET_CONSOLE_READY" 1 240
+CONSOLE_MS="$(date +%s%3N)"
+printf '%s\n' "console ready" >> "$ACTIONS"
+
+launch_demo 1
+grep -F 'input=evdev' "$TMP/serial.log" >/dev/null
+GUI_MS="$(date +%s%3N)"
+READY_LINE="$(grep -F 'USB_WALLET_FB_POC_READY' "$TMP/serial.log" | tail -1)"
+printf '%s\n' "$READY_LINE" >> "$ACTIONS"
+
+hmp "screendump $TMP/framebuffer-gui.ppm"
+python3 - "$TMP/framebuffer-gui.ppm" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+data = path.read_bytes()
+match = re.match(br"P6\s+(\d+)\s+(\d+)\s+255\s", data)
+if not match:
+    raise SystemExit("invalid QEMU screendump PPM")
+width, height = map(int, match.groups())
+pixels = data[match.end():]
+if width < 320 or height < 240 or len(pixels) != width * height * 3:
+    raise SystemExit("unexpected QEMU screendump geometry")
+if len(set(pixels)) < 4:
+    raise SystemExit("QEMU screendump is visually uniform")
+
+# Verify actual framebuffer POC palette at fixed, text-free locations.
+# A generic VGA console screenshot is insufficient GUI evidence.
+def at(x, y):
+    i = (y * width + x) * 3
+    return tuple(pixels[i:i + 3])
+
+def near(actual, expected):
+    return all(abs(a - b) <= 10 for a, b in zip(actual, expected))
+
+if not (near(at(0, 0), (28, 49, 76))
+        and near(at(0, 60), (17, 25, 39))
+        and near(at(0, height - 1), (28, 49, 76))):
+    raise SystemExit("QEMU image does not show expected framebuffer GUI regions")
+
+amber = (255, 222, 147)
+if sum(near(tuple(pixels[i:i + 3]), amber) for i in range(0, len(pixels), 3)) < 40:
+    raise SystemExit("QEMU image lacks expected GUI label pixels")
+PY
+cp "$TMP/framebuffer-gui.ppm" "$SCREENSHOT"
+printf '%s\n' "actual QEMU screendump captured" >> "$ACTIONS"
+
+# Follow rendered framebuffer state, not a guessed scroll count. The public
+# demo emits only pagination data, never transaction fields. Wait for each
+# completed frame and input-drain before sending the next synthetic key.
+page=1
+while [ "$page" -le 5 ]; do
+    wait_count "USB_WALLET_FB_POC_FRAME page=$page offset=0 " 1 20
+    frame="$(grep -F "USB_WALLET_FB_POC_FRAME page=$page offset=0 " "$TMP/serial.log" | tail -1)"
+    bottom="$(printf '%s\n' "$frame" | sed -n 's/.* bottom=\([0-9][0-9]*\) acknowledged=.*/\1/p')"
+    case "$bottom" in
+        ''|*[!0-9]*) echo "ERROR: missing/invalid guest scroll bound for page $page" >&2; exit 1 ;;
+    esac
+    [ "$bottom" -le 256 ] || { echo "ERROR: guest scroll bound exceeds CI limit" >&2; exit 1; }
+    offset=0
+    while [ "$offset" -lt "$bottom" ]; do
+        hmp "sendkey down"
+        offset=$((offset + 1))
+        wait_count "USB_WALLET_FB_POC_FRAME page=$page offset=$offset bottom=$bottom acknowledged=0" 1 20
+    done
+    hmp "sendkey ret"
+    wait_count "USB_WALLET_FB_POC_FRAME page=$page offset=$bottom bottom=$bottom acknowledged=1" 1 20
+    if [ "$page" -lt 5 ]; then
+        hmp "sendkey right"
+    fi
+    page=$((page + 1))
+done
+# Enter only acknowledges the final page; a separate C key is required to
+# produce a positive review intent.
+hmp "sendkey c"
+wait_count "USB_WALLET_FB_POC_INTENT reviewed=1 reason=reviewed" 1 30
+wait_count "USB_WALLET_FB_POC_SESSION state=APPROVED signing_gate=ready" 1 30
+printf '%s\n' "positive review intent and SignerSession approval observed" >> "$ACTIONS"
+
+# After the demo restores KD_TEXT and returns to the appliance, launch it again
+# and prove that Escape yields only a negative intent.
+wait_count "USB_WALLET_CONSOLE_DEMO_RETURN" 1 30
+wait_count "USB_WALLET_FB_POC_LIFECYCLE phase=vt_released" 1 30
+launch_demo 2
+hmp "sendkey esc"
+wait_count "USB_WALLET_FB_POC_INTENT reviewed=0 reason=cancelled" 1 30
+wait_count "USB_WALLET_FB_POC_SESSION state=LOCKED signing_gate=blocked" 1 30
+printf '%s\n' "cancel intent observed" >> "$ACTIONS"
+
+# A live input-topology change invalidates the attended review. Re-adding the
+# keyboard permits a fresh review only; the old review can never resume.
+wait_count "USB_WALLET_CONSOLE_DEMO_RETURN" 2 30
+wait_count "USB_WALLET_FB_POC_LIFECYCLE phase=vt_released" 2 30
+launch_demo 3
+hmp "device_del inputkbd"
+wait_count "USB_WALLET_FB_POC_INTENT reviewed=0 reason=input_changed" 1 30
+wait_count "USB_WALLET_FB_POC_SESSION state=LOCKED signing_gate=blocked" 2 30
+printf '%s\n' "input removal failed closed" >> "$ACTIONS"
+
+wait_count "USB_WALLET_CONSOLE_DEMO_RETURN" 3 30
+wait_count "USB_WALLET_FB_POC_LIFECYCLE phase=vt_released" 3 30
+hmp "device_add usb-kbd,id=inputkbd2,bus=xhci.0"
+sleep 2
+launch_demo 4
+hmp "sendkey esc"
+wait_count "USB_WALLET_FB_POC_INTENT reviewed=0 reason=cancelled" 2 30
+wait_count "USB_WALLET_CONSOLE_DEMO_RETURN" 4 30
+wait_count "USB_WALLET_FB_POC_LIFECYCLE phase=vt_released" 4 30
+printf '%s\n' "input reappearance accepted only for fresh review" >> "$ACTIONS"
+
+BOOT_MS="$(printf '%s\n' "$READY_LINE" | sed -n 's/.*boot_ms=\([0-9][0-9]*\).*/\1/p')"
+RSS_KB="$(printf '%s\n' "$READY_LINE" | sed -n 's/.*rss_kb=\([0-9][0-9]*\).*/\1/p')"
+test -n "$BOOT_MS"
+test -n "$RSS_KB"
+{
+    echo "evidence=actual QEMU/OVMF guest framebuffer screendump"
+    echo "guest_network=-net none; kernel CONFIG_NET=n verified by image workflow"
+    echo "image_bytes=$(wc -c < "$IMAGE" | tr -d ' ')"
+    echo "guest_first_frame_boot_ms=$BOOT_MS"
+    echo "runtime_maxrss_kb=$RSS_KB"
+    echo "host_qemu_start_to_console_ms=$((CONSOLE_MS - START_MS))"
+    echo "host_console_to_first_frame_ms=$((GUI_MS - CONSOLE_MS))"
+    echo "screenshot_sha256=$(sha256sum "$SCREENSHOT" | awk '{print $1}')"
+    echo "positive_intent=PASS"
+    echo "explicit_confirm=PASS"
+    echo "signer_session_gate=PASS"
+    echo "cancel_intent=PASS"
+    echo "input_backend=evdev"
+    echo "input_removal=PASS"
+    echo "input_reappearance=PASS"
+} > "$METRICS"
+
+echo "PASS: actual OVMF guest framebuffer GUI rendered; evdev input, explicit confirm, SignerSession gate, cancel and hotplug fail-closed verified without a guest NIC"
