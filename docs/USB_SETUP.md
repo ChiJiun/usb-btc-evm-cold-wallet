@@ -149,6 +149,14 @@ Console 選：
 
 這些資料可以轉移到連網電腦。不要轉移 vault。
 
+要給 Windows Companion 匯入時，Console 選：
+
+```
+8) Export PUBLIC watch-only account to TX_TRANSFER (for Windows Companion)
+```
+
+輸入錢包密碼並確認後，會在 `TX_TRANSFER` 建立 `watch-only.json`（BTC testnet 收款地址、account tpub 與 Sepolia 地址的 `watch-only` envelope）。檔案以 create-only 方式寫入，已存在時拒絕覆寫，需要重新匯出時請先在 Windows 刪除舊檔。tpub 不是秘密，但會暴露帳戶的交易紀錄；匯入後仍要在兩台機器核對完整地址。
+
 ## 7. Bitcoin testnet 簽署
 
 在線上 watch-only wallet 建立 PSBT，存為例如：

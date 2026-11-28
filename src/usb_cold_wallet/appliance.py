@@ -456,6 +456,31 @@ def _addresses() -> None:
     _run_cli(["addresses", "--count", "5"])
 
 
+WATCH_ONLY_EXPORT = "watch-only.json"
+WATCH_ONLY_COUNT = "5"
+
+
+def _export_watch_only() -> None:
+    """Write only PUBLIC watch-only data for the Windows Companion.
+
+    Reuses the reviewed CLI export (integrity envelope, explicit approval,
+    create-only atomic write). The vault is never copied to TX_TRANSFER.
+    """
+    if not VAULT.is_file():
+        print("Create or restore a test wallet first.")
+        return
+    if not mount_transfer():
+        print(
+            "TX_TRANSFER unavailable or ambiguous; public export cancelled. "
+            "Use the verified single-USB transfer partition or one separate legacy VFAT USB."
+        )
+        return
+    output = TRANSFER / WATCH_ONLY_EXPORT
+    print("Exports PUBLIC addresses and BTC account tpub only (privacy-sensitive, not secret).")
+    print(f"An existing TX_TRANSFER/{WATCH_ONLY_EXPORT} is never overwritten; delete it on Windows first.")
+    _run_cli(["export-watch-only", "--count", WATCH_ONLY_COUNT, "--out", str(output)])
+
+
 def _initialize_policy() -> None:
     """Explicitly create the encrypted policy; the hash must be kept separately."""
     if not VAULT.is_file():
@@ -557,6 +582,7 @@ def main() -> int:
         print("5) Re-scan TX_TRANSFER USB")
         print("6) Power off")
         print("7) Initialize encrypted offline signing policy (record SHA256 on paper)")
+        print("8) Export PUBLIC watch-only account to TX_TRANSFER (for Windows Companion)")
         choice = input("> ").strip()
         if choice == "1":
             _new_wallet()
@@ -570,6 +596,8 @@ def main() -> int:
             _rescan_transfer()
         elif choice == "7":
             _initialize_policy()
+        elif choice == "8":
+            _export_watch_only()
         elif choice == "6":
             shutdown_requested = True
             _attended_poweroff()

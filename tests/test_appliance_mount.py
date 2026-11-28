@@ -1,5 +1,8 @@
 """Fail-closed checks for removable transaction transport and appliance routing."""
+import pytest
+
 from usb_cold_wallet import appliance
+from usb_cold_wallet.exchange import write as write_exchange
 
 
 SAFE = {"rw", "nodev", "noexec", "nosuid", "sync", "fmask=0177", "dmask=0077"}
@@ -236,6 +239,53 @@ def test_signed_request_requires_independent_policy_digest(monkeypatch, tmp_path
     monkeypatch.setattr(appliance, "_run_cli",
                         lambda _args: (_ for _ in ()).throw(AssertionError("must not sign")))
     appliance._sign_evm()
+
+
+def test_export_watch_only_requires_wallet_and_verified_transfer(monkeypatch, tmp_path):
+    wallet = tmp_path / "wallet.vault"
+    transfer = tmp_path / "transfer"
+    transfer.mkdir()
+    monkeypatch.setattr(appliance, "VAULT", wallet)
+    monkeypatch.setattr(appliance, "TRANSFER", transfer)
+    called = []
+    monkeypatch.setattr(appliance, "_run_cli", lambda args: called.append(args))
+    monkeypatch.setattr(appliance, "mount_transfer",
+                        lambda: (_ for _ in ()).throw(AssertionError("no wallet: no mount")))
+    appliance._export_watch_only()
+    assert not called
+
+    wallet.write_text("encrypted test fixture")
+    monkeypatch.setattr(appliance, "mount_transfer", lambda: False)
+    appliance._export_watch_only()
+    assert not called
+
+    monkeypatch.setattr(appliance, "mount_transfer", lambda: True)
+    appliance._export_watch_only()
+    assert called == [["export-watch-only", "--count", "5",
+                       "--out", str(transfer / "watch-only.json")]]
+
+
+def test_export_watch_only_is_blocked_by_lockdown(monkeypatch, tmp_path):
+    wallet = tmp_path / "wallet.vault"
+    wallet.write_text("encrypted test fixture")
+    lockdown = tmp_path / "lockdown"
+    lockdown.touch()
+    monkeypatch.setattr(appliance, "VAULT", wallet)
+    monkeypatch.setattr(appliance, "LOCKDOWN", lockdown)
+    monkeypatch.setattr(appliance, "_bounded_transfer_device",
+                        lambda: (_ for _ in ()).throw(AssertionError("no discovery in lockdown")))
+    monkeypatch.setattr(appliance.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not export")))
+    appliance._export_watch_only()
+
+
+def test_export_watch_only_cli_is_create_only(tmp_path):
+    """The CLI path the menu reuses must never overwrite an existing transfer file."""
+    target = tmp_path / "watch-only.json"
+    target.write_text("attacker-controlled old export")
+    with pytest.raises(OSError):
+        write_exchange(target, "watch-only", {"note": "public"})
+    assert target.read_text() == "attacker-controlled old export"
 
 
 def test_initialize_policy_never_overwrites_existing_policy(monkeypatch, tmp_path):
