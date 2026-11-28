@@ -529,3 +529,13 @@ def test_boot_audit_stop_does_not_reset_or_restart_discovery(tmp_path):
     result = subprocess.run(["sh", "-c", code, "audit", "restart"],
                             capture_output=True, text=True, timeout=5)
     assert result.returncode == 1
+
+
+def test_verify_image_tty1_session_matches_post_build():
+    """Regression for CI run 46045030811: a stale tty1 check fails silently under set -e."""
+    postbuild = (ROOT / "buildroot-external/board/usb-wallet/post-build.sh").read_text()
+    verify = (ROOT / "scripts/verify_image.sh").read_text()
+    written = re.findall(r"tty1::respawn:(/[\w/.-]+)", postbuild)
+    checked = re.findall(r"grep -q '\^tty1::respawn:(/[\w/.-]+)\$'", verify)
+    assert written and checked
+    assert set(checked) == set(written) == {"/usr/bin/usb-wallet-gui-session"}
