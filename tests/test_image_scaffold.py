@@ -303,6 +303,22 @@ def test_generated_framebuffer_font_is_fixed_psf2():
     assert any(data[32 + 32 * 16:32 + 128 * 16])
 
 
+def test_reproducibility_builds_keep_isolated_output_trees_at_one_canonical_path():
+    repro = (ROOT / "scripts/check_reproducible.sh").read_text()
+    configure = (ROOT / "scripts/configure_buildroot.sh").read_text()
+    build = (ROOT / "scripts/build_image.sh").read_text()
+    verify = (ROOT / "scripts/verify_image.sh").read_text()
+    assert 'OUT="$ROOT/build/output"' in repro
+    assert 'OUT1="$ROOT/build/output-repro-1"' in repro
+    assert 'rm -rf "$OUT"' in repro
+    assert 'test ! -e "$OUT"' in repro
+    assert 'mv "$OUT" "$OUT1"' in repro
+    assert "build_clean 1" in repro and "build_clean 2" in repro
+    assert 'BUILD_OUTPUT_DIR="$out"' not in repro
+    for script in (configure, build, verify):
+        assert 'BUILD_OUTPUT_DIR:-$ROOT/build/output' in script
+
+
 def test_no_network_runtime_uses_socket_free_vt_fbcon_session():
     config = (ROOT / "buildroot-external/configs/usb_wallet_x86_64_defconfig").read_text()
     kernel = (ROOT / "buildroot-external/board/usb-wallet/linux.config").read_text()

@@ -1,0 +1,360 @@
+name: Release provenance candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing signed annotated vMAJOR.MINOR.PATCH tag"
+        required: true
+        type: string
+      source_sha:
+        description: "Exact lowercase 40-hex commit targeted by the signed tag"
+        required: true
+        type: string
+      publish:
+        description: "Publish verified bytes after all gates; keep false until #24 and #43 pass"
+        required: true
+        default: false
+        type: boolean
+
+# No ambient token privileges. Every job declares only what it needs.
+permissions: {}
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "24.22.3"
+  XZ_FLAGS: "-6 --threads=1 --check=crc64 --no-sparse"
+  APT_SNAPSHOT: "20261121T000000Z"
+
+jobs:
+  validate:
+    name: Validate trusted workflow and signed release source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      tag_object_sha: ${{ steps.source.outputs.tag_object_sha }}
+      workflow_sha: ${{ steps.workflow.outputs.workflow_sha }}
+    steps:
+      - name: Require workflow definition from protected main
+        id: workflow
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          case "$GITHUB_SHA" in *[!0-9a-f]*|'') exit 1 ;; esac
+          test "${#GITHUB_SHA}" -eq 40
+          echo "workflow_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Check out trusted verifier from workflow commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Require active repository release protections
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from scripts.verify_release_assets import verify_repository_release_controls
+          verify_repository_release_controls()
+          PY
+
+      - name: Require authorized signed tag to exact source SHA binding
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          case "$SOURCE_SHA" in
+            *[!0-9a-f]*|'') echo "::error::source_sha must be lowercase hex"; exit 1 ;;
+          esac
+          test "${#SOURCE_SHA}" -eq 40
+          tag_object_sha="$(python3 - <<'PY'
+          import os
+          from scripts.verify_release_assets import (
+              verify_protected_main_commit, verify_source,
+          )
+          verify_protected_main_commit(os.environ["GITHUB_SHA"])
+          print(verify_source(
+              os.environ["TAG"], os.environ["SOURCE_SHA"],
+              trusted_workflow_sha=os.environ["GITHUB_SHA"],
+          ))
+          PY
+          )"
+          case "$tag_object_sha" in *[!0-9a-f]*|'') exit 1 ;; esac
+          test "${#tag_object_sha}" -eq 40
+          echo "tag_object_sha=$tag_object_sha" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build reproducible final bytes
+    needs: validate
+    outputs:
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      BR2_JLEVEL: "2"
+      TAG: ${{ inputs.tag }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      ASSET: usb-cold-wallet-${{ inputs.tag }}.img.xz
+    steps:
+      - name: Check out exact release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prove checkout is the exact requested commit
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - name: Set up exact Node runtime
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24.22.3"
+
+      - name: Verify every tracked Node lockfile with exact Node
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = "v$NODE_VERSION"
+          found=false
+          while IFS= read -r -d '' manifest; do
+            found=true
+            dir="${manifest%/package.json}"
+            if [[ "$dir" == "$manifest" ]]; then dir="."; fi
+            test -f "$dir/package-lock.json"
+            npm ci --prefix "$dir" --ignore-scripts --no-audit --no-fund
+            rm -rf -- "$dir/node_modules"
+          done < <(git ls-files -z -- 'package.json' '*/package.json')
+          test "$found" = true
+          test -z "$(git status --porcelain)"
+
+      - name: Install host dependencies from an immutable Ubuntu snapshot
+        run: |
+          set -euo pipefail
+          packages=(build-essential make gcc g++ patch rsync perl tar cpio file bc gawk gzip bzip2 xz-utils python3 python3-venv python3-pip curl wget gnupg coreutils findutils diffutils unzip ca-certificates qemu-system-x86 ovmf)
+          sudo apt-get --snapshot "$APT_SNAPSHOT" update
+          pinned=()
+          for package in "${packages[@]}"; do
+            version="$(apt-cache -o "APT::Snapshot=$APT_SNAPSHOT" policy "$package" | awk '/Candidate:/ {print $2; exit}')"
+            test -n "$version"
+            test "$version" != "(none)"
+            pinned+=("$package=$version")
+          done
+          sudo apt-get --snapshot "$APT_SNAPSHOT" install -y --no-install-recommends --allow-downgrades "${pinned[@]}"
+          for item in "${pinned[@]}"; do
+            package="${item%%=*}"
+            expected="${item#*=}"
+            test "$(dpkg-query -W -f='${Version}' "$package")" = "$expected"
+          done
+
+      - name: Verify host and authenticated pinned sources
+        run: |
+          set -euo pipefail
+          sh scripts/check_host.sh
+          sh scripts/fetch_sources.sh
+
+      - name: Two clean image builds and raw SHA-256 comparison
+        run: sh scripts/check_reproducible.sh
+
+      - name: Boot final raw image through UEFI security audit
+        run: sh scripts/verify_uefi_boot.sh
+
+      - name: Build and verify the Buildroot-pinned xz compressor
+        id: xz
+        run: |
+          set -euo pipefail
+          BR="$(sh scripts/fetch_buildroot.sh)"
+          OUT="$GITHUB_WORKSPACE/build/output"
+          BR2_DL_DIR="$GITHUB_WORKSPACE/build/dl"             make -C "$BR" O="$OUT" BR2_EXTERNAL="$GITHUB_WORKSPACE/buildroot-external" host-xz
+          expected="$(awk '$1 == "XZ_VERSION" && $2 == "=" {print $3; exit}' "$BR/package/xz/xz.mk")"
+          actual="$("$OUT/host/bin/xz" --version | awk 'NR == 1 {print $NF}')"
+          test -n "$expected"
+          test "$actual" = "$expected"
+          echo "version=$actual" >> "$GITHUB_OUTPUT"
+
+      - name: Reconfirm raw image digest and compress final bytes twice
+        run: |
+          set -euo pipefail
+          RAW="build/output/images/usb-cold-wallet.img"
+          RUN1="$(awk '$2 == "usb-cold-wallet.img" {print $1}' build/reproducibility/run-1.sha256)"
+          RUN2="$(awk '$2 == "usb-cold-wallet.img" {print $1}' build/reproducibility/run-2.sha256)"
+          test -n "$RUN1"
+          test -n "$RUN2"
+          test "$RUN1" = "$RUN2"
+          test "$(sha256sum "$RAW" | awk '{print $1}')" = "$RUN2"
+          echo "RAW_IMAGE_SHA256=$RUN2" >> "$GITHUB_ENV"
+
+          mkdir -p release
+          XZ="build/output/host/bin/xz"
+          "$XZ" $XZ_FLAGS -c "$RAW" > "release/$ASSET"
+          "$XZ" $XZ_FLAGS -c "$RAW" > "release/.second.img.xz"
+          cmp -s "release/$ASSET" "release/.second.img.xz"
+          rm "release/.second.img.xz"
+
+      - name: Generate SPDX JSON SBOM from the final root filesystem
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: build/output/target
+          format: spdx-json
+          output-file: release/SBOM.spdx.json
+          syft-version: v1.54.0
+          dependency-snapshot: "false"
+          upload-artifact: "false"
+          upload-release-assets: "false"
+
+      - name: Write release metadata and checksum only final publish bytes
+        env:
+          XZ_VERSION: ${{ steps.xz.outputs.version }}
+          WORKFLOW_SHA: ${{ needs.validate.outputs.workflow_sha }}
+          TAG_OBJECT_SHA: ${{ needs.validate.outputs.tag_object_sha }}
+          PUBLISH_REQUESTED: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          test -n "${ImageOS:-}"
+          test -n "${ImageVersion:-}"
+          . infra/buildroot.env
+          export BUILDROOT_VERSION BUILDROOT_SHA256 NODE_VERSION XZ_VERSION
+          export EFI_PARTITION_SHA256="$(sha256sum build/output/images/efi-part.vfat | awk '{print $1}')"
+          export KERNEL_SHA256="$(sha256sum build/output/images/bzImage | awk '{print $1}')"
+          dpkg-query -W -f='${Package}=${Version}\n' \
+            build-essential make gcc g++ patch rsync perl tar cpio file bc gawk gzip \
+            bzip2 xz-utils python3 python3-venv python3-pip curl wget gnupg \
+            coreutils findutils diffutils unzip ca-certificates qemu-system-x86 ovmf \
+            | LC_ALL=C sort > release/build-host-packages.txt
+          test -s release/build-host-packages.txt
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          data = {
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "tag": os.environ["TAG"],
+              "source_sha": os.environ["SOURCE_SHA"],
+              "workflow_sha": os.environ["WORKFLOW_SHA"],
+              "tag_object_sha": os.environ["TAG_OBJECT_SHA"],
+              "workflow": ".github/workflows/release.yml",
+              "attestation_workflow": ".github/workflows/release-finalize.yml",
+              "asset": os.environ["ASSET"],
+              "buildroot_version": os.environ["BUILDROOT_VERSION"],
+              "buildroot_sha256": os.environ["BUILDROOT_SHA256"],
+              "node_version": os.environ["NODE_VERSION"],
+              "xz_version": os.environ["XZ_VERSION"],
+              "apt_snapshot": os.environ["APT_SNAPSHOT"],
+              "runner_image_os": os.environ.get("ImageOS", "unknown"),
+              "runner_image_version": os.environ.get("ImageVersion", "unknown"),
+              "compression": "xz -6 --threads=1 --check=crc64 --no-sparse",
+              "raw_image_sha256": os.environ["RAW_IMAGE_SHA256"],
+              "efi_partition_sha256": os.environ["EFI_PARTITION_SHA256"],
+              "kernel_sha256": os.environ["KERNEL_SHA256"],
+              "sbom_scope": "buildroot-target-rootfs",
+              "reproducibility_runs": 2,
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "publish_requested": os.environ["PUBLISH_REQUESTED"].lower() == "true",
+          }
+          Path("release/release-metadata.json").write_text(
+              json.dumps(data, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          (
+            cd release
+            sha256sum "$ASSET" SBOM.spdx.json release-metadata.json build-host-packages.txt | LC_ALL=C sort -k2 > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+
+      - name: Upload immutable candidate bytes for downstream jobs
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-candidate-${{ inputs.tag }}-${{ inputs.source_sha }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  verify:
+    name: Verify unprivileged candidate before trusted finalization
+    needs:
+      - build
+      - validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ inputs.tag }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      ASSET: usb-cold-wallet-${{ inputs.tag }}.img.xz
+    steps:
+      - name: Check out verifier from the candidate workflow commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download exact candidate artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-candidate-${{ inputs.tag }}-${{ inputs.source_sha }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: release-archive
+          skip-decompress: true
+          digest-mismatch: error
+
+      - name: Validate ZIP digest and safely extract candidate bytes
+        env:
+          ARCHIVE_DIGEST: ${{ needs.build.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          python3 -m scripts.extract_release_candidate \
+            --archive-dir release-archive --output-dir release \
+            --expected-digest "$ARCHIVE_DIGEST"
+
+      - name: Verify final bytes, metadata, signed tag, and pinned tag object
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_SHA: ${{ needs.validate.outputs.workflow_sha }}
+          TAG_OBJECT_SHA: ${{ needs.validate.outputs.tag_object_sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_release_assets.py \
+            --tag "$TAG" --commit "$SOURCE_SHA" --asset "$ASSET" --local-dir release \
+            --workflow-sha "$WORKFLOW_SHA" --expected-tag-object-sha "$TAG_OBJECT_SHA" \
+            --candidate-only
+
+  gate:
+    name: Required unprivileged candidate gate
+    if: always()
+    needs:
+      - validate
+      - build
+      - verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Fail closed on failed, cancelled, or skipped candidate jobs
+        env:
+          VALIDATE: ${{ needs.validate.result }}
+          BUILD: ${{ needs.build.result }}
+          VERIFY: ${{ needs.verify.result }}
+        run: |
+          set -euo pipefail
+          test "$VALIDATE" = "success"
+          test "$BUILD" = "success"
+          test "$VERIFY" = "success"
