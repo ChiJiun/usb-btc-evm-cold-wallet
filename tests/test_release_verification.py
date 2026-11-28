@@ -1,21 +1,81 @@
-"""Adversarial, network-free regression tests for the independent release verifier."""
+"""Adversarial, network-free regression tests for release verification and gating."""
 from __future__ import annotations
 
 import hashlib
 import json
+import lzma
+import re
 from pathlib import Path
 
 import pytest
 
 from scripts.verify_release_assets import (
-    REPOSITORY, ReleaseVerificationError, parse_sha256sums, verify_release,
+    RELEASE_CANDIDATE_WORKFLOW,
+    RELEASE_FINALIZE_WORKFLOW,
+    RELEASE_WORKFLOW,
+    REPOSITORY,
+    ReleaseVerificationError,
+    SLSA_BUILDER_ID,
+    SLSA_PREDICATE_TYPE,
+    build_slsa_predicate,
+    parse_sha256sums,
+    require_successful_jobs,
+    verify_candidate_artifacts,
+    verify_local_artifacts,
+    verify_release,
+    verify_repository_release_controls,
+    verify_protected_main_commit,
+    verify_source,
+    select_candidate_artifact,
+    verify_workflow_run_identity,
 )
 
 TAG = "v0.1.0-beta.1"
 COMMIT = "a" * 40
+WORKFLOW_SHA = "c" * 40
+TAG_OBJECT_SHA = "b" * 40
 ASSET = f"usb-cold-wallet-{TAG}.img.xz"
-BINARY = b"fake image bytes, not a real wallet image"
+RAW_IMAGE = b"fake image bytes, not a real wallet image"
+BINARY = lzma.compress(RAW_IMAGE, preset=6)
 DIGEST = hashlib.sha256(BINARY).hexdigest()
+RAW_DIGEST = hashlib.sha256(RAW_IMAGE).hexdigest()
+SBOM = (json.dumps(
+    {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "dataLicense": "CC0-1.0"},
+    sort_keys=True,
+) + "\n").encode()
+HOST_PACKAGES = b"gcc=1.0\nmake=1.0\n"
+
+
+def _metadata_bytes(*, tag: str = TAG, commit: str = COMMIT, asset: str = ASSET) -> bytes:
+    return (json.dumps(
+        {
+            "repository": REPOSITORY,
+            "tag": tag,
+            "source_sha": commit,
+            "workflow_sha": WORKFLOW_SHA,
+            "workflow": ".github/workflows/release.yml",
+            "attestation_workflow": ".github/workflows/release-finalize.yml",
+            "asset": asset,
+            "buildroot_version": "2026.08.2",
+            "buildroot_sha256": "1" * 64,
+            "node_version": "24.22.3",
+            "xz_version": "5.8.1",
+            "compression": "xz -6 --threads=1 --check=crc64 --no-sparse",
+            "raw_image_sha256": RAW_DIGEST,
+            "efi_partition_sha256": "3" * 64,
+            "kernel_sha256": "4" * 64,
+            "sbom_scope": "buildroot-target-rootfs",
+            "reproducibility_runs": 2,
+            "tag_object_sha": TAG_OBJECT_SHA,
+            "apt_snapshot": "20261121T000000Z",
+            "runner_image_os": "ubuntu24",
+            "runner_image_version": "20261116.1",
+            "workflow_run_id": "12345",
+            "workflow_run_attempt": "1",
+            "publish_requested": False,
+        },
+        sort_keys=True,
+    ) + "\n").encode()
 
 
 class FakeGitHub:
@@ -28,88 +88,461 @@ class FakeGitHub:
         self.fail_command: tuple[str, ...] | None = None
         self.lightweight = False
         self.draft = False
+        self.tagger_email = "0311gino@gmail.com"
+        self.tag_object_sha = TAG_OBJECT_SHA
+        self.provenance_external_overrides: dict[str, object] = {}
+        self.provenance_builder_id = SLSA_BUILDER_ID
 
     def __call__(self, args: list[str]) -> str:
         self.calls.append(args)
-        if self.fail_command and args[:len(self.fail_command)] == list(self.fail_command):
+        if self.fail_command and args[: len(self.fail_command)] == list(self.fail_command):
             raise ReleaseVerificationError("simulated verification command failure")
         if args[:2] == ["api", f"repos/{REPOSITORY}/git/ref/tags/{TAG}"]:
             kind = "commit" if self.lightweight else "tag"
-            return json.dumps({"object": {"type": kind, "sha": "b" * 40}})
-        if args[:2] == ["api", f"repos/{REPOSITORY}/git/tags/{'b' * 40}"]:
+            return json.dumps({"object": {"type": kind, "sha": self.tag_object_sha}})
+        if args[:2] == ["api", f"repos/{REPOSITORY}/git/tags/{self.tag_object_sha}"]:
+            return json.dumps(
+                {
+                    "tag": TAG,
+                    "verification": {
+                        "verified": self.tag_verified,
+                        "reason": "valid" if self.tag_verified else "invalid",
+                        "signature": "-----BEGIN PGP SIGNATURE-----\nfake",
+                    },
+                    "tagger": {"name": "Release Maintainer", "email": self.tagger_email},
+                    "object": {"type": "commit", "sha": self.object_commit},
+                }
+            )
+        if args[:2] == ["api", f"repos/{REPOSITORY}/compare/{COMMIT}...{WORKFLOW_SHA}"]:
+            return json.dumps({"status": "ahead", "ahead_by": 1, "behind_by": 0})
+        if args[:2] == ["api", f"repos/{REPOSITORY}/git/ref/heads/main"]:
             return json.dumps({
-                "tag": TAG,
-                "verification": {"verified": self.tag_verified},
-                "object": {"type": "commit", "sha": self.object_commit},
+                "ref": "refs/heads/main",
+                "object": {"type": "commit", "sha": WORKFLOW_SHA},
             })
+        if args[:2] == ["api", f"repos/{REPOSITORY}/actions/runs/12345"]:
+            return json.dumps(
+                {
+                    "id": 12345,
+                    "event": "workflow_dispatch",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "head_branch": "main",
+                    "head_sha": WORKFLOW_SHA,
+                    "path": ".github/workflows/release.yml",
+                    "run_attempt": 1,
+                    "repository": {"full_name": REPOSITORY},
+                    "head_repository": {"full_name": REPOSITORY},
+                    "actor": {"login": "ChiJiun"},
+                    "triggering_actor": {"login": "ChiJiun"},
+                }
+            )
         if args[:2] == ["release", "view"]:
             return json.dumps({"tagName": TAG, "isDraft": self.draft})
         if args[:2] == ["release", "download"]:
             target_dir = Path(args[args.index("--dir") + 1])
             name = args[args.index("--pattern") + 1]
+            metadata = _metadata_bytes()
+            payloads = {
+                ASSET: self.binary,
+                "SBOM.spdx.json": SBOM,
+                "release-metadata.json": metadata,
+                "build-host-packages.txt": HOST_PACKAGES,
+            }
             if name == "SHA256SUMS":
-                (target_dir / name).write_text(
-                    f"{self.manifest_digest}  {ASSET}\n", encoding="ascii"
-                )
-            elif name == ASSET:
-                (target_dir / name).write_bytes(self.binary)
+                lines = []
+                for filename in sorted(payloads):
+                    digest = (
+                        self.manifest_digest
+                        if filename == ASSET
+                        else hashlib.sha256(payloads[filename]).hexdigest()
+                    )
+                    lines.append(f"{digest}  {filename}")
+                (target_dir / name).write_text("\n".join(lines) + "\n", encoding="ascii")
+            elif name in payloads:
+                (target_dir / name).write_bytes(payloads[name])
             return ""
+        if args[:2] == ["attestation", "verify"]:
+            metadata = json.loads(_metadata_bytes().decode("utf-8"))
+            predicate = build_slsa_predicate(metadata, WORKFLOW_SHA)
+            predicate["buildDefinition"]["externalParameters"].update(
+                self.provenance_external_overrides
+            )
+            predicate["runDetails"]["builder"]["id"] = self.provenance_builder_id
+            return json.dumps(
+                [
+                    {
+                        "verificationResult": {
+                            "statement": {
+                                "predicateType": SLSA_PREDICATE_TYPE,
+                                "predicate": predicate,
+                            }
+                        }
+                    }
+                ]
+            )
         if args[:2] in (
-            ["release", "verify"], ["release", "verify-asset"],
-            ["attestation", "verify"],
+            ["release", "verify"],
+            ["release", "verify-asset"],
         ):
             return ""
         raise AssertionError(f"Unexpected GitHub CLI call: {args}")
 
 
+def _write_local_release(
+    directory: Path,
+    *,
+    tag: str = TAG,
+    commit: str = COMMIT,
+    asset: str = ASSET,
+) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / asset).write_bytes(BINARY)
+    (directory / "SBOM.spdx.json").write_bytes(SBOM)
+    (directory / "release-metadata.json").write_bytes(
+        _metadata_bytes(tag=tag, commit=commit, asset=asset)
+    )
+    (directory / "build-host-packages.txt").write_bytes(HOST_PACKAGES)
+    files = [asset, "SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt"]
+    lines = [
+        f"{hashlib.sha256((directory / name).read_bytes()).hexdigest()}  {name}"
+        for name in sorted(files)
+    ]
+    (directory / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="ascii")
+
+
 def test_good_release_verifies_pinned_tag_and_build_provenance():
     fake = FakeGitHub()
-    assert verify_release(TAG, COMMIT, ASSET, run=fake) == DIGEST
+    assert verify_release(TAG, COMMIT, ASSET, workflow_sha=WORKFLOW_SHA, run=fake) == DIGEST
     assert ["release", "verify", TAG, "-R", REPOSITORY] in fake.calls
     attest = next(a for a in fake.calls if a[:2] == ["attestation", "verify"])
-    assert attest[attest.index("--source-ref") + 1] == f"refs/tags/{TAG}"
-    assert attest[attest.index("--source-digest") + 1] == COMMIT
-    assert attest[attest.index("--signer-workflow") + 1] == (
-        f"{REPOSITORY}/.github/workflows/release.yml"
+    assert attest[attest.index("--source-ref") + 1] == "refs/heads/main"
+    assert attest[attest.index("--source-digest") + 1] == WORKFLOW_SHA
+    assert attest[attest.index("--signer-workflow") + 1] == RELEASE_WORKFLOW
+    assert attest[attest.index("--signer-digest") + 1] == WORKFLOW_SHA
+    assert attest[attest.index("--predicate-type") + 1] == "https://slsa.dev/provenance/v1"
+    assert sum(a[:2] == ["release", "verify-asset"] for a in fake.calls) == 5
+    assert sum(a[:2] == ["attestation", "verify"] for a in fake.calls) == 5
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sourceSha", "d" * 40),
+        ("tag", "v9.9.9"),
+        ("tagObjectSha", "e" * 40),
+        ("workflowSha", "f" * 40),
+        ("candidateRunId", "99999"),
+        ("candidateRunAttempt", "2"),
+    ],
+)
+def test_slsa_provenance_must_bind_exact_release_source_and_run(tmp_path, field, value):
+    fake = FakeGitHub()
+    fake.provenance_external_overrides[field] = value
+    _write_local_release(tmp_path)
+    with pytest.raises(ReleaseVerificationError, match="SLSA provenance does not bind"):
+        verify_local_artifacts(
+            TAG,
+            COMMIT,
+            ASSET,
+            tmp_path,
+            workflow_sha=WORKFLOW_SHA,
+            run=fake,
+        )
+
+
+def test_slsa_provenance_must_use_trusted_finalizer_builder(tmp_path):
+    fake = FakeGitHub()
+    fake.provenance_builder_id = "https://example.invalid/evil-builder"
+    _write_local_release(tmp_path)
+    with pytest.raises(ReleaseVerificationError, match="SLSA provenance does not bind"):
+        verify_local_artifacts(
+            TAG,
+            COMMIT,
+            ASSET,
+            tmp_path,
+            workflow_sha=WORKFLOW_SHA,
+            run=fake,
+        )
+
+
+def test_source_only_accepts_signed_annotated_tag_bound_to_exact_commit():
+    fake = FakeGitHub()
+    assert verify_source(TAG, COMMIT, run=fake) == TAG_OBJECT_SHA
+    assert len(fake.calls) == 2
+    assert not any(a and a[0] == "release" for a in fake.calls)
+
+
+def test_valid_signature_from_unauthorized_release_signer_is_rejected():
+    fake = FakeGitHub()
+    fake.tagger_email = "mallory@example.com"
+    with pytest.raises(ReleaseVerificationError, match="authorized release identity"):
+        verify_source(TAG, COMMIT, run=fake)
+
+
+def test_tag_object_replacement_after_validation_is_rejected():
+    fake = FakeGitHub()
+    with pytest.raises(ReleaseVerificationError, match="changed after validation"):
+        verify_source(TAG, COMMIT, run=fake, expected_tag_object_sha="d" * 40)
+
+
+def test_trusted_main_candidate_workflow_run_is_accepted():
+    fake = FakeGitHub()
+    data = verify_workflow_run_identity(
+        12345,
+        WORKFLOW_SHA,
+        expected_run_attempt=1,
+        run=fake,
     )
-    assert sum(a[:2] == ["release", "verify-asset"] for a in fake.calls) == 2
+    assert data["head_branch"] == "main"
+    assert data["path"] == ".github/workflows/release.yml"
 
 
-@pytest.mark.parametrize("invalid", [
-    "", "main", "v1.0", "v1.2.3/../../steal", "--help", "v1.0.0\nsomething",
-])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("event", "push"),
+        ("status", "in_progress"),
+        ("conclusion", "failure"),
+        ("head_branch", "attacker/ref"),
+        ("head_sha", "d" * 40),
+        ("path", ".github/workflows/evil.yml"),
+        ("path", ".github/workflows/release.yml@refs/tags/v0.1.0"),
+        ("path", ".github/workflows/release.yml@refs/heads/untrusted"),
+        ("repository", {"full_name": "attacker/repo"}),
+        ("head_repository", {"full_name": "attacker/repo"}),
+        ("actor", {"login": "attacker"}),
+        ("triggering_actor", {"login": "attacker"}),
+        ("run_attempt", 2),
+    ],
+)
+def test_untrusted_or_mismatched_candidate_workflow_run_is_rejected(field, value):
+    base = {
+        "id": 12345,
+        "event": "workflow_dispatch",
+        "status": "completed",
+        "conclusion": "success",
+        "head_branch": "main",
+        "head_sha": WORKFLOW_SHA,
+        "path": ".github/workflows/release.yml@refs/heads/main",
+        "run_attempt": 1,
+        "repository": {"full_name": REPOSITORY},
+        "head_repository": {"full_name": REPOSITORY},
+        "actor": {"login": "ChiJiun"},
+        "triggering_actor": {"login": "ChiJiun"},
+    }
+    base[field] = value
+
+    def run(args):
+        assert args == ["api", f"repos/{REPOSITORY}/actions/runs/12345"]
+        return json.dumps(base)
+
+    with pytest.raises(ReleaseVerificationError, match="mismatch|Untrusted"):
+        verify_workflow_run_identity(
+            12345,
+            WORKFLOW_SHA,
+            expected_run_attempt=1,
+            run=run,
+        )
+
+
+def _ruleset_run(
+    *,
+    main_approvals=1,
+    last_push=True,
+    stale_reviews=True,
+    review_threads=True,
+    checks=("CI / Required",),
+    strict_checks=True,
+    check_integration_id=15368,
+    include_tag=True,
+    tag_rules=("update", "deletion"),
+    main_rules=("deletion", "non_fast_forward"),
+    main_excludes=(),
+    main_bypass=(),
+    tag_excludes=(),
+    tag_bypass=(),
+):
+    summaries = [
+        {"id": 1, "enforcement": "active"},
+        *([{"id": 2, "enforcement": "active"}] if include_tag else []),
+    ]
+    main = {
+        "id": 1,
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {
+            "ref_name": {
+                "include": ["refs/heads/main"],
+                "exclude": list(main_excludes),
+            }
+        },
+        "bypass_actors": list(main_bypass),
+        "rules": [
+            {
+                "type": "pull_request",
+                "parameters": {
+                    "required_approving_review_count": main_approvals,
+                    "require_last_push_approval": last_push,
+                    "dismiss_stale_reviews_on_push": stale_reviews,
+                    "required_review_thread_resolution": review_threads,
+                },
+            },
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "strict_required_status_checks_policy": strict_checks,
+                    "required_status_checks": [
+                        {
+                            "context": name,
+                            "integration_id": check_integration_id,
+                        }
+                        for name in checks
+                    ],
+                },
+            },
+            *[{"type": name} for name in main_rules],
+        ],
+    }
+    tag = {
+        "id": 2,
+        "target": "tag",
+        "enforcement": "active",
+        "conditions": {
+            "ref_name": {
+                "include": ["refs/tags/v*"],
+                "exclude": list(tag_excludes),
+            }
+        },
+        "bypass_actors": list(tag_bypass),
+        "rules": [{"type": name} for name in tag_rules],
+    }
+
+    def run(args):
+        if args == ["api", f"repos/{REPOSITORY}/rulesets"]:
+            return json.dumps(summaries)
+        if args == ["api", f"repos/{REPOSITORY}/rulesets/1"]:
+            return json.dumps(main)
+        if args == ["api", f"repos/{REPOSITORY}/rulesets/2"] and include_tag:
+            return json.dumps(tag)
+        raise AssertionError(args)
+
+    return run
+
+
+def test_repository_release_controls_require_protected_main_and_release_tags():
+    verify_repository_release_controls(run=_ruleset_run())
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"main_approvals": 0},
+        {"last_push": False},
+        {"stale_reviews": False},
+        {"review_threads": False},
+        {"checks": ()},
+        {"strict_checks": False},
+        {"check_integration_id": None},
+        {"check_integration_id": 99999},
+        {"include_tag": False},
+        {"main_rules": ("deletion",)},
+        {"main_rules": ("non_fast_forward",)},
+        {"main_excludes": ("refs/heads/release-*",)},
+        {"main_bypass": ({"actor_id": 1, "actor_type": "RepositoryRole"},)},
+        {"tag_excludes": ("refs/tags/v0.*",)},
+        {"tag_bypass": ({"actor_id": 1, "actor_type": "RepositoryRole"},)},
+        {"tag_rules": ("creation", "update", "deletion")},
+        {"tag_rules": ("deletion",)},
+        {"tag_rules": ("update",)},
+    ],
+)
+def test_missing_repository_release_control_blocks_release(kwargs):
+    with pytest.raises(ReleaseVerificationError, match="not enforced"):
+        verify_repository_release_controls(run=_ruleset_run(**kwargs))
+
+
+def test_unprivileged_candidate_verification_does_not_require_attestation(tmp_path):
+    fake = FakeGitHub()
+    fake.fail_command = ("attestation", "verify")
+    _write_local_release(tmp_path)
+    assert (
+        verify_candidate_artifacts(
+            TAG,
+            COMMIT,
+            ASSET,
+            tmp_path,
+            workflow_sha=WORKFLOW_SHA,
+            expected_tag_object_sha=TAG_OBJECT_SHA,
+            expected_run_id="12345",
+            expected_run_attempt="1",
+            run=fake,
+        )
+        == DIGEST
+    )
+    assert not any(a[:2] == ["attestation", "verify"] for a in fake.calls)
+
+
+def test_staged_final_bytes_verify_before_publish(tmp_path):
+    fake = FakeGitHub()
+    _write_local_release(tmp_path)
+    assert verify_local_artifacts(TAG, COMMIT, ASSET, tmp_path, workflow_sha=WORKFLOW_SHA, run=fake) == DIGEST
+    assert not any(a[:2] == ["release", "view"] for a in fake.calls)
+    attest = next(
+        a for a in fake.calls
+        if a[:2] == ["attestation", "verify"] and Path(a[2]).name == ASSET
+    )
+    assert Path(attest[2]).read_bytes() == BINARY
+    assert attest[attest.index("--source-digest") + 1] == WORKFLOW_SHA
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["", "main", "v1.0", "v1.2.3/../../steal", "--help", "v1.0.0\nsomething"],
+)
 def test_untrusted_tag_cannot_select_arbitrary_ref(invalid):
     fake = FakeGitHub()
     with pytest.raises(ReleaseVerificationError):
-        verify_release(invalid, COMMIT, ASSET, run=fake)
+        verify_release(invalid, COMMIT, ASSET, workflow_sha=WORKFLOW_SHA, run=fake)
     assert fake.calls == []
 
 
 @pytest.mark.parametrize("invalid", ["main", "deadbeef", "-a" * 20, "x" * 40])
 def test_commit_must_be_exact_sha(invalid):
     with pytest.raises(ReleaseVerificationError):
-        verify_release(TAG, invalid, ASSET, run=FakeGitHub())
+        verify_release(TAG, invalid, ASSET, workflow_sha=WORKFLOW_SHA, run=FakeGitHub())
 
 
-@pytest.mark.parametrize("invalid", [
-    "SHA256SUMS", "../example.img", f"{ASSET};sh", f"{ASSET}.exe",
-    "usb-cold-wallet-v9.9.9.img.xz", f"{ASSET}*",
-])
-def test_asset_basename_and_tag_must_match(invalid):
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "SHA256SUMS",
+        "../example.img",
+        f"{ASSET};sh",
+        f"{ASSET}.exe",
+        "usb-cold-wallet-v9.9.9.img.xz",
+        f"{ASSET}*",
+        "https://evil.invalid/usb-cold-wallet-v0.1.0-beta.1.img.xz",
+    ],
+)
+def test_asset_basename_and_tag_must_match_and_urls_are_rejected(invalid):
     fake = FakeGitHub()
     with pytest.raises(ReleaseVerificationError):
-        verify_release(TAG, COMMIT, invalid, run=fake)
+        verify_release(TAG, COMMIT, invalid, workflow_sha=WORKFLOW_SHA, run=fake)
     assert fake.calls == []
 
 
-@pytest.mark.parametrize("contents", [
-    f"{DIGEST}  ../../{ASSET}\n",
-    f"{DIGEST}  {ASSET}\n{DIGEST}  {ASSET}\n",
-    f"{DIGEST}  {ASSET}\n{'0'*64}  ../secret\n",
-    f"{DIGEST}  {ASSET}\n<script>alert(1)</script>\n",
-    f"{DIGEST}  other.img\n",
-    "\u2603",
-])
+@pytest.mark.parametrize(
+    "contents",
+    [
+        f"{DIGEST}  ../../{ASSET}\n",
+        f"{DIGEST}  {ASSET}\n{DIGEST}  {ASSET}\n",
+        f"{DIGEST}  {ASSET}\n{'0' * 64}  ../secret\n",
+        f"{DIGEST}  {ASSET}\n<script>alert(1)</script>\n",
+        f"{DIGEST}  other.img\n",
+        "\u2603",
+    ],
+)
 def test_hostile_manifest_rejected(contents):
     with pytest.raises(ReleaseVerificationError):
         parse_sha256sums(contents.encode("utf-8"), ASSET)
@@ -132,26 +565,31 @@ def test_untrusted_release_ref_is_rejected_before_download(failure):
     else:
         fake.draft = True
     with pytest.raises(ReleaseVerificationError):
-        verify_release(TAG, COMMIT, ASSET, run=fake)
+        verify_release(TAG, COMMIT, ASSET, workflow_sha=WORKFLOW_SHA, run=fake)
     assert not any(a[:2] == ["release", "download"] for a in fake.calls)
 
 
 def test_binary_substitution_is_rejected_before_attestation():
     fake = FakeGitHub()
     fake.binary = b"tampered release asset"
-    with pytest.raises(ReleaseVerificationError, match="SHA256SUMS"):
-        verify_release(TAG, COMMIT, ASSET, run=fake)
+    with pytest.raises(ReleaseVerificationError, match="digest mismatch"):
+        verify_release(TAG, COMMIT, ASSET, workflow_sha=WORKFLOW_SHA, run=fake)
     assert not any(a[:2] == ["attestation", "verify"] for a in fake.calls)
 
 
-@pytest.mark.parametrize("command", [
-    ("release", "verify"), ("release", "verify-asset"), ("attestation", "verify"),
-])
+@pytest.mark.parametrize(
+    "command",
+    [
+        ("release", "verify"),
+        ("release", "verify-asset"),
+        ("attestation", "verify"),
+    ],
+)
 def test_missing_or_invalid_immutable_release_or_build_attestation_blocks(command):
     fake = FakeGitHub()
     fake.fail_command = command
     with pytest.raises(ReleaseVerificationError):
-        verify_release(TAG, COMMIT, ASSET, run=fake)
+        verify_release(TAG, COMMIT, ASSET, workflow_sha=WORKFLOW_SHA, run=fake)
 
 
 def test_checksums_are_not_themselves_claimed_to_authenticate_release():
@@ -159,4 +597,458 @@ def test_checksums_are_not_themselves_claimed_to_authenticate_release():
     fake.manifest_digest = hashlib.sha256(fake.binary).hexdigest()
     fake.fail_command = ("release", "verify-asset")
     with pytest.raises(ReleaseVerificationError):
-        verify_release(TAG, COMMIT, ASSET, run=fake)
+        verify_release(TAG, COMMIT, ASSET, workflow_sha=WORKFLOW_SHA, run=fake)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "asset",
+        "sha",
+        "metadata_commit",
+        "metadata_workflow",
+        "metadata_attestation_workflow",
+        "metadata_tag_object",
+        "metadata_publish_requested",
+        "metadata_sbom_scope",
+        "sbom",
+        "extra_file",
+    ],
+)
+def test_staged_asset_substitution_wrong_sha_source_or_manifest_fails_closed(
+    tmp_path, mutation
+):
+    fake = FakeGitHub()
+    _write_local_release(tmp_path)
+
+    if mutation == "asset":
+        (tmp_path / ASSET).write_bytes(b"substituted")
+    elif mutation == "sha":
+        manifest = (tmp_path / "SHA256SUMS").read_text(encoding="ascii")
+        (tmp_path / "SHA256SUMS").write_text(
+            manifest.replace(DIGEST, "0" * 64), encoding="ascii"
+        )
+    elif mutation == "metadata_commit":
+        metadata = json.loads(
+            (tmp_path / "release-metadata.json").read_text(encoding="utf-8")
+        )
+        metadata["source_sha"] = "0" * 40
+        (tmp_path / "release-metadata.json").write_text(
+            json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        names = [ASSET, "SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt"]
+        lines = []
+        for name in sorted(names):
+            digest = hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+            lines.append(f"{digest}  {name}")
+        (tmp_path / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="ascii")
+    elif mutation == "metadata_workflow":
+        metadata = json.loads(
+            (tmp_path / "release-metadata.json").read_text(encoding="utf-8")
+        )
+        metadata["workflow_sha"] = "d" * 40
+        (tmp_path / "release-metadata.json").write_text(
+            json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        names = [ASSET, "SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt"]
+        lines = []
+        for name in sorted(names):
+            digest = hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+            lines.append(f"{digest}  {name}")
+        (tmp_path / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="ascii")
+    elif mutation == "metadata_attestation_workflow":
+        metadata = json.loads(
+            (tmp_path / "release-metadata.json").read_text(encoding="utf-8")
+        )
+        metadata["attestation_workflow"] = ".github/workflows/evil.yml"
+        (tmp_path / "release-metadata.json").write_text(
+            json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        names = [ASSET, "SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt"]
+        lines = []
+        for name in sorted(names):
+            digest = hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+            lines.append(f"{digest}  {name}")
+        (tmp_path / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="ascii")
+    elif mutation == "metadata_tag_object":
+        metadata = json.loads(
+            (tmp_path / "release-metadata.json").read_text(encoding="utf-8")
+        )
+        metadata["tag_object_sha"] = "d" * 40
+        (tmp_path / "release-metadata.json").write_text(
+            json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        names = [ASSET, "SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt"]
+        lines = []
+        for name in sorted(names):
+            digest = hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+            lines.append(f"{digest}  {name}")
+        (tmp_path / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="ascii")
+    elif mutation == "metadata_publish_requested":
+        metadata = json.loads(
+            (tmp_path / "release-metadata.json").read_text(encoding="utf-8")
+        )
+        metadata["publish_requested"] = "true"
+        (tmp_path / "release-metadata.json").write_text(
+            json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        names = [ASSET, "SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt"]
+        lines = []
+        for name in sorted(names):
+            digest = hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+            lines.append(f"{digest}  {name}")
+        (tmp_path / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="ascii")
+    elif mutation == "metadata_sbom_scope":
+        metadata = json.loads(
+            (tmp_path / "release-metadata.json").read_text(encoding="utf-8")
+        )
+        metadata["sbom_scope"] = "whole-disk"
+        (tmp_path / "release-metadata.json").write_text(
+            json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        names = [ASSET, "SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt"]
+        lines = []
+        for name in sorted(names):
+            digest = hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+            lines.append(f"{digest}  {name}")
+        (tmp_path / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="ascii")
+    elif mutation == "sbom":
+        (tmp_path / "SBOM.spdx.json").write_text("{}", encoding="utf-8")
+        names = [ASSET, "SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt"]
+        lines = []
+        for name in sorted(names):
+            digest = hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+            lines.append(f"{digest}  {name}")
+        (tmp_path / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="ascii")
+    else:
+        with (tmp_path / "SHA256SUMS").open("a", encoding="ascii") as handle:
+            handle.write(f"{'0' * 64}  unexpected.bin\n")
+
+    with pytest.raises(ReleaseVerificationError):
+        verify_local_artifacts(TAG, COMMIT, ASSET, tmp_path, workflow_sha=WORKFLOW_SHA, run=fake)
+
+
+def test_wrong_or_missing_attestation_subject_fails_staged_verification(tmp_path):
+    fake = FakeGitHub()
+    fake.fail_command = ("attestation", "verify")
+    _write_local_release(tmp_path)
+    with pytest.raises(ReleaseVerificationError):
+        verify_local_artifacts(TAG, COMMIT, ASSET, tmp_path, workflow_sha=WORKFLOW_SHA, run=fake)
+
+
+@pytest.mark.parametrize("state", ["skipped", "failure", "cancelled", "neutral"])
+def test_required_release_job_not_success_blocks_publish(state):
+    results = {"build": "success", "attest": "success", "verify": "success"}
+    results["verify"] = state
+    with pytest.raises(ReleaseVerificationError):
+        require_successful_jobs(results)
+
+
+def test_missing_required_release_job_blocks_publish():
+    with pytest.raises(ReleaseVerificationError):
+        require_successful_jobs({"build": "success", "attest": "success"})
+
+
+def test_all_required_release_jobs_must_succeed():
+    require_successful_jobs(
+        {"build": "success", "attest": "success", "verify": "success"}
+    )
+
+
+def test_release_workflows_pin_actions_and_isolate_privileges():
+    candidate = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    finalizer = Path(".github/workflows/release-finalize.yml").read_text(encoding="utf-8")
+
+    assert "workflow_dispatch:" in candidate
+    assert "pull_request:" not in candidate
+    assert "permissions: {}" in candidate
+    assert "default: false" in candidate
+    assert 'test "$GITHUB_REF" = "refs/heads/main"' in candidate
+    assert "--candidate-only" in candidate
+    assert "github.run_id" in candidate
+    assert "github.run_attempt" in candidate
+    assert "contents: write" not in candidate
+    assert "attestations: write" not in candidate
+    assert "id-token: write" not in candidate
+    assert "gh release create" not in candidate
+
+    assert "workflow_run:" in finalizer
+    assert 'workflows: ["Release provenance candidate"]' in finalizer
+    assert "TRIGGER_HEAD_BRANCH" in finalizer
+    assert 'test "$TRIGGER_HEAD_BRANCH" = "main"' in finalizer
+    assert 'test "$GITHUB_SHA" = "$TRIGGER_HEAD_SHA"' in finalizer
+    assert "verify_workflow_run_identity" in finalizer
+    assert "verify_repository_release_controls" in finalizer
+    assert "expected_run_id" in finalizer
+    assert "expected_run_attempt" in finalizer
+    assert "id-token: write" in finalizer
+    assert "attestations: write" in finalizer
+    assert "build_slsa_predicate" in finalizer
+    assert finalizer.count("predicate-type: https://slsa.dev/provenance/v1") == 2
+    assert finalizer.count("predicate-path:") == 2
+    assert "contents: write" in finalizer
+    assert "needs.preflight.outputs.publish_requested == 'true'" in finalizer
+    assert "--clobber" not in finalizer
+    assert 'test "$current_main" = "$GITHUB_SHA"' in finalizer
+    assert "gh release create" in finalizer
+
+    for workflow in (candidate, finalizer):
+        use_lines = [line.strip() for line in workflow.splitlines() if "uses:" in line]
+        assert use_lines
+        for line in use_lines:
+            assert re.search(r"uses:\s+[^@\s]+@[0-9a-f]{40}(?:\s+#.*)?$", line), line
+
+    attest = finalizer.split("\n  attest:\n", 1)[1].split("\n  verify:\n", 1)[0]
+    verify = finalizer.split("\n  verify:\n", 1)[1].split("\n  gate:\n", 1)[0]
+    publish = finalizer.split("\n  publish:\n", 1)[1]
+
+    assert 'for issue in 24 43 48' in publish
+    assert 'for issue in 24 43;' not in publish
+    assert 'gh issue view 48' not in publish
+
+    assert 'gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq .enabled' in publish
+    assert '[[ "$immutable" != "true" ]]' in publish
+    assert publish.index("immutable-releases") < publish.index("gh release create")
+
+    assert "id-token: write" in attest
+    assert "attestations: write" in attest
+    assert "contents: write" not in attest
+
+    assert "attestations: read" in verify
+    assert "attestations: write" not in verify
+    assert "id-token: write" not in verify
+    assert "contents: write" not in verify
+
+    assert "contents: write" in publish
+    assert "attestations: write" not in publish
+    assert "id-token: write" not in publish
+    assert RELEASE_CANDIDATE_WORKFLOW.endswith("/.github/workflows/release.yml")
+    assert RELEASE_FINALIZE_WORKFLOW.endswith("/.github/workflows/release-finalize.yml")
+    assert RELEASE_WORKFLOW == RELEASE_FINALIZE_WORKFLOW
+
+
+
+def test_release_verifier_entrypoints_reuse_fail_closed_python_verifier():
+    shell = Path("scripts/verify_release.sh").read_text(encoding="utf-8")
+    powershell = Path("scripts/verify_release.ps1").read_text(encoding="utf-8")
+    for text in (shell, powershell):
+        assert "verify_release_assets.py" in text
+        assert "--tag" in text
+        assert "--commit" in text
+        assert "--workflow-sha" in text
+        assert "--asset" in text
+        assert "http://" not in text
+        assert "https://" not in text
+
+
+
+def test_protected_main_ref_must_match_exact_trusted_workflow_commit():
+    fake = FakeGitHub()
+    verify_protected_main_commit(WORKFLOW_SHA, run=fake)
+
+    def moved(args):
+        if args == ["api", f"repos/{REPOSITORY}/git/ref/heads/main"]:
+            return json.dumps({
+                "ref": "refs/heads/main",
+                "object": {"type": "commit", "sha": "d" * 40},
+            })
+        raise AssertionError(args)
+
+    with pytest.raises(ReleaseVerificationError, match="main moved"):
+        verify_protected_main_commit(WORKFLOW_SHA, run=moved)
+
+
+@pytest.mark.parametrize("status,behind", [
+    ("diverged", 2),
+    ("behind", 3),
+    ("ahead", 1),
+    ("identical", 1),
+])
+def test_tagged_source_must_be_ancestor_of_trusted_main(status, behind):
+    fake = FakeGitHub()
+
+    def forged(args):
+        if args == ["api", f"repos/{REPOSITORY}/compare/{COMMIT}...{WORKFLOW_SHA}"]:
+            return json.dumps({"status": status, "ahead_by": 1, "behind_by": behind})
+        return fake(args)
+
+    with pytest.raises(ReleaseVerificationError, match="trusted main history"):
+        verify_source(TAG, COMMIT, trusted_workflow_sha=WORKFLOW_SHA, run=forged)
+
+
+def test_publish_verifier_rejects_staged_wrong_run_or_attempt(tmp_path):
+    fake = FakeGitHub()
+    _write_local_release(tmp_path)
+    for run_id, attempt in [("12346", "1"), ("12345", "2")]:
+        with pytest.raises(ReleaseVerificationError, match="workflow run"):
+            verify_local_artifacts(
+                TAG, COMMIT, ASSET, tmp_path,
+                workflow_sha=WORKFLOW_SHA,
+                expected_run_id=run_id,
+                expected_run_attempt=attempt,
+                run=fake,
+            )
+
+
+def test_candidate_archive_rejects_unexpected_nested_files_and_symlinks(tmp_path):
+    fake = FakeGitHub()
+    _write_local_release(tmp_path)
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    with pytest.raises(ReleaseVerificationError, match="Unexpected file"):
+        verify_candidate_artifacts(TAG, COMMIT, ASSET, tmp_path, workflow_sha=WORKFLOW_SHA, run=fake)
+    nested.rmdir()
+    (tmp_path / "extra-link").symlink_to(tmp_path / ASSET)
+    with pytest.raises(ReleaseVerificationError, match="Unexpected file"):
+        verify_candidate_artifacts(TAG, COMMIT, ASSET, tmp_path, workflow_sha=WORKFLOW_SHA, run=fake)
+
+
+def test_independent_release_rejects_recompressed_image_with_wrong_raw_digest():
+    fake = FakeGitHub()
+    fake.binary = lzma.compress(b"altered raw bytes", preset=6)
+    fake.manifest_digest = hashlib.sha256(fake.binary).hexdigest()
+    with pytest.raises(ReleaseVerificationError, match="Published raw image SHA-256"):
+        verify_release(TAG, COMMIT, ASSET, workflow_sha=WORKFLOW_SHA, run=fake)
+
+
+def test_release_workflow_checks_live_main_before_attestation_and_provenance():
+    candidate = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    finalizer = Path(".github/workflows/release-finalize.yml").read_text(encoding="utf-8")
+    assert "trusted_workflow_sha=os.environ[\"GITHUB_SHA\"]" in candidate
+    assert candidate.count("verify_protected_main_commit(") >= 1
+    assert finalizer.count("verify_protected_main_commit(") >= 3
+    assert finalizer.count("--expected-run-attempt") >= 3
+    assert "gh release create" in finalizer
+    assert finalizer.rfind("--expected-run-attempt") < finalizer.rfind("gh release create")
+
+
+def _candidate_artifact(*, name=None, artifact_id=91, digest=None, run_id=12345, head_sha=WORKFLOW_SHA):
+    return {
+        "name": name or f"release-candidate-{TAG}-{COMMIT}-run12345-attempt1",
+        "id": artifact_id,
+        "digest": digest if digest is not None else "sha256:" + "f" * 64,
+        "expired": False,
+        "workflow_run": {"id": run_id, "head_sha": head_sha},
+    }
+
+
+def test_candidate_artifact_selection_pins_immutable_id_and_digest():
+    def api(args):
+        assert args[1].endswith("artifacts?per_page=100&page=1")
+        return json.dumps({"total_count": 1, "artifacts": [_candidate_artifact()]})
+
+    selected = select_candidate_artifact(12345, 1, WORKFLOW_SHA, run=api)
+    assert selected["id"] == 91
+    assert selected["digest"] == "sha256:" + "f" * 64
+
+
+def test_candidate_artifact_selection_checks_later_pages_for_duplicates():
+    first = [_candidate_artifact()] + [
+        {"name": f"unrelated-{i}", "id": i + 100, "expired": False}
+        for i in range(99)
+    ]
+    duplicate = _candidate_artifact(artifact_id=92)
+    pages = [first, [duplicate]]
+
+    def api(args):
+        page = int(args[1].split("page=")[-1])
+        return json.dumps({"total_count": 101, "artifacts": pages[page - 1]})
+
+    with pytest.raises(ReleaseVerificationError, match="exactly one"):
+        select_candidate_artifact(12345, 1, WORKFLOW_SHA, run=api)
+
+
+@pytest.mark.parametrize(
+    ("change", "value"),
+    [
+        ("digest", "sha256:" + "g" * 64),
+        ("id", 0),
+        ("expired", True),
+        ("workflow_run", {"id": 999, "head_sha": WORKFLOW_SHA}),
+        ("workflow_run", {"id": 12345, "head_sha": "a" * 40}),
+    ],
+)
+def test_candidate_artifact_identity_mutations_fail_closed(change, value):
+    artifact = _candidate_artifact()
+    artifact[change] = value
+
+    def api(_args):
+        return json.dumps({"total_count": 1, "artifacts": [artifact]})
+
+    with pytest.raises(ReleaseVerificationError):
+        select_candidate_artifact(12345, 1, WORKFLOW_SHA, run=api)
+
+
+@pytest.mark.parametrize("total", [0, 2, -1, "1"])
+def test_incomplete_or_invalid_candidate_artifact_listing_is_rejected(total):
+    def api(_args):
+        return json.dumps({"total_count": total, "artifacts": [_candidate_artifact()]})
+
+    with pytest.raises(ReleaseVerificationError):
+        select_candidate_artifact(12345, 1, WORKFLOW_SHA, run=api)
+
+
+def test_candidate_artifact_pagination_fails_if_count_changes():
+    pages = [[{"name": f"unrelated-{i}"} for i in range(100)], []]
+
+    def api(args):
+        page = int(args[1].split("page=")[-1])
+        return json.dumps({"total_count": 101 if page == 1 else 100, "artifacts": pages[page - 1]})
+
+    with pytest.raises(ReleaseVerificationError, match="changed during pagination"):
+        select_candidate_artifact(12345, 1, WORKFLOW_SHA, run=api)
+
+
+def test_finalizer_uses_pinned_artifact_ids_and_strict_download_digests():
+    finalizer = Path(".github/workflows/release-finalize.yml").read_text(encoding="utf-8")
+    assert finalizer.count("uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333") == 4
+    assert finalizer.count("artifact-ids:") == 4
+    assert finalizer.count("skip-decompress: true") == 4
+    assert finalizer.count("extract_release_candidate") == 4
+    assert finalizer.count("artifact_digest") >= 5
+    assert finalizer.count("digest-mismatch: error") == 4
+    assert "gh run download" not in finalizer
+    candidate = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    assert "steps.upload.outputs.artifact-digest" in candidate
+    assert "skip-decompress: true" in candidate
+    assert "extract_release_candidate" in candidate
+    assert "select_candidate_artifact(" in finalizer
+
+
+def _recompute_staged_manifest(directory):
+    names = [ASSET, "SBOM.spdx.json", "release-metadata.json", "build-host-packages.txt"]
+    (directory / "SHA256SUMS").write_text(
+        "".join(
+            f"{hashlib.sha256((directory / name).read_bytes()).hexdigest()}  {name}\n"
+            for name in sorted(names)
+        ),
+        encoding="ascii",
+    )
+
+
+def test_compressed_raw_image_must_match_claimed_digest_even_with_valid_manifest(tmp_path):
+    _write_local_release(tmp_path)
+    (tmp_path / ASSET).write_bytes(lzma.compress(b"replaced boot image"))
+    _recompute_staged_manifest(tmp_path)
+    with pytest.raises(ReleaseVerificationError, match="claimed raw SHA-256"):
+        verify_candidate_artifacts(TAG, COMMIT, ASSET, tmp_path, workflow_sha=WORKFLOW_SHA, run=FakeGitHub())
+
+
+def test_corrupt_xz_fails_closed_even_with_updated_sha256sums(tmp_path):
+    _write_local_release(tmp_path)
+    (tmp_path / ASSET).write_bytes(b"corrupted xz")
+    _recompute_staged_manifest(tmp_path)
+    with pytest.raises(ReleaseVerificationError, match="complete valid xz"):
+        verify_candidate_artifacts(TAG, COMMIT, ASSET, tmp_path, workflow_sha=WORKFLOW_SHA, run=FakeGitHub())
+
+
+def test_raw_image_decompression_bomb_is_bounded(tmp_path, monkeypatch):
+    _write_local_release(tmp_path)
+    monkeypatch.setattr("scripts.verify_release_assets.MAX_RAW_IMAGE_BYTES", 4)
+    with pytest.raises(ReleaseVerificationError, match="safety size limit"):
+        verify_candidate_artifacts(TAG, COMMIT, ASSET, tmp_path, workflow_sha=WORKFLOW_SHA, run=FakeGitHub())
+
+
+def test_slsa_provenance_includes_verified_raw_image_digest():
+    predicate = build_slsa_predicate(json.loads(_metadata_bytes()), WORKFLOW_SHA)
+    assert predicate["buildDefinition"]["internalParameters"]["rawImageSha256"] == RAW_DIGEST

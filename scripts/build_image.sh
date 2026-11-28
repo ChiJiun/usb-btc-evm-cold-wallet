@@ -10,7 +10,7 @@ MODE="$*"
 "$ROOT/scripts/configure_buildroot.sh"
 
 BR="$ROOT/build/buildroot"
-OUT="$ROOT/build/output"
+OUT="${BUILD_OUTPUT_DIR:-$ROOT/build/output}"
 DL="$ROOT/build/dl"
 EXT="$ROOT/buildroot-external"
 
