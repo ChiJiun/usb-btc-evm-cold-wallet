@@ -470,3 +470,15 @@ def test_framebuffer_identity_comparison_rejects_unpinned_device(monkeypatch):
     identity = os.stat(device)
     with pytest.raises(OSError, match="identity changed"):
         fb._open_framebuffer(device, (identity.st_dev, identity.st_ino + 1, identity.st_rdev))
+
+
+def test_menu_marker_is_distinct_from_one_shot_console_ready():
+    """Regression for CI run 46144840043: two READY markers on the first menu."""
+    root = Path(__file__).resolve().parents[1]
+    appliance = (root / "src/usb_cold_wallet/appliance.py").read_text()
+    verifier = (root / "scripts/verify_framebuffer_qemu.sh").read_text()
+    assert '_serial_marker("USB_WALLET_CONSOLE_READY")' not in appliance
+    assert '_serial_marker("USB_WALLET_CONSOLE_MENU")' in appliance
+    assert 'marker_count USB_WALLET_CONSOLE_MENU)"' in verifier
+    assert 'observed="$(marker_count USB_WALLET_CONSOLE_READY)"' not in verifier
+

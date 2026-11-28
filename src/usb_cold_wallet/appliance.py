@@ -592,7 +592,9 @@ def main() -> int:
         print("6) Power off")
         print("7) Initialize encrypted offline signing policy (record SHA256 on paper)")
         print("8) EXPERIMENTAL framebuffer review demo (public vector; never signs)")
-        _serial_marker("USB_WALLET_CONSOLE_READY")
+        # One marker per attended menu draw. Main's one-shot
+        # USB_WALLET_CONSOLE_READY (first menu only) is a different signal.
+        _serial_marker("USB_WALLET_CONSOLE_MENU")
         choice = input("> ").strip()
         if choice == "1":
             _new_wallet()

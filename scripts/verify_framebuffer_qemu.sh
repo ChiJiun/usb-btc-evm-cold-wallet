@@ -86,7 +86,7 @@ marker_count() {
 diagnose_stage() {
     # All counters correspond to fixed public markers. Never dump request or
     # keystroke bytes into artifacts.
-    summary="console=$(marker_count USB_WALLET_CONSOLE_READY) start=$(marker_count USB_WALLET_CONSOLE_DEMO_START) return=$(marker_count USB_WALLET_CONSOLE_DEMO_RETURN) gui_ready=$(marker_count USB_WALLET_FB_POC_READY) vt_acquired=$(marker_count 'phase=vt_acquired') vt_released=$(marker_count 'phase=vt_released') invalid_menu=$(marker_count USB_WALLET_CONSOLE_CHOICE_INVALID)"
+    summary="console=$(marker_count USB_WALLET_CONSOLE_READY) menu=$(marker_count USB_WALLET_CONSOLE_MENU) start=$(marker_count USB_WALLET_CONSOLE_DEMO_START) return=$(marker_count USB_WALLET_CONSOLE_DEMO_RETURN) gui_ready=$(marker_count USB_WALLET_FB_POC_READY) vt_acquired=$(marker_count 'phase=vt_acquired') vt_released=$(marker_count 'phase=vt_released') invalid_menu=$(marker_count USB_WALLET_CONSOLE_CHOICE_INVALID)"
     printf 'GUEST_STAGE %s\n' "$summary" | tee -a "$ACTIONS" >&2
 }
 
@@ -151,8 +151,8 @@ PY
 
 launch_demo() {
     session="$1"
-    wait_count "USB_WALLET_CONSOLE_READY" "$session" 30
-    observed="$(marker_count USB_WALLET_CONSOLE_READY)"
+    wait_count "USB_WALLET_CONSOLE_MENU" "$session" 30
+    observed="$(marker_count USB_WALLET_CONSOLE_MENU)"
     if [ "$observed" -ne "$session" ]; then
         echo "ERROR: unexpected menu return count before session $session: $observed" >&2
         diagnose_stage
