@@ -243,9 +243,6 @@ class TestPhysicalAcceptance(unittest.TestCase):
                              "0x" + "f" * 64)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 # --- Readback regression against the real capacity preparation tool -------
 import shutil
@@ -384,3 +381,7 @@ class TestCapacityImageReadback(unittest.TestCase):
                 handle.seek(v.VAULT_START_LBA * 512 + 4096)
                 handle.write(b"\x01")
             self.assertNotEqual(_ps_hash("Get-MediaRegionSha256", image, offset), expected)
+
+
+if __name__ == "__main__":
+    unittest.main()
