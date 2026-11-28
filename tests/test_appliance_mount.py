@@ -2,7 +2,7 @@
 import pytest
 
 from usb_cold_wallet import appliance
-from usb_cold_wallet.exchange import write as write_exchange
+from usb_cold_wallet.vault import save_vault
 
 
 SAFE = {"rw", "nodev", "noexec", "nosuid", "sync", "fmask=0177", "dmask=0077"}
@@ -280,11 +280,11 @@ def test_export_watch_only_is_blocked_by_lockdown(monkeypatch, tmp_path):
 
 
 def test_export_watch_only_cli_is_create_only(tmp_path):
-    """The CLI path the menu reuses must never overwrite an existing transfer file."""
+    """The CLI export path (exchange.write -> save_vault) never overwrites a transfer file."""
     target = tmp_path / "watch-only.json"
     target.write_text("attacker-controlled old export")
     with pytest.raises(OSError):
-        write_exchange(target, "watch-only", {"note": "public"})
+        save_vault(target, {"note": "public"})
     assert target.read_text() == "attacker-controlled old export"
 
 
