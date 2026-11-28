@@ -19,6 +19,15 @@
     </header>
     <div class="notice">⚠ 研究原型，請勿投入真實資產。線上端無法替你確認收款人真實身分；務必在獨立離線畫面核對完整地址與金額。</div>
     <div id="message" class="message" role="status" aria-live="polite"></div>
+    <section class="panel">
+      <div class="step"><span>USB</span> 單 USB 跨開機</div>
+      <p>唯一辨識 <code>TX_TRANSFER</code> 交換分割區並保存 Pending Request；返回 Windows 後只自動驗證，不自動廣播。</p>
+      <div class="facts" id="crossbootStatus">正在檢查交換分割區…</div>
+      <button id="crossbootExportBtn" type="button" disabled>儲存待簽交易至單 USB</button>
+      <button id="crossbootResumeBtn" class="secondary" type="button" disabled>重新偵測並驗證離線簽章</button>
+      <button id="crossbootRefreshBtn" class="secondary" type="button">重新檢查 USB 狀態</button>
+      <p class="fine">儲存後：關閉 Companion → 重新開機 → UEFI 選擇此 USB → Offline GUI 解鎖、完整核對、人工簽署 → 關機 → 回 Windows → 驗證後人工 Broadcast。</p>
+    </section>
 
     <nav class="asset-switch" aria-label="選擇測試網資產">
       <button type="button" id="evmTab" class="asset-tab active" aria-controls="evmFlow" aria-pressed="true">Sepolia ETH</button>

@@ -46,6 +46,9 @@ class StubMessagebox:
     def showwarning(self, *args, **kwargs):
         self.errors.append(args)
 
+    def showinfo(self, *args, **kwargs):
+        pass
+
 
 def ui_fixture():
     # Avoid constructing Tk; exercise the actual GUI methods with a fake root.
@@ -56,6 +59,8 @@ def ui_fixture():
     app._active_usb_file = None
     app._active_usb_identity = None
     app._active_usb_digest = None
+    app._active_request_id = None
+    app._active_v2_request = None
     app.session = None
     app.selected_kind = None
     app.page_index = 0
@@ -120,9 +125,12 @@ def test_usb_removal_or_replacement_blocks_signing(tmp_path):
 def test_gui_manual_lock_clears_wallet_and_review():
     app, clock = ui_fixture()
     app.session = StubReview("d" * 64)
+    app._active_request_id = "a" * 32
     app._lock_wallet("manual")
     assert app.wallet_root is None
     assert app.session is None
+    assert app._active_request_id is None
+    assert app._active_v2_request is None
     assert app.security.state == State.LOCKED
 
 

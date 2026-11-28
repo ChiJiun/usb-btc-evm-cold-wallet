@@ -38,6 +38,9 @@ function harness(){
     const payload=options.body?JSON.parse(options.body):{};
     let data={},status=200;
     if(path==="/api/wallet")data={...wallet,pending:evmPending};
+    else if(path==="/api/crossboot")data={available:true,root:"F:\\\\",error:null,can_export:!!evmPending||!!btcPending,can_resume:false,request_id:(evmPending||btcPending)?.request_id||null,asset:evmPending?"sepolia":btcPending?"bitcoin-testnet":null,stage:(evmPending||btcPending)?.stage||null,guidance:"reboot via UEFI"};
+    else if(path==="/api/crossboot/export")data={available:true,root:"F:\\\\",can_export:false,can_resume:false,request_id:(evmPending||btcPending)?.request_id||null,asset:evmPending?"sepolia":"bitcoin-testnet",stage:"prepared",guidance:"reboot via UEFI"};
+    else if(path==="/api/crossboot/resume")data={available:true,root:"F:\\\\",can_export:false,can_resume:false,request_id:(evmPending||btcPending)?.request_id||null,asset:evmPending?"sepolia":"bitcoin-testnet",stage:(evmPending||btcPending)?.stage||"verified",guidance:"reboot via UEFI"};
     else if(path==="/api/btc/wallet"){
       if(failBtcWallet){data={error:"BTC wallet refresh unavailable"};status=400;}
       else data={network:"Bitcoin testnet",endpoint:"https://mock.invalid",spending_ready:true,pending:btcPending};
@@ -206,4 +209,19 @@ test("BTC broadcast timeout with failed wallet refresh stays fail-closed",async(
   h.element("btcBroadcastBtn").dispatch("click");await h.tick();
   assert.equal(h.calls.filter(x=>x.path==="/api/btc/broadcast").length,1);
   assert.match(h.element("btcPending").textContent,/廣播結果不明/);
+});
+
+
+test("single-USB controls persist request without broadcasting",async()=>{
+  const h=harness();await h.tick();
+  h.element("recipient").value=ADDRESS;
+  h.element("amount").value="0.01";
+  h.element("maxFee").value="2";
+  h.element("sendForm").dispatch("submit");await h.tick();
+  h.element("crossbootRefreshBtn").dispatch("click");await h.tick();
+  assert.equal(h.element("crossbootExportBtn").disabled,false);
+  h.element("crossbootExportBtn").dispatch("click");await h.tick();
+  assert.equal(h.calls.filter(c=>c.path==="/api/crossboot/export").length,1);
+  assert.equal(h.calls.filter(c=>c.path==="/api/broadcast").length,0);
+  assert.match(h.element("message").textContent,/重新開機/);
 });

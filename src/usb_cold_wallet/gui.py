@@ -19,7 +19,9 @@ import sys
 import time
 from typing import Callable
 
-from .exchange import read_bounded, verify, _unique_object, MAX_BYTES
+from .exchange import read_bounded, verify, package, _unique_object, MAX_BYTES
+from .cross_boot import package_v2_response, verify_v2_request, verify_v2_response
+from .transaction_state import ReplayLedger
 from .keys import btc_address, evm_account, root_from_mnemonic
 from .review import (ReviewPlan, ReviewSession, build_review_plan,
                      review_policy_decision)
@@ -536,6 +538,8 @@ class OfflineReviewApp:
         self._active_usb_file = None
         self._active_usb_identity = None
         self._active_usb_digest = None
+        self._active_request_id = None
+        self._active_v2_request = None
         self._active_qr_request = None
         self._signed_qr_text = None
         self.policy_profile = None
@@ -605,6 +609,8 @@ class OfflineReviewApp:
         self._active_usb_file = None
         self._active_usb_identity = None
         self._active_usb_digest = None
+        self._active_request_id = None
+        self._active_v2_request = None
         self._active_qr_request = None
         if self.session and not self.session.signed:
             self._signed_qr_text = None
@@ -677,6 +683,7 @@ class OfflineReviewApp:
         self.ttk.Label(self.container, text="Session: " + self.security.state.value + f" · Idle auto-lock: {self.idle_seconds}s · Python RAM zeroization cannot be guaranteed", wraplength=780).pack(fill="x", pady=4)
         self.ttk.Button(self.container, text="Lock now / 立即鎖定", command=self._cancel_to_home).pack(fill="x", pady=4)
         self.ttk.Button(self.container, text="Exit signer / 離開（不等於電腦關機）", command=self._close).pack(fill="x", pady=4)
+        self.ttk.Button(self.container, text="單 USB：自動載入唯一待簽 Request", command=self._import_single_usb).pack(fill="x", pady=8, ipady=8)
         choices = self.ttk.Frame(self.container)
         choices.pack(fill="x", expand=True, pady=12)
         self.ttk.Button(
@@ -872,9 +879,34 @@ class OfflineReviewApp:
             raise ValueError("Signed USB export requires a visible .json filename")
         if self.session is None or not self.session.signed:
             raise ValueError("No signed response to export")
-        text = self.session.signed_envelope_text()
-        verify(json.loads(text), self.session.plan.signed_kind)
-        data = text.encode("ascii")
+        signed_v1 = json.loads(self.session.signed_envelope_text(),
+                               object_pairs_hook=_unique_object)
+        payload = verify(signed_v1, self.session.plan.signed_kind)
+        response = None
+        if self._active_v2_request is not None:
+            expected_account = (
+                evm_account(self.wallet_root).address
+                if self._active_v2_request["kind"] == "evm-request"
+                else self.wallet_root.my_fingerprint.hex()
+            )
+            response = package_v2_response(
+                self._active_v2_request,
+                payload,
+                expected_account=expected_account,
+                allow_no_trusted_clock=True,
+            )
+            verify_v2_response(
+                self._active_v2_request,
+                response,
+                expected_account=expected_account,
+                allow_no_trusted_clock=True,
+            )
+            data = json.dumps(
+                response, sort_keys=True, ensure_ascii=True,
+                separators=(",", ":"), allow_nan=False,
+            ).encode("ascii")
+        else:
+            data = self.session.signed_envelope_text().encode("ascii")
         if self.development_mode:
             if not self._path_allowed(path):
                 raise ValueError("Path must be beneath TX_TRANSFER")
@@ -887,6 +919,78 @@ class OfflineReviewApp:
             atomic_create_at(parent, name, data)
         finally:
             os.close(parent)
+        if response is not None:
+            ledger = ReplayLedger(self.transfer_dir / ".usb-cold-wallet" / "state" / "cold")
+            ledger.mark_signed(
+                self._active_v2_request,
+                response,
+                allow_no_trusted_clock=True,
+            )
+
+    def _import_single_usb(self):
+        """Load the one active formal v2 request without a file picker."""
+        base = self.transfer_dir / ".usb-cold-wallet" / "exchange"
+        try:
+            candidates = sorted(base.glob("request-*.json"))
+            if len(candidates) != 1:
+                raise ValueError("單 USB 交換區必須恰好有一筆 request-<RequestID>.json")
+            path = candidates[0]
+            match = re.fullmatch(r"request-([0-9a-f]{32})\.json", path.name)
+            if match is None:
+                raise ValueError("單 USB Request 檔名不合法")
+            raw, identity = self._read_transfer_snapshot(path)
+            envelope = json.loads(
+                raw.decode("utf-8"),
+                object_pairs_hook=_unique_object,
+                parse_constant=lambda _: (_ for _ in ()).throw(
+                    ValueError("Non-finite JSON number in v2 request")
+                ),
+            )
+            checked = verify_v2_request(
+                envelope,
+                allow_no_trusted_clock=True,
+            )
+            if checked["requestId"] != match.group(1):
+                raise ValueError("Request 檔名與 v2 requestId 不一致")
+            kind = checked["kind"]
+            digest = hashlib.sha256(raw).digest()
+        except (ValueError, OSError, UnicodeError, KeyError, TypeError) as exc:
+            self._lock_wallet(self.t("locked"))
+            self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
+            self._render_home()
+            return
+        self.selected_kind = kind
+        if self.wallet_root is None and not self._unlock():
+            self._render_home()
+            return
+        try:
+            expected_account = (
+                evm_account(self.wallet_root).address
+                if kind == "evm-request"
+                else self.wallet_root.my_fingerprint.hex()
+            )
+            checked = verify_v2_request(
+                envelope,
+                expected_account=expected_account,
+                allow_no_trusted_clock=True,
+            )
+            review_envelope = package(kind, checked["payload"])
+            plan = build_review_plan(review_envelope, self.wallet_root, kind)
+            self._active_usb_file = path
+            self._active_usb_identity = identity
+            self._active_usb_digest = digest
+            self._active_request_id = checked["requestId"]
+            self._active_v2_request = checked
+            self._active_qr_request = None
+            self._signed_qr_text = None
+            if not self._transport_available():
+                raise ValueError("USB request changed during unlock")
+        except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
+            self._lock_wallet(self.t("locked"))
+            self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
+            self._render_home()
+            return
+        self._start_review(plan)
 
     def _import_usb(self):
         kind = self.selected_kind
@@ -926,6 +1030,8 @@ class OfflineReviewApp:
             self._active_usb_file = path
             self._active_usb_identity = identity
             self._active_usb_digest = digest
+            self._active_request_id = None
+            self._active_v2_request = None
             self._active_qr_request = None
             self._signed_qr_text = None
             if not self._transport_available():
@@ -1129,6 +1235,8 @@ class OfflineReviewApp:
         if not self.session or self.wallet_root is None:
             return
         digest = self.session.plan.review_digest
+        replay_ledger = None
+        replay_reviewed = False
         try:
             if not self._transport_available():
                 raise ValueError("USB transport removed or changed; signing canceled")
@@ -1145,6 +1253,21 @@ class OfflineReviewApp:
                 if answer != "UNVERIFIED RECIPIENT":
                     raise ValueError("Unknown recipient requires separate confirmation")
                 extra_confirmation = answer
+            if self._active_v2_request is not None:
+                expected_account = (
+                    evm_account(self.wallet_root).address
+                    if self._active_v2_request["kind"] == "evm-request"
+                    else self.wallet_root.my_fingerprint.hex()
+                )
+                replay_ledger = ReplayLedger(
+                    self.transfer_dir / ".usb-cold-wallet" / "state" / "cold"
+                )
+                replay_ledger.review_once(
+                    self._active_v2_request,
+                    expected_account=expected_account,
+                    allow_no_trusted_clock=True,
+                )
+                replay_reviewed = True
             self.security.approve(digest)
             self.security.signing(digest)
             signed = self.session.sign(self.wallet_root, self.policy_profile,
@@ -1154,6 +1277,13 @@ class OfflineReviewApp:
                     self._active_qr_request, signed, self.session.plan.signed_kind)
             self.security.signed(digest)
         except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
+            if replay_reviewed and replay_ledger is not None and self._active_v2_request is not None:
+                try:
+                    current = replay_ledger.get(self._active_v2_request["requestId"])
+                    if current is not None and current.state == "COLD_REVIEWED":
+                        replay_ledger.failed(self._active_v2_request, "local signing flow failed")
+                except (ValueError, OSError):
+                    pass
             self._lock_wallet(self.t("locked"))
             self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
             self._render_home()
@@ -1183,25 +1313,83 @@ class OfflineReviewApp:
             self.ttk.Button(self.container, text="Review next transaction / 下一筆重新審核", command=self._next_transaction).pack(fill="x", pady=8)
         self.ttk.Button(self.container, text=self.t("done"), command=self._done).pack(pady=(24, 0))
 
+    def _recover_existing_v2_response(self, path: Path) -> bool:
+        """Recover a completed response published before the cold journal fsync."""
+        if self._active_v2_request is None or self.session is None or self.wallet_root is None:
+            return False
+        raw, _identity = self._read_transfer_snapshot(path)
+        response = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
+        expected_account = (
+            evm_account(self.wallet_root).address
+            if self._active_v2_request["kind"] == "evm-request"
+            else self.wallet_root.my_fingerprint.hex()
+        )
+        payload = verify_v2_response(
+            self._active_v2_request,
+            response,
+            expected_account=expected_account,
+            allow_no_trusted_clock=True,
+        )
+        local_payload = verify(
+            json.loads(self.session.signed_envelope_text(), object_pairs_hook=_unique_object),
+            self.session.plan.signed_kind,
+        )
+        if payload != local_payload:
+            raise ValueError("Existing response differs from the locally reviewed signature")
+        ledger = ReplayLedger(self.transfer_dir / ".usb-cold-wallet" / "state" / "cold")
+        current = ledger.get(self._active_v2_request["requestId"])
+        if current is None:
+            raise ValueError("Existing response has no durable COLD_REVIEWED record")
+        if current.state == "COLD_REVIEWED":
+            ledger.mark_signed(
+                self._active_v2_request,
+                response,
+                allow_no_trusted_clock=True,
+            )
+        elif current.state == "SIGNED":
+            if current.metadata.get("responseDigest") != response["sha256"]:
+                raise ValueError("Existing response disagrees with durable SIGNED record")
+        else:
+            raise ValueError("Existing response belongs to a failed replay state")
+        return True
+
     def _export_signed(self):
         if not self.session:
             return
-        filename = self.filedialog.asksaveasfilename(
-            parent=self.root,
-            initialdir=str(self.transfer_dir),
-            defaultextension=".json",
-            filetypes=(("JSON exchange", "*.json"),),
-            title=self.t("export"),
-        )
-        if not filename:
-            return
-        path = Path(filename)
+        if self._active_request_id:
+            path = self.transfer_dir / ".usb-cold-wallet" / "exchange" / f"response-{self._active_request_id}.json"
+        else:
+            filename = self.filedialog.asksaveasfilename(
+                parent=self.root,
+                initialdir=str(self.transfer_dir),
+                defaultextension=".json",
+                filetypes=(("JSON exchange", "*.json"),),
+                title=self.t("export"),
+            )
+            if not filename:
+                return
+            path = Path(filename)
         if not self._path_allowed(path):
             self.messagebox.showerror(self.t("error"), "Signed response must be written to TX_TRANSFER.", parent=self.root)
             return
         try:
             self._write_transfer_signed(path)
+            if self._active_request_id:
+                self.status_message = "已寫入單 USB 簽章回覆。請關機後回 Windows；Companion 會重新驗證，再等待人工 Broadcast。"
+                self.messagebox.showinfo(self.t("signed"), self.status_message, parent=self.root)
         except FileExistsError:
+            if self._active_v2_request is not None:
+                try:
+                    self._recover_existing_v2_response(path)
+                    self.status_message = (
+                        "既有完整回覆已重新驗證並完成 replay ledger 恢復；"
+                        "請關機後回 Windows，Companion 仍會再次驗證。"
+                    )
+                    self.messagebox.showinfo(self.t("signed"), self.status_message, parent=self.root)
+                    return
+                except (ValueError, OSError, KeyError, TypeError) as exc:
+                    self.messagebox.showerror(self.t("error"), str(exc)[:300], parent=self.root)
+                    return
             self.messagebox.showerror(self.t("error"), self.t("output_exists"), parent=self.root)
         except (ValueError, OSError, KeyError, TypeError) as exc:
             self._lock_wallet(self.t("locked"))

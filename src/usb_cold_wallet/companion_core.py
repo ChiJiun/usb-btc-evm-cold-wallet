@@ -383,8 +383,11 @@ class CompanionSession:
                     or payload["max_total_wei"] != decoded["value"] + maximum_fee
                     or payload["decoded_transaction"] != expected_meta):
                 raise ValueError("Signed fee or decoded transaction metadata mismatch")
-            # Do not echo signed bytes to logs/UI; never accept a second response.
-            self.pending.update({"stage": "verified", "signed": signed_hex, "tx_hash": tx_hash})
+            # Preserve only PUBLIC signed response bytes so a Windows reboot can re-verify
+            # the exact canonical response before enabling explicit broadcast.
+            response_envelope = data
+            self.pending.update({"stage": "verified", "signed": signed_hex, "tx_hash": tx_hash,
+                                 "response_envelope": response_envelope})
             return self.pending_view()
 
     def broadcast(self):

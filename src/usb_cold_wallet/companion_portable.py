@@ -19,6 +19,8 @@ def main(argv=None) -> int:
     parser.add_argument("--port", type=int, default=0,
                         help="Loopback TCP port; 0 automatically chooses a free port")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--exchange-root", default=None,
+                        help="Test/development override; normal Windows use auto-detects TX_TRANSFER")
     args = parser.parse_args(argv)
     if not 0 <= args.port <= 65535:
         parser.error("Invalid local port")
@@ -26,6 +28,8 @@ def main(argv=None) -> int:
         "--rpc-url", args.rpc_url, "--btc-esplora", args.btc_esplora,
         "--port", str(args.port),
     ]
+    if args.exchange_root:
+        forwarded.extend(["--exchange-root", args.exchange_root])
     if not args.no_browser:
         forwarded.append("--open-browser")
     return web_main(forwarded)

@@ -194,7 +194,8 @@ class BitcoinCompanion:
         p = self.pending
         return {k: p.get(k) for k in ("stage", "request_id", "digest", "recipient",
                 "amount_sats", "fee_sats", "fee_rate", "change_sats", "change_index",
-                "input_count", "txid", "result", "reorg_warning")}
+                "change_address", "inputs", "outputs", "input_count", "txid", "result",
+                "reorg_warning")}
 
     def _scan(self):
         self._account()
@@ -351,10 +352,16 @@ class BitcoinCompanion:
             # v0 PSBT input origin contains the PUBLIC master fingerprint, but
             # tpub cannot prove the claimed root fingerprint to the online PC.
             digest = hashlib.sha256(p.serialize()).hexdigest()
+            display_inputs = [{"txid": item["txid"], "vout": item["vout"],
+                               "value": item["sats"], "address": item["address"]} for item in picked]
+            display_outputs = [{"address": out.script_pubkey.address(NETWORK), "value": out.value}
+                               for out in outputs]
             self.pending = {"stage": "prepared", "request_id": secrets.token_hex(16),
                 "digest": digest, "psbt_base64": encoded, "recipient": recipient, "amount_sats": sats,
                 "fee_sats": fee, "fee_rate": rate, "change_sats": change,
                 "change_index": change_index if change >= DUST else None,
+                "change_address": self._address(1, change_index) if change >= DUST else None,
+                "inputs": display_inputs, "outputs": display_outputs,
                 "input_count": len(picked), "unsigned": p}
             return {"pending": self.pending_view(), "envelope": pack_envelope("btc-request", encoded)}
 
@@ -422,7 +429,9 @@ class BitcoinCompanion:
                 raise
             except Exception as exc:
                 raise ValueError("Invalid PSBT signatures or finalization") from exc
-            self.pending.update({"stage": "verified", "signed_tx": final_hex, "txid": txid})
+            response_envelope = obj
+            self.pending.update({"stage": "verified", "signed_tx": final_hex, "txid": txid,
+                                 "response_envelope": response_envelope})
             return self.pending_view()
 
     def broadcast(self):

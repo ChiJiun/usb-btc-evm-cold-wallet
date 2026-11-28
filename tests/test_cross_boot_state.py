@@ -279,11 +279,11 @@ def test_partial_journal_write_blocks_new_broadcast_attempt(tmp_path):
 def test_cold_replay_ledger_survives_restart_and_blocks_id_and_transaction_replay(tmp_path):
     root = tmp_path / "cold-ledger"
     request = evm_request("41" * 16)
-    ledger = ReplayLedger(root)
-    stale_ledger = ReplayLedger(root)
+    ledger = ReplayLedger(root, allow_unanchored_for_testing=True)
+    stale_ledger = ReplayLedger(root, allow_unanchored_for_testing=True)
     checked = verify_v2_request(request, trusted_time=100)
     assert ledger.review_once(request, expected_account=request["account"], trusted_time=100).state == "COLD_REVIEWED"
-    ledger = ReplayLedger(root)
+    ledger = ReplayLedger(root, allow_unanchored_for_testing=True)
     with pytest.raises(ValueError, match="Duplicate requestId"):
         ledger.review_once(request, expected_account=request["account"], trusted_time=100)
 
@@ -300,7 +300,7 @@ def test_cold_replay_ledger_survives_restart_and_blocks_id_and_transaction_repla
 def test_replay_ledger_rejects_same_evm_nonce_with_changed_unsigned_payload(tmp_path):
     root = tmp_path / "cold-ledger"
     first = evm_request("71" * 16, nonce=7)
-    ledger = ReplayLedger(root)
+    ledger = ReplayLedger(root, allow_unanchored_for_testing=True)
     ledger.review_once(first, expected_account=EVM_ACCOUNT, trusted_time=100)
 
     changed = evm_tx(nonce=7, value=123456790)
@@ -311,13 +311,13 @@ def test_replay_ledger_rejects_same_evm_nonce_with_changed_unsigned_payload(tmp_
     )
     assert first["transactionDigest"] != other["transactionDigest"]
     with pytest.raises(ValueError, match="nonce already reserved"):
-        ReplayLedger(root).review_once(other, expected_account=EVM_ACCOUNT, trusted_time=100)
+        ReplayLedger(root, allow_unanchored_for_testing=True).review_once(other, expected_account=EVM_ACCOUNT, trusted_time=100)
 
 
 def test_replay_ledger_rejects_same_btc_outpoint_with_changed_payment(tmp_path):
     root = tmp_path / "cold-ledger"
     first = btc_request("81" * 16)
-    ReplayLedger(root).review_once(
+    ReplayLedger(root, allow_unanchored_for_testing=True).review_once(
         first, expected_account=ROOT.my_fingerprint.hex(), trusted_time=100
     )
     parsed = psbt.PSBT.parse(base64.b64decode(btc_psbt()))
@@ -341,7 +341,7 @@ def test_replay_ledger_rejects_same_btc_outpoint_with_changed_payment(tmp_path):
     )
     assert first["transactionDigest"] != changed["transactionDigest"]
     with pytest.raises(ValueError, match="UTXO already reserved"):
-        ReplayLedger(root).review_once(
+        ReplayLedger(root, allow_unanchored_for_testing=True).review_once(
             changed, expected_account=ROOT.my_fingerprint.hex(), trusted_time=100
         )
 
@@ -350,12 +350,12 @@ def test_cold_signed_state_and_response_digest_survive_restart(tmp_path):
     root = tmp_path / "cold-ledger"
     request = btc_request()
     checked = verify_v2_request(request, trusted_time=100)
-    ledger = ReplayLedger(root)
+    ledger = ReplayLedger(root, allow_unanchored_for_testing=True)
     ledger.review_once(request, expected_account=request["account"], trusted_time=100)
     signed = sign_btc_psbt(ROOT, request["payload"], BTC_RECIPIENT, 60_000, 1500, 0)
     response = package_v2_response(request, signed, trusted_time=100)
     ledger.mark_signed(request, response, trusted_time=100)
-    assert ReplayLedger(root).get(request["requestId"]).state == "SIGNED"
+    assert ReplayLedger(root, allow_unanchored_for_testing=True).get(request["requestId"]).state == "SIGNED"
 
 
 def test_trailing_partial_write_is_recoverable_but_reported(tmp_path):
@@ -414,6 +414,94 @@ def test_unanchored_store_does_not_claim_rollback_protection(tmp_path):
     assert online.rollback_resistant is False
 
 
+class _SimulatedExternalAnchor:
+    """Test double only; never qualifies as physical monotonic evidence."""
+
+    def __init__(self, tip: str):
+        self.tip = tip
+        self.fail_advance = False
+        self.advances = 0
+
+    def read_tip(self) -> str:
+        return self.tip
+
+    def advance_tip(self, expected_tip: str, new_tip: str) -> None:
+        if self.fail_advance:
+            raise OSError("simulated independent anchor outage")
+        if expected_tip != self.tip:
+            raise ValueError("stale monotonic anchor")
+        self.tip = new_tip
+        self.advances += 1
+
+
+def test_caller_supplied_tip_alone_never_authorizes_cold_signing(tmp_path):
+    root = tmp_path / "cold"
+    tip = ReplayLedger(root).tip_anchor()
+    ledger = ReplayLedger(root, expected_tip=tip)
+    assert not ledger.rollback_resistant
+    with pytest.raises(RollbackDetected, match="no independent monotonic anchor"):
+        ledger.review_once(evm_request(), expected_account=EVM_ACCOUNT, trusted_time=100)
+
+
+def test_simulated_monotonic_anchor_must_advance_before_cold_review_returns(tmp_path):
+    root = tmp_path / "cold"
+    external = _SimulatedExternalAnchor(ReplayLedger(root).tip_anchor())
+    ledger = ReplayLedger(root, trusted_anchor=external)
+    assert ledger.rollback_resistant
+    request = evm_request()
+    reviewed = ledger.review_once(request, expected_account=EVM_ACCOUNT, trusted_time=100)
+    assert reviewed.state == "COLD_REVIEWED"
+    assert external.advances == 1
+    assert external.tip == ledger.tip_anchor()
+    reopened = ReplayLedger(root, trusted_anchor=external)
+    assert reopened.get(request["requestId"]).state == "COLD_REVIEWED"
+    with pytest.raises(ValueError, match="Duplicate requestId"):
+        reopened.review_once(request, expected_account=EVM_ACCOUNT, trusted_time=100)
+
+
+def test_anchor_advance_outage_leaves_durable_review_unusable(tmp_path):
+    root = tmp_path / "cold"
+    external = _SimulatedExternalAnchor(ReplayLedger(root).tip_anchor())
+    ledger = ReplayLedger(root, trusted_anchor=external)
+    external.fail_advance = True
+    request = evm_request()
+    with pytest.raises(RollbackDetected, match="advance/recheck failed"):
+        ledger.review_once(request, expected_account=EVM_ACCOUNT, trusted_time=100)
+    assert not ledger.rollback_resistant
+    assert ledger.get(request["requestId"]).state == "COLD_REVIEWED"
+    with pytest.raises(RollbackDetected, match="Journal differs"):
+        ReplayLedger(root, trusted_anchor=external)
+
+
+def test_independent_anchor_rejects_coherently_rolled_back_cold_history(tmp_path):
+    root = tmp_path / "cold"
+    external = _SimulatedExternalAnchor(ReplayLedger(root).tip_anchor())
+    ledger = ReplayLedger(root, trusted_anchor=external)
+    first = evm_request("51" * 16, nonce=7)
+    ledger.review_once(first, expected_account=EVM_ACCOUNT, trusted_time=100)
+    old_snapshot = {p.name: p.read_bytes() for p in root.glob("*.json")}
+    second = evm_request("52" * 16, nonce=8)
+    ledger.review_once(second, expected_account=EVM_ACCOUNT, trusted_time=100)
+    for entry in root.glob("*.json"):
+        entry.unlink()
+    for name, data in old_snapshot.items():
+        (root / name).write_bytes(data)
+    with pytest.raises(RollbackDetected, match="Journal differs"):
+        ReplayLedger(root, trusted_anchor=external)
+
+
+def test_partial_write_blocks_all_journal_transitions_not_just_broadcast(tmp_path):
+    root = tmp_path / "online"
+    request = evm_request()
+    store = PendingRequestStore(root)
+    store.create(request)
+    (root / ".power-loss.partial").write_bytes(b"partial")
+    with pytest.raises(StateCorruptionError, match="Unresolved journal write"):
+        store.exported(request)
+    with pytest.raises(StateCorruptionError, match="Unresolved journal write"):
+        PendingRequestStore(root).failed(request, "cancelled")
+
+
 def test_v2_file_io_reuses_bounded_atomic_exchange_primitives(tmp_path):
     request = evm_request()
     request_path = tmp_path / "request.json"
@@ -465,7 +553,7 @@ def test_state_import_verifies_response_before_transition(tmp_path):
 
 def test_no_clock_cold_review_persists_unverified_assurance(tmp_path):
     request = evm_request(expiry={"mode": "no-trusted-clock", "notAfter": None})
-    ledger = ReplayLedger(tmp_path / "ledger")
+    ledger = ReplayLedger(tmp_path / "ledger", allow_unanchored_for_testing=True)
     snap = ledger.review_once(request, expected_account=EVM_ACCOUNT, allow_no_trusted_clock=True)
     assert snap.metadata["expiryAssurance"] == "unverified"
 
@@ -506,3 +594,22 @@ def test_online_journal_import_does_not_load_cold_signing_modules():
         "assert 'usb_cold_wallet.vault' not in sys.modules"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_cold_replay_ledger_fails_closed_without_independent_anchor(tmp_path):
+    request = evm_request("91" * 16)
+    ledger = ReplayLedger(tmp_path / "cold-ledger")
+    with pytest.raises(RollbackDetected, match="no independent monotonic anchor"):
+        ledger.review_once(request, expected_account=EVM_ACCOUNT, trusted_time=100)
+
+
+def test_unanchored_reopen_cannot_mark_existing_cold_review_signed(tmp_path):
+    root = tmp_path / "cold-ledger"
+    request = btc_request()
+    ledger = ReplayLedger(root, allow_unanchored_for_testing=True)
+    ledger.review_once(request, expected_account=request["account"], trusted_time=100)
+    signed = sign_btc_psbt(ROOT, request["payload"], BTC_RECIPIENT, 60_000, 1500, 0)
+    response = package_v2_response(request, signed, trusted_time=100)
+    with pytest.raises(RollbackDetected, match="no independent monotonic anchor"):
+        ReplayLedger(root).mark_signed(request, response, trusted_time=100)
+    assert ReplayLedger(root).get(request["requestId"]).state == "COLD_REVIEWED"

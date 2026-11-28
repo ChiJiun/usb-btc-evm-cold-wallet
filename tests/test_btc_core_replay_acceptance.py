@@ -71,7 +71,7 @@ def test_core_oracle_through_policy_replay_and_online_import(tmp_path):
     with pytest.raises(ValueError, match="Offline policy denied"):
         enforce_review_policy(limited, ROOT, reviewed, kind="btc")
 
-    cold = ReplayLedger(tmp_path / "cold")
+    cold = ReplayLedger(tmp_path / "cold", allow_unanchored_for_testing=True)
     cold.review_once(request, expected_account=ROOT.my_fingerprint.hex(), trusted_time=100)
     signed = sign_btc_psbt(
         ROOT, request["payload"], FIXTURE["recipient_testnet"],
@@ -95,7 +95,7 @@ def test_core_oracle_through_policy_replay_and_online_import(tmp_path):
     assert PendingRequestStore(online_path).get(request["requestId"]).state != "BROADCASTED"
 
     with pytest.raises(ValueError, match="Duplicate requestId"):
-        ReplayLedger(tmp_path / "cold").review_once(
+        ReplayLedger(tmp_path / "cold", allow_unanchored_for_testing=True).review_once(
             request, expected_account=ROOT.my_fingerprint.hex(), trusted_time=100
         )
 
@@ -139,7 +139,7 @@ def test_cold_whole_store_rollback_negative_control_requires_external_tip(tmp_pa
     root = tmp_path / "cold"
     first = core_request("c1" * 16)
     second = core_request("c2" * 16)
-    ledger = ReplayLedger(root)
+    ledger = ReplayLedger(root, allow_unanchored_for_testing=True)
     ledger.review_once(first, expected_account=ROOT.my_fingerprint.hex(), trusted_time=100)
     first_tip = ledger.tip_anchor()
     # Same unsigned transaction under another request ID is rejected even
@@ -198,6 +198,6 @@ def test_core_oracle_cannot_be_reinterpreted_by_online_expectations(mutation):
 def test_core_request_wrong_account_rejected_by_cold_replay(tmp_path):
     request = core_request()
     with pytest.raises(ValueError):
-        ReplayLedger(tmp_path / "cold").review_once(
+        ReplayLedger(tmp_path / "cold", allow_unanchored_for_testing=True).review_once(
             request, expected_account="00" * 4, trusted_time=100
         )

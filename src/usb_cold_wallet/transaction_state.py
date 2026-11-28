@@ -18,7 +18,7 @@ import stat
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 REQUEST_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -66,6 +66,19 @@ class StateCorruptionError(ValueError):
 
 class RollbackDetected(StateCorruptionError):
     pass
+
+
+class MonotonicAnchor(Protocol):
+    """Contract for an independently trusted, durable monotonic state store.
+
+    The backend must be outside USB/Windows/FAT32/Vault rollback authority.
+    compare-and-advance must be atomic and reject stale expected tips. No
+    backend is provided by this module; mock implementations are test-only.
+    """
+
+    def read_tip(self) -> str: ...
+
+    def advance_tip(self, expected_tip: str, new_tip: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -120,22 +133,38 @@ def _write_all(fd: int, data: bytes) -> None:
 
 
 def _append_windows(root: Path, name: str, raw: bytes) -> None:
-    """Create-only Windows journal append.
+    """Create-only Windows journal append with write-through publication.
 
-    NTFS os.rename fails when the destination exists. A crash may leave a
-    .partial file; readers ignore bounded .partial files and keep the last
-    fully published immutable record.
+    The staging bytes are flushed first. MoveFileExW with MOVEFILE_WRITE_THROUGH
+    then publishes the immutable name without replacement semantics, and the
+    resulting file handle is flushed again. This materially strengthens Windows
+    metadata durability, but does not claim a physical removable-FAT32 power-loss
+    guarantee; recovery remains fail-closed when a committed record is absent.
     """
+    import ctypes
     import secrets
 
     stage = root / f".{name}.{secrets.token_hex(8)}.partial"
-    fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    final = root / name
+    fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
     try:
         _write_all(fd, raw)
     finally:
         os.close(fd)
     try:
-        os.rename(stage, root / name)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        move = kernel32.MoveFileExW
+        move.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        move.restype = ctypes.c_int
+        MOVEFILE_WRITE_THROUGH = 0x00000008
+        if not move(str(stage), str(final), MOVEFILE_WRITE_THROUGH):
+            error = ctypes.get_last_error()
+            raise OSError(error, "MoveFileExW(MOVEFILE_WRITE_THROUGH) failed", str(final))
+        fd = os.open(final, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
     except Exception:
         try:
             stage.unlink()
@@ -164,11 +193,16 @@ def _append(root: Path, name: str, raw: bytes) -> None:
 
 
 class _Journal:
-    def __init__(self, root: Path, owner: str, *, expected_tip: str | None = None):
+    def __init__(self, root: Path, owner: str, *, expected_tip: str | None = None,
+                 trusted_anchor: MonotonicAnchor | None = None):
         if owner not in {"online", "cold"}:
             raise ValueError("Invalid state owner")
         self.root = Path(root)
         self.owner = owner
+        # A caller-supplied expected_tip is only a comparison primitive, not
+        # evidence that the caller obtained it from independent monotonic storage.
+        self._trusted_anchor = trusted_anchor
+        self._external_anchor_verified = False
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         if os.name != "nt":
             self.root.chmod(0o700)
@@ -179,6 +213,23 @@ class _Journal:
                 raise ValueError("Invalid expected state anchor")
             if self.tip_anchor() != expected_tip:
                 raise RollbackDetected("State journal tip differs from externally pinned anchor")
+        if self._trusted_anchor is not None:
+            self._verify_trusted_tip()
+
+    def _verify_trusted_tip(self) -> str:
+        if self._trusted_anchor is None:
+            raise RollbackDetected("No independent monotonic anchor configured")
+        self._external_anchor_verified = False
+        try:
+            tip = self._trusted_anchor.read_tip()
+        except Exception as exc:
+            raise RollbackDetected("Independent monotonic anchor is unavailable") from exc
+        if type(tip) is not str or HEX64_RE.fullmatch(tip) is None:
+            raise RollbackDetected("Independent monotonic anchor returned an invalid tip")
+        if tip != self.tip_anchor():
+            raise RollbackDetected("Journal differs from independent monotonic anchor")
+        self._external_anchor_verified = True
+        return tip
 
     @contextmanager
     def _locked(self):
@@ -370,8 +421,11 @@ class _Journal:
         transaction_digest: str, metadata: dict | None = None,
     ) -> StateSnapshot:
         self._reload()
-        if state == "BROADCAST_REQUESTED" and self.recovery_warnings:
-            raise StateCorruptionError("Unresolved journal write; broadcast is blocked")
+        if self.recovery_warnings:
+            # A torn write is ambiguous regardless of which transition follows.
+            # Do not advance a journal over an uncommitted crash artifact.
+            raise StateCorruptionError("Unresolved journal write; state transition is blocked")
+        pinned_tip = self._verify_trusted_tip() if self._trusted_anchor is not None else None
         if type(request_id) is not str or REQUEST_ID_RE.fullmatch(request_id) is None:
             raise ValueError("Invalid requestId")
         if type(state) is not str:
@@ -412,6 +466,17 @@ class _Journal:
         raw = _canonical(record) + b"\n"
         _append(self.root, name, raw)
         self._records.append(record)
+        if self._trusted_anchor is not None:
+            # Append BEFORE advancing the independently monotonic anchor.
+            # Crashes on either side of the CAS fail closed after reboot.
+            self._external_anchor_verified = False
+            try:
+                self._trusted_anchor.advance_tip(pinned_tip, self.tip_anchor())
+                self._verify_trusted_tip()
+            except Exception as exc:
+                raise RollbackDetected(
+                    "Independent anchor advance/recheck failed; manual trusted recovery required"
+                ) from exc
         return self.get(request_id)
 
     def tip_anchor(self) -> str:
@@ -425,13 +490,30 @@ class _Journal:
 
     @property
     def rollback_resistant(self) -> bool:
-        # A local hash chain cannot distinguish a whole-store rollback.
-        return False
+        # True only when this open validated an independently supplied tip.
+        return self._external_anchor_verified
 
 
 class PendingRequestStore(_Journal):
-    def __init__(self, root: Path, *, expected_tip: str | None = None):
-        super().__init__(root, "online", expected_tip=expected_tip)
+    def __init__(self, root: Path, *, expected_tip: str | None = None,
+                 trusted_anchor: MonotonicAnchor | None = None):
+        super().__init__(root, "online", expected_tip=expected_tip,
+                         trusted_anchor=trusted_anchor)
+
+    def active_request_ids(self) -> set[str]:
+        """Enumerate visible in-flight reservations, including missing exchange files.
+
+        This only checks the currently visible journal. An independent anchor
+        remains necessary to detect a coherent rollback of the whole store.
+        """
+        self._reload()
+        ids = {record["requestId"] for record in self._records}
+        return {
+            request_id for request_id in ids
+            if self.get(request_id).state in {
+                "DRAFT", "EXPORTED", "IMPORTED_VERIFIED", "BROADCAST_REQUESTED"
+            }
+        }
 
     def create(self, request: dict) -> StateSnapshot:
         return self._transition(
@@ -475,9 +557,21 @@ class PendingRequestStore(_Journal):
         the chain by txid and reconcile this record only after confirmation.
         """
         self._check_broadcast_txid(request, txid)
+        current = self.get(request["requestId"])
+        if current is None or current.state != "IMPORTED_VERIFIED":
+            previous_state = None if current is None else current.state
+            raise ValueError(
+                f"Invalid online state transition {previous_state!r} -> 'BROADCAST_REQUESTED'"
+            )
+        if (type(current.metadata.get("responseDigest")) is not str
+                or HEX64_RE.fullmatch(current.metadata["responseDigest"]) is None):
+            raise ValueError("Broadcast request must preserve a verified response binding")
         return self._transition(
             request["requestId"], "BROADCAST_REQUESTED", request["sha256"],
-            request["transactionDigest"], {"txid": txid},
+            request["transactionDigest"], {
+                "txid": txid,
+                "responseDigest": current.metadata["responseDigest"],
+            },
         )
 
     @staticmethod
@@ -515,8 +609,12 @@ class PendingRequestStore(_Journal):
 
 
 class ReplayLedger(_Journal):
-    def __init__(self, root: Path, *, expected_tip: str | None = None):
-        super().__init__(root, "cold", expected_tip=expected_tip)
+    def __init__(self, root: Path, *, expected_tip: str | None = None,
+                 allow_unanchored_for_testing: bool = False,
+                 trusted_anchor: MonotonicAnchor | None = None):
+        self._allow_unanchored_for_testing = allow_unanchored_for_testing
+        super().__init__(root, "cold", expected_tip=expected_tip,
+                         trusted_anchor=trusted_anchor)
 
     def _ensure_unseen(self, request: dict) -> None:
         self._reload()
@@ -555,6 +653,10 @@ class ReplayLedger(_Journal):
         allow_no_trusted_clock: bool = False,
         verifier=None,
     ) -> StateSnapshot:
+        if not self.rollback_resistant and not self._allow_unanchored_for_testing:
+            raise RollbackDetected(
+                "Cold replay ledger has no independent monotonic anchor; signing fails closed"
+            )
         verify = verifier or _official_verifier("verify_v2_request")
         checked = verify(
             request,
@@ -586,6 +688,10 @@ class ReplayLedger(_Journal):
         allow_no_trusted_clock: bool = False,
         verifier=None,
     ) -> StateSnapshot:
+        if not self.rollback_resistant and not self._allow_unanchored_for_testing:
+            raise RollbackDetected(
+                "Cold replay ledger has no independent monotonic anchor; signing fails closed"
+            )
         current = self.get(request["requestId"])
         if current is None or current.state != "COLD_REVIEWED":
             raise ValueError("Request must be cold-reviewed before signing")
